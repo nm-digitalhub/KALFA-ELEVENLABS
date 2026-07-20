@@ -4,6 +4,22 @@ import me.kalfa.agentconsole.domain.model.AgentStatus
 import me.kalfa.agentconsole.domain.model.CallState
 import kotlinx.coroutines.flow.StateFlow
 
+data class TelephonyCapabilities(
+    val realDeviceAudio: Boolean = false,
+    val outboundCalling: Boolean = false,
+    val silentMonitoring: Boolean = false,
+    val takeover: Boolean = false,
+    val mute: Boolean = false,
+    val hold: Boolean = false,
+    val dtmf: Boolean = false,
+    val incomingCalls: Boolean = false,
+    val bluetoothRouting: Boolean = false,
+    val manualRsvpPersistence: Boolean = false
+) {
+    val isSimulation: Boolean
+        get() = !realDeviceAudio
+}
+
 interface CallSession {
     val id: String
     val customerPhone: String
@@ -12,7 +28,7 @@ interface CallSession {
     val isMuted: StateFlow<Boolean>
     val isHeld: StateFlow<Boolean>
     val durationSec: StateFlow<Int>
-    
+
     fun mute(muted: Boolean)
     fun hold(held: Boolean)
     fun sendDtmf(digit: String)
@@ -23,7 +39,10 @@ interface CallEngine {
     val currentSession: StateFlow<CallSession?>
     val activeAiCallsCount: StateFlow<Int>
     val queueDepth: StateFlow<Int>
-    
+
+    val capabilities: TelephonyCapabilities
+        get() = TelephonyCapabilities()
+
     fun startOutboundCall(phone: String, customerName: String): CallSession
     fun monitorCall(callId: String): CallSession
     fun takeoverCall(callId: String): CallSession
