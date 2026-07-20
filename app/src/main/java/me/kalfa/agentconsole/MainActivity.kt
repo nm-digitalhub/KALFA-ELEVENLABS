@@ -69,19 +69,19 @@ class MainActivity : ComponentActivity() {
                                     )
 
                                     NavigationBarItem(
-                                        selected = state.currentScreen == Screen.Campaigns,
-                                        onClick = { viewModel.setScreen(Screen.Campaigns) },
+                                        selected = state.currentScreen == Screen.Events || state.currentScreen is Screen.EventDetail,
+                                        onClick = { viewModel.setScreen(Screen.Events) },
                                         icon = {
                                             Icon(
                                                 imageVector = Icons.Default.Campaign,
                                                 contentDescription = "קמפיינים"
                                             )
                                         },
-                                        label = { Text("קמפיינים") }
+                                        label = { Text("אירועים") }
                                     )
 
                                     NavigationBarItem(
-                                        selected = state.currentScreen == Screen.History,
+                                        selected = state.currentScreen == Screen.History || (state.currentScreen as? Screen.CallDetail)?.returnTo == Screen.History,
                                         onClick = { viewModel.setScreen(Screen.History) },
                                         icon = {
                                             Icon(
@@ -140,6 +140,11 @@ class MainActivity : ComponentActivity() {
                                 onSubmitRsvpAndHangup = { viewModel.submitRsvpAndHangup() }
                             )
                         } else {
+                            val filterId = state.selectedEventFilter
+                            val filteredLive = if (filterId == null) state.liveCalls else state.liveCalls.filter { it.eventId == filterId }
+                            val filteredHistory = if (filterId == null) state.callHistory else state.callHistory.filter { it.eventId == filterId }
+                            val filteredRsvp = if (filterId == null) state.rsvpResults else state.rsvpResults.filter { it.eventId == filterId }
+                            val eventOptions = state.events.map { it.id to it.name }
                             when (state.currentScreen) {
                                 Screen.Dashboard -> {
                                     DashboardScreen(
@@ -157,6 +162,9 @@ class MainActivity : ComponentActivity() {
                                 }
                                 Screen.LiveCalls -> {
                                     LiveCallsScreen(
+                                        eventOptions = eventOptions,
+                                        selectedEventId = filterId,
+                                        onSelectEvent = { viewModel.setEventFilter(it) },
                                         liveTranscripts = state.liveTranscripts,
                                         onWhisper = { id, text -> viewModel.whisperToAi(id, text) },
                                         onMuteAi = { viewModel.muteAiOnce(it) },
@@ -176,9 +184,45 @@ class MainActivity : ComponentActivity() {
                                 }
                                 Screen.History -> {
                                     HistoryScreen(
-                                        onCallClick = { viewModel.selectCall(it) },
-                                        callHistory = state.callHistory,
-                                        rsvpResults = state.rsvpResults,
+                                        eventOptions = eventOptions,
+                                        selectedEventId = filterId,
+                                        onSelectEvent = { viewModel.setEventFilter(it) },
+                                        onCallClick = { viewModel.selectCall(it, Screen.History) },
+                                        callHistory = filteredHistory,
+                                        rsvpResults = filteredRsvp,
+                                        modifier = contentModifier
+                                    )
+                                }
+                                Screen.Events -> {
+                                    EventsScreen(
+                                        summaries = state.eventSummaries,
+                                        onEventClick = { viewModel.setScreen(Screen.EventDetail(it)) },
+                                        modifier = contentModifier
+                                    )
+                                }
+                                is Screen.EventDetail -> {
+                                    val evId = (state.currentScreen as Screen.EventDetail).eventId
+                                    val evLive = state.liveCalls.filter { it.eventId == evId }
+                                    val evTargets = state.campaigns.filter { it.eventId == evId }
+                                        .flatMap { viewModel.targetsFor(it.id) }
+                                    EventDetailScreen(
+                                        summary = state.eventSummaries.firstOrNull { it.event.id == evId },
+                                        liveCalls = evLive,
+                                        callHistory = state.callHistory.filter { it.eventId == evId },
+                                        rsvpResults = state.rsvpResults.filter { it.eventId == evId },
+                                        campaigns = state.campaigns.filter { it.eventId == evId },
+                                        targets = evTargets,
+                                        liveTranscripts = state.liveTranscripts,
+                                        canManageVoice = state.me?.canManageVoice ?: false,
+                                        onBack = { viewModel.setScreen(Screen.Events) },
+                                        onMonitor = { viewModel.monitorCall(it) },
+                                        onTakeover = { viewModel.takeoverCall(it) },
+                                        onWhisper = { id, text -> viewModel.whisperToAi(id, text) },
+                                        onMuteAi = { viewModel.muteAiOnce(it) },
+                                        onCloseAi = { viewModel.closeAiAgent(it) },
+                                        onToggleCampaign = { viewModel.toggleCampaign(it) },
+                                        onDialTarget = { phone, name -> viewModel.makeOutboundCall(phone, name) },
+                                        onCallClick = { viewModel.selectCall(it, Screen.EventDetail(evId)) },
                                         modifier = contentModifier
                                     )
                                 }
@@ -188,7 +232,7 @@ class MainActivity : ComponentActivity() {
                                         call = det.call,
                                         analysis = state.selectedAnalysis,
                                         loading = state.analysisLoading,
-                                        onBack = { viewModel.setScreen(Screen.History) },
+                                        onBack = { viewModel.setScreen(det.returnTo) },
                                         modifier = contentModifier
                                     )
                                 }

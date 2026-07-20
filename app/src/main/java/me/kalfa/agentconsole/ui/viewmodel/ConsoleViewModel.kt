@@ -18,17 +18,29 @@ sealed class Screen {
     object LiveCalls : Screen()
     object Campaigns : Screen()
     object History : Screen()
-    data class CallDetail(val call: Call) : Screen()
+    object Events : Screen()
+    data class EventDetail(val eventId: String) : Screen()
+    data class CallDetail(val call: Call, val returnTo: Screen = History) : Screen()
 }
 
 @Serializable
-private data class AgentRow(val user_id: String, val display_name: String? = null)
+private data class MeRow(
+    val user_id: String,
+    val display_name: String? = null,
+    val platform_role: String? = null,
+    val platform_rank: Int = 0,
+    val permissions: List<String> = emptyList()
+)
 
 data class ConsoleUiState(
     val currentScreen: Screen = Screen.Dashboard,
     val agentStatus: AgentStatus = AgentStatus.NOT_READY,
     val agentName: String = "נציג KALFA",
     val agentEmail: String = "",
+    val me: ConsoleMe? = null,
+    val events: List<ConsoleEvent> = emptyList(),
+    val eventSummaries: List<EventSummary> = emptyList(),
+    val selectedEventFilter: String? = null,
     val connectionError: String? = null,
     val selectedAnalysis: CallAnalysis? = null,
     val liveTranscripts: Map<String, List<TranscriptLine>> = emptyMap(),
@@ -159,7 +171,48 @@ class ConsoleViewModel : ViewModel() {
                 mgr.transcripts.collect { m -> _uiState.update { it.copy(liveTranscripts = m) } }
             }
         }
+        viewModelScope.launch { callRepo.events.collect { ev -> _uiState.update { it.copy(events = ev) }; recomputeSummaries() } }
+        viewModelScope.launch { callRepo.liveCalls.collect { recomputeSummaries() } }
+        viewModelScope.launch { rsvpRepo.rsvpResults.collect { recomputeSummaries() } }
+        viewModelScope.launch { campaignRepo.campaigns.collect { recomputeSummaries() } }
         loadIdentity()
+    }
+
+    private fun recomputeSummaries() {
+        val st = _uiState.value
+        val live = callEngineLive()
+        val summaries = st.events.map { ev ->
+            val camps = campaignRepo.campaigns.value.filter { it.eventId == ev.id }
+            val rsvps = rsvpRepo.rsvpResults.value.filter { it.eventId == ev.id }
+            EventSummary(
+                event = ev,
+                campaignState = when {
+                    camps.any { it.state == CampaignState.ACTIVE } -> CampaignState.ACTIVE
+                    camps.any { it.state == CampaignState.PAUSED } -> CampaignState.PAUSED
+                    camps.isNotEmpty() -> CampaignState.COMPLETED
+                    else -> null
+                },
+                targetsTotal = camps.sumOf { it.totalTargets },
+                targetsDone = camps.sumOf { it.completedTargets },
+                liveNow = live.count { it.eventId == ev.id },
+                attending = rsvps.count { it.answer == RsvpAnswer.ATTENDING },
+                declined = rsvps.count { it.answer == RsvpAnswer.DECLINED },
+                maybe = rsvps.count { it.answer == RsvpAnswer.MAYBE },
+                callback = rsvps.count { it.answer == RsvpAnswer.CALLBACK },
+                totalGuests = rsvps.filter { it.answer == RsvpAnswer.ATTENDING }.sumOf { it.guestsCount }
+            )
+        }.sortedWith(compareByDescending<EventSummary> { it.campaignState == CampaignState.ACTIVE }
+            .thenByDescending { it.event.date ?: "" })
+        _uiState.update { it.copy(eventSummaries = summaries) }
+    }
+
+    private fun callEngineLive() = callRepo.liveCalls.value
+
+    fun targetsFor(campaignId: String): List<CampaignTarget> =
+        campaignRepo.getTargets(campaignId).value
+
+    fun setEventFilter(eventId: String?) {
+        _uiState.update { it.copy(selectedEventFilter = eventId) }
     }
 
     private fun loadIdentity() {
@@ -167,22 +220,33 @@ class ConsoleViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 val user = client.auth.currentUserOrNull() ?: return@launch
-                val row = client.postgrest["console_agents"].select {
-                    filter { eq("user_id", user.id) }
-                }.decodeList<AgentRow>().firstOrNull()
+                val row = client.postgrest["console_me"].select()
+                    .decodeList<MeRow>().firstOrNull()
                 val metaName = user.userMetadata?.get("full_name")?.toString()?.trim('"')
+                val me = row?.let {
+                    ConsoleMe(
+                        displayName = it.display_name ?: metaName ?: user.email ?: "נציג",
+                        platformRole = it.platform_role ?: "",
+                        platformRank = it.platform_rank,
+                        permissions = it.permissions.toSet()
+                    )
+                }
                 _uiState.update {
                     it.copy(
-                        agentName = row?.display_name ?: metaName ?: user.email ?: "נציג",
-                        agentEmail = user.email ?: ""
+                        me = me,
+                        agentName = me?.displayName ?: metaName ?: user.email ?: "נציג",
+                        agentEmail = user.email ?: "",
+                        // Managers land on the events overview; agents on the ops dashboard
+                        currentScreen = if (me?.canManageVoice == true && it.currentScreen == Screen.Dashboard)
+                            Screen.Events else it.currentScreen
                     )
                 }
             } catch (e: Exception) { e.printStackTrace() }
         }
     }
 
-    fun selectCall(call: Call) {
-        _uiState.update { it.copy(currentScreen = Screen.CallDetail(call), selectedAnalysis = null, analysisLoading = true) }
+    fun selectCall(call: Call, returnTo: Screen = Screen.History) {
+        _uiState.update { it.copy(currentScreen = Screen.CallDetail(call, returnTo), selectedAnalysis = null, analysisLoading = true) }
         viewModelScope.launch {
             val analysis = callRepo.getCallAnalysis(call.id)
             _uiState.update { it.copy(selectedAnalysis = analysis, analysisLoading = false) }

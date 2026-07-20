@@ -38,6 +38,9 @@ import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LiveCallsScreen(
+    eventOptions: List<Pair<String, String>> = emptyList(),
+    selectedEventId: String? = null,
+    onSelectEvent: (String?) -> Unit = {},
     liveTranscripts: Map<String, List<TranscriptLine>> = emptyMap(),
     onWhisper: (String, String) -> Unit = { _, _ -> },
     onMuteAi: (String) -> Unit = {},
@@ -132,6 +135,7 @@ fun LiveCallsScreen(
                     }
                 }
             } else {
+                EventFilterChips(events = eventOptions, selectedEventId = selectedEventId, onSelect = onSelectEvent)
                 LazyColumn(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(16.dp),

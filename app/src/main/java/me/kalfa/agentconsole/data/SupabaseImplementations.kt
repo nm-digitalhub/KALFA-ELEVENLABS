@@ -85,7 +85,10 @@ data class DbConsoleTarget(
     val current_step_index: Int? = null,
     val next_run_at: String? = null,
     val reached_at: String? = null,
-    val stop_reason: String? = null
+    val reached_channel: String? = null,
+    val stop_reason: String? = null,
+    val guest_name: String? = null,
+    val phone: String? = null
 )
 
 @Serializable
@@ -106,7 +109,16 @@ data class DbConsoleEvent(
     val event_id: String,
     val event_name: String? = null,
     val event_type: String? = null,
-    val event_date: String? = null
+    val event_date: String? = null,
+    val has_campaign: Boolean = false
+)
+
+fun DbConsoleEvent.toDomain(): ConsoleEvent = ConsoleEvent(
+    id = event_id,
+    name = event_name ?: "אירוע",
+    type = event_type,
+    date = event_date,
+    hasCampaign = has_campaign
 )
 
 @Serializable
@@ -160,6 +172,7 @@ fun DbConsoleCall.toDomain(eventName: String? = null): Call {
     }
     return Call(
         id = call_attempt_id,
+        eventId = event_id ?: "",
         direction = direction,
         kind = callKind,
         voxSessionId = "vox-${call_attempt_id.take(8)}",
@@ -200,8 +213,8 @@ fun DbConsoleTarget.toDomain(): CampaignTarget = CampaignTarget(
     id = id,
     campaignId = campaign_id ?: "",
     guestId = contact_id ?: "",
-    guestName = "איש קשר",
-    phone = "", // PII not exposed in the console view
+    guestName = guest_name ?: "איש קשר",
+    phone = phone ?: "", // empty unless view_customer_data (DB-gated)
     attempts = current_step_index ?: 0,
     lastResult = stop_reason ?: status,
     callId = null
@@ -209,6 +222,7 @@ fun DbConsoleTarget.toDomain(): CampaignTarget = CampaignTarget(
 
 fun DbRsvpRow.toDomain(): RsvpResult = RsvpResult(
     id = id,
+    eventId = event_id ?: "",
     callId = "",
     guestId = guest_id ?: "",
     guestName = guest_name ?: "אורח",
@@ -226,6 +240,9 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
 
     private val _eventNames = MutableStateFlow<Map<String, String>>(emptyMap())
     override val eventNames: StateFlow<Map<String, String>> = _eventNames.asStateFlow()
+
+    private val _events = MutableStateFlow<List<ConsoleEvent>>(emptyList())
+    override val events: StateFlow<List<ConsoleEvent>> = _events.asStateFlow()
 
     private val _liveCalls = MutableStateFlow<List<Call>>(emptyList())
     override val liveCalls: StateFlow<List<Call>> = _liveCalls.asStateFlow()
@@ -257,6 +274,7 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
                     val evs = client.postgrest["console_events"].select()
                         .decodeList<DbConsoleEvent>()
                     _eventNames.value = evs.associate { it.event_id to (it.event_name ?: "") }
+                    _events.value = evs.map { it.toDomain() }
                 }
                 val names = _eventNames.value
                 val rows = client.postgrest["console_call_feed"].select()

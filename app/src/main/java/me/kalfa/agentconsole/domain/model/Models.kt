@@ -30,6 +30,7 @@ data class Call(
     val voxSessionId: String,
     val customerPhone: String,
     val customerName: String,
+    val eventId: String = "",
     val eventName: String,
     val handledBy: String, // "ai" | "agent"
     val agentId: String?,
@@ -83,7 +84,8 @@ data class RsvpResult(
     val guestName: String,
     val answer: RsvpAnswer,
     val guestsCount: Int,
-    val notes: String
+    val notes: String,
+    val eventId: String = ""
 )
 
 data class CallAnalysis(
@@ -105,4 +107,35 @@ data class TranscriptLine(
     val role: String,   // "user" | "agent"
     val text: String,
     val at: Long = 0L
+)
+
+data class ConsoleEvent(
+    val id: String,
+    val name: String,
+    val type: String?,
+    val date: String?,      // ISO
+    val hasCampaign: Boolean
+)
+
+data class ConsoleMe(
+    val displayName: String,
+    val platformRole: String,
+    val platformRank: Int,
+    val permissions: Set<String>
+) {
+    val canManageVoice get() = "manage_voice" in permissions
+    val canViewCustomerData get() = "view_customer_data" in permissions
+}
+
+data class EventSummary(
+    val event: ConsoleEvent,
+    val campaignState: CampaignState?,   // null = no campaign yet
+    val targetsTotal: Int,
+    val targetsDone: Int,
+    val liveNow: Int,
+    val attending: Int,
+    val declined: Int,
+    val maybe: Int,
+    val callback: Int,
+    val totalGuests: Int
 )

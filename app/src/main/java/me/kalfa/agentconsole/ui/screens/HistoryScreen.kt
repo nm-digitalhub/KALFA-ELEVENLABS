@@ -27,6 +27,9 @@ import me.kalfa.agentconsole.ui.theme.*
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HistoryScreen(
+    eventOptions: List<Pair<String, String>> = emptyList(),
+    selectedEventId: String? = null,
+    onSelectEvent: (String?) -> Unit = {},
     onCallClick: (Call) -> Unit = {},
     callHistory: List<Call>,
     rsvpResults: List<RsvpResult>,
@@ -102,6 +105,8 @@ fun HistoryScreen(
                     )
                 }
             }
+
+            EventFilterChips(events = eventOptions, selectedEventId = selectedEventId, onSelect = onSelectEvent)
 
             // Tab Content
             Box(modifier = Modifier.weight(1f)) {
