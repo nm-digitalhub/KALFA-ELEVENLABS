@@ -83,3 +83,17 @@ data class RsvpResult(
     val guestsCount: Int,
     val notes: String
 )
+
+data class CallAnalysis(
+    val callAttemptId: String,
+    val eventId: String?,
+    val callSuccessful: String?,   // "success" | "failure" | "unknown"
+    val score: Double?,
+    val durationSec: Int?,
+    val terminationReason: String?,
+    val rsvpStatus: String?,       // extracted: attending/declined/...
+    val adults: Int?,
+    val children: Int?,
+    val evalCriteria: Map<String, String> = emptyMap(), // rsvp_captured, dnc_honored...
+    val analysisAt: String?
+)

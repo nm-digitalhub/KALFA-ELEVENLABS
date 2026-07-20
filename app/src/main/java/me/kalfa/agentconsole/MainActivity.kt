@@ -23,6 +23,9 @@ import me.kalfa.agentconsole.ui.viewmodel.*
 class MainActivity : ComponentActivity() {
     private val viewModel: ConsoleViewModel by viewModels()
 
+    override fun onStart() { super.onStart(); me.kalfa.agentconsole.di.AppVisibility.isForeground.value = true }
+    override fun onStop() { super.onStop(); me.kalfa.agentconsole.di.AppVisibility.isForeground.value = false }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -94,6 +97,26 @@ class MainActivity : ComponentActivity() {
                     ) { innerPadding ->
                         val contentModifier = Modifier.padding(innerPadding)
 
+                        state.connectionError?.let { err ->
+                            Surface(
+                                color = MaterialTheme.colorScheme.errorContainer,
+                                modifier = Modifier.fillMaxWidth().padding(innerPadding)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(err, style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        modifier = Modifier.weight(1f))
+                                    TextButton(onClick = { viewModel.refreshAll(); viewModel.dismissError() }) {
+                                        Text("רענן")
+                                    }
+                                }
+                            }
+                        }
+
                         // If an active session is in progress, the full-screen InCallScreen overlays everything!
                         val session = state.currentSession
                         if (session != null) {
@@ -120,6 +143,9 @@ class MainActivity : ComponentActivity() {
                             when (state.currentScreen) {
                                 Screen.Dashboard -> {
                                     DashboardScreen(
+                                        agentName = state.agentName,
+                                        agentEmail = state.agentEmail,
+                                        onLogout = { viewModel.logout() },
                                         agentStatus = state.agentStatus,
                                         activeAiCalls = state.activeAiCallsCount,
                                         queueDepth = state.queueDepth,
@@ -146,8 +172,19 @@ class MainActivity : ComponentActivity() {
                                 }
                                 Screen.History -> {
                                     HistoryScreen(
+                                        onCallClick = { viewModel.selectCall(it) },
                                         callHistory = state.callHistory,
                                         rsvpResults = state.rsvpResults,
+                                        modifier = contentModifier
+                                    )
+                                }
+                                is Screen.CallDetail -> {
+                                    val det = state.currentScreen as Screen.CallDetail
+                                    CallDetailScreen(
+                                        call = det.call,
+                                        analysis = state.selectedAnalysis,
+                                        loading = state.analysisLoading,
+                                        onBack = { viewModel.setScreen(Screen.History) },
                                         modifier = contentModifier
                                     )
                                 }

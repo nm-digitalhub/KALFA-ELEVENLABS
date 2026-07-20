@@ -7,6 +7,10 @@ import me.kalfa.agentconsole.domain.model.RsvpResult
 import kotlinx.coroutines.flow.StateFlow
 
 interface CallRepository {
+    fun refresh() {}
+    suspend fun getCallAnalysis(callId: String): me.kalfa.agentconsole.domain.model.CallAnalysis? = null
+    val eventNames: kotlinx.coroutines.flow.StateFlow<Map<String, String>>
+        get() = kotlinx.coroutines.flow.MutableStateFlow(emptyMap())
     val liveCalls: StateFlow<List<Call>>
     val callHistory: StateFlow<List<Call>>
     
@@ -15,6 +19,7 @@ interface CallRepository {
 }
 
 interface CampaignRepository {
+    fun refresh() {}
     val campaigns: StateFlow<List<Campaign>>
     fun getTargets(campaignId: String): StateFlow<List<CampaignTarget>>
     fun toggleCampaign(campaignId: String)
@@ -22,6 +27,7 @@ interface CampaignRepository {
 }
 
 interface RsvpRepository {
+    fun refresh() {}
     val rsvpResults: StateFlow<List<RsvpResult>>
     fun saveRsvpResult(result: RsvpResult)
 }
