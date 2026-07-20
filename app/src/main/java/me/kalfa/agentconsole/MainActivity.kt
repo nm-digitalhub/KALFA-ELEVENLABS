@@ -9,12 +9,15 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteDefaults
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -23,7 +26,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.navigation.toRoute
 import me.kalfa.agentconsole.ui.*
 import me.kalfa.agentconsole.ui.screens.*
@@ -63,57 +65,57 @@ class MainActivity : ComponentActivity() {
                             navController = navController,
                             showNavigation = state.currentSession == null
                         ) {
-                        Scaffold(
-                            modifier = Modifier.fillMaxSize()
-                        ) { innerPadding ->
-                            val contentModifier = Modifier.padding(innerPadding)
+                            Scaffold(
+                                modifier = Modifier.fillMaxSize()
+                            ) { innerPadding ->
+                                val contentModifier = Modifier.padding(innerPadding)
 
-                            state.connectionError?.let { err ->
-                                Surface(
-                                    color = MaterialTheme.colorScheme.errorContainer,
-                                    modifier = Modifier.fillMaxWidth().padding(innerPadding)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
+                                state.connectionError?.let { err ->
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.errorContainer,
+                                        modifier = Modifier.fillMaxWidth().padding(innerPadding)
                                     ) {
-                                        Text(err, style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onErrorContainer,
-                                            modifier = Modifier.weight(1f))
-                                        TextButton(onClick = { viewModel.refreshAll(); viewModel.dismissError() }) {
-                                            Text("רענן")
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(err, style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                                modifier = Modifier.weight(1f))
+                                            TextButton(onClick = { viewModel.refreshAll(); viewModel.dismissError() }) {
+                                                Text("רענן")
+                                            }
                                         }
                                     }
                                 }
-                            }
 
-                            // Full-screen InCall overlay while a session is active
-                            val session = state.currentSession
-                            if (session != null) {
-                                InCallScreen(
-                                    customerName = session.customerName,
-                                    customerPhone = session.customerPhone,
-                                    state = state.currentSessionState,
-                                    isMuted = state.currentSessionMuted,
-                                    isHeld = state.currentSessionHeld,
-                                    durationSec = state.currentSessionDuration,
-                                    notes = state.inCallNotes,
-                                    rsvpAnswer = state.inCallRsvpAnswer,
-                                    guestsCount = state.inCallGuestsCount,
-                                    onNotesChange = { viewModel.updateInCallNotes(it) },
-                                    onRsvpAnswerChange = { viewModel.updateInCallRsvpAnswer(it) },
-                                    onGuestsCountChange = { viewModel.updateInCallGuestsCount(it) },
-                                    onMuteToggle = { viewModel.toggleMute() },
-                                    onHoldToggle = { viewModel.toggleHold() },
-                                    onSendDtmf = { viewModel.sendDtmf(it) },
-                                    onHangup = { viewModel.hangupDirectly() },
-                                    onSubmitRsvpAndHangup = { viewModel.submitRsvpAndHangup() }
-                                )
-                            } else {
-                                ConsoleNavHost(navController, state, viewModel, contentModifier)
+                                // Full-screen InCall overlay while a session is active
+                                val session = state.currentSession
+                                if (session != null) {
+                                    InCallScreen(
+                                        customerName = session.customerName,
+                                        customerPhone = session.customerPhone,
+                                        state = state.currentSessionState,
+                                        isMuted = state.currentSessionMuted,
+                                        isHeld = state.currentSessionHeld,
+                                        durationSec = state.currentSessionDuration,
+                                        notes = state.inCallNotes,
+                                        rsvpAnswer = state.inCallRsvpAnswer,
+                                        guestsCount = state.inCallGuestsCount,
+                                        onNotesChange = { viewModel.updateInCallNotes(it) },
+                                        onRsvpAnswerChange = { viewModel.updateInCallRsvpAnswer(it) },
+                                        onGuestsCountChange = { viewModel.updateInCallGuestsCount(it) },
+                                        onMuteToggle = { viewModel.toggleMute() },
+                                        onHoldToggle = { viewModel.toggleHold() },
+                                        onSendDtmf = { viewModel.sendDtmf(it) },
+                                        onHangup = { viewModel.hangupDirectly() },
+                                        onSubmitRsvpAndHangup = { viewModel.submitRsvpAndHangup() }
+                                    )
+                                } else {
+                                    ConsoleNavHost(navController, state, viewModel, contentModifier)
+                                }
                             }
-                        }
                         }
                     }
                 }
@@ -135,6 +137,33 @@ private fun AdaptiveConsoleScaffold(
 
     val backStack by navController.currentBackStackEntryAsState()
     val dest = backStack?.destination
+    val colorScheme = MaterialTheme.colorScheme
+
+    val navigationColors = NavigationSuiteDefaults.colors(
+        navigationBarContainerColor = colorScheme.surface,
+        navigationBarContentColor = colorScheme.onSurfaceVariant,
+        navigationRailContainerColor = colorScheme.surface,
+        navigationRailContentColor = colorScheme.onSurfaceVariant,
+        navigationDrawerContainerColor = colorScheme.surface,
+        navigationDrawerContentColor = colorScheme.onSurfaceVariant
+    )
+
+    val itemColors = NavigationSuiteDefaults.itemColors(
+        navigationBarItemColors = NavigationBarItemDefaults.colors(
+            selectedIconColor = colorScheme.primary,
+            selectedTextColor = colorScheme.primary,
+            indicatorColor = colorScheme.primaryContainer,
+            unselectedIconColor = colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+            unselectedTextColor = colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+        ),
+        navigationRailItemColors = NavigationRailItemDefaults.colors(
+            selectedIconColor = colorScheme.primary,
+            selectedTextColor = colorScheme.primary,
+            indicatorColor = colorScheme.primaryContainer,
+            unselectedIconColor = colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+            unselectedTextColor = colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+        )
+    )
 
     fun navigateTop(route: Any) {
         navController.navigate(route) {
@@ -145,6 +174,7 @@ private fun AdaptiveConsoleScaffold(
     }
 
     NavigationSuiteScaffold(
+        navigationSuiteColors = navigationColors,
         navigationSuiteItems = {
             consoleDestinations.forEach { d: ConsoleDestination ->
                 val selected = dest?.hierarchy?.any { h ->
@@ -153,13 +183,22 @@ private fun AdaptiveConsoleScaffold(
                 item(
                     selected = selected,
                     onClick = { navigateTop(d.route) },
+                    alwaysShowLabel = false,
+                    colors = itemColors,
                     icon = {
                         Icon(
                             imageVector = if (selected) d.selectedIcon else d.unselectedIcon,
-                            contentDescription = d.label
+                            contentDescription = d.label,
+                            modifier = Modifier.size(if (selected) 25.dp else 22.dp)
                         )
                     },
-                    label = { Text(d.label) }
+                    label = {
+                        Text(
+                            text = d.label,
+                            fontSize = 11.sp,
+                            maxLines = 1
+                        )
+                    }
                 )
             }
         }
@@ -267,7 +306,7 @@ private fun ConsoleNavHost(
             val route = entry.toRoute<CallDetailRoute>()
             val call = (state.callHistory + state.liveCalls).firstOrNull { it.id == route.callId }
             if (call == null) {
-                // Call vanished from state (e.g. process death restore) — go back gracefully
+                // Call vanished from state (e.g. process death restore) - go back gracefully
                 LaunchedEffect(route.callId) { navController.popBackStack() }
             } else {
                 CallDetailScreen(
