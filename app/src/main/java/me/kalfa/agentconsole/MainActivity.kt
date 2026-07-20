@@ -23,7 +23,10 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
+import androidx.window.core.layout.WindowSizeClass
 import androidx.navigation.toRoute
 import me.kalfa.agentconsole.ui.*
 import me.kalfa.agentconsole.ui.screens.*
@@ -136,6 +139,24 @@ private fun AdaptiveConsoleScaffold(
     val backStack by navController.currentBackStackEntryAsState()
     val dest = backStack?.destination
 
+    // Real adaptive tiers (M3 window size classes, verified against window-core v2):
+    // compact height (phone, incl. landscape) -> bottom bar
+    // width >= 1200dp (desktop/DeX/large tablet) -> permanent navigation drawer
+    // width >= 600dp (tablet/foldable/split)     -> navigation rail
+    val adaptiveInfo = currentWindowAdaptiveInfo()
+    val suiteType = with(adaptiveInfo) {
+        when {
+            windowPosture.isTabletop ||
+                !windowSizeClass.isHeightAtLeastBreakpoint(WindowSizeClass.HEIGHT_DP_MEDIUM_LOWER_BOUND) ->
+                NavigationSuiteType.NavigationBar
+            windowSizeClass.isWidthAtLeastBreakpoint(1200) -> // WIDTH_DP_LARGE_LOWER_BOUND
+                NavigationSuiteType.NavigationDrawer
+            windowSizeClass.isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND) ->
+                NavigationSuiteType.NavigationRail
+            else -> NavigationSuiteType.NavigationBar
+        }
+    }
+
     fun navigateTop(route: Any) {
         navController.navigate(route) {
             popUpTo(navController.graph.findStartDestination().id) { saveState = true }
@@ -145,6 +166,7 @@ private fun AdaptiveConsoleScaffold(
     }
 
     NavigationSuiteScaffold(
+        layoutType = suiteType,
         navigationSuiteItems = {
             consoleDestinations.forEach { d: ConsoleDestination ->
                 val selected = dest?.hierarchy?.any { h ->
