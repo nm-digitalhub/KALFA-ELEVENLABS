@@ -92,10 +92,20 @@ Base `https://beta.kalfa.me`, header `Authorization: Bearer <jwt>`. **None of th
 - `POST /api/agents/status` `{"status":"ready|not_ready|dnd"}`
 - `POST /api/calls/outbound` `{"phone":"+9725XXXXXXXX","event_id":"uuid"}` → `{"call_id":"uuid"}`
 - `POST /api/calls/{id}/monitor` `{"mode":"monitor|takeover"}`
-- `POST /api/calls/{id}/agent-command` `{"command":"contextual_update|user_message|clear_buffer|close_agent", ...payload}` — management commands to the ElevenLabs `AgentsClient` of a live AI call. Returns 409 when the call is no longer active.
+- `POST /api/calls/{id}/agent-command` — signalling to the ElevenLabs `AgentsClient` of a live AI call. **FLAT body, not nested under `payload`** — this is the shape the app already sends and the server schema now matches it exactly:
+  - `{"command":"contextual_update","text":"…"}` → `agent.contextualUpdate` — non-interrupting whisper
+  - `{"command":"user_message","text":"…"}` → `agent.userMessage` — injects a user turn; **interrupts**
+  - `{"command":"clear_buffer"}` → `agent.clearMediaBuffer` — one-shot barge-in
+  - `{"command":"close_agent"}` → `agent.close` — closes the AI leg, the call stays up
+  - `text` is trimmed, non-empty, max 1000. Every command is a strict object — an extra field is a 400, not an ignored key. Returns 409 when the call is no longer live.
+- `POST /api/calls/{id}/end` `{}` — ends the **whole call**. Deliberately NOT an agent-command: the four above act on the AI leg, this one hangs up on the guest, and putting them in one enum makes a mis-tap end a live conversation. Not yet called by the app.
 - `POST /api/campaigns/{id}/start` / `POST /api/campaigns/{id}/pause` `{}`
 
-**Contract drift to close in this phase:** `agent-command` was being called from `SupabaseImplementations.kt` while absent from this list — it is now documented above. Conversely `campaigns/{id}/start|pause` is listed here but `SupabaseCampaignRepository.toggleCampaign` is still an empty no-op. One of the two must move: either wire it, or delete the route from this contract.
+**Contract drift, and how it was caught (2026-07-21).** `agent-command` was being called from `SupabaseImplementations.kt` while absent from this list. Worse, the two sides had independently invented different shapes for it: the server accepted `agent_context_update` with a nested `payload`, the app sends `contextual_update` flat. Against `strictObject` that is a 400 on *every* command — and since that POST is one of the few whose status the app actually checks, the agent would have seen "פקודת AI נכשלה (400)" on every press. It was caught by diffing the wire formats, not by either side re-reading its own docs.
+
+Resolved in the app's favour: the names above are the deployed app's, `user_message` was kept because `AgentsClient.userMessage()` genuinely exists, and `call_end` moved to its own `/end` route. **The server schema (`src/lib/validation/agent-console.ts` in `kalfa.me/beta`) and this section are now byte-identical in meaning — change them together or not at all.**
+
+Still open: `campaigns/{id}/start|pause` is listed here but `SupabaseCampaignRepository.toggleCampaign` is an empty no-op. One of the two must move — wire it, or delete the route from this contract.
 
 ## Domain facts (fixed — do not redesign)
 
