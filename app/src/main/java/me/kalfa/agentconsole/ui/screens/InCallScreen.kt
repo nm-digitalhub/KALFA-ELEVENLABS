@@ -1,4 +1,4 @@
-package com.example.ui.screens
+package me.kalfa.agentconsole.ui.screens
 
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
@@ -28,9 +28,9 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.domain.model.CallState
-import com.example.domain.model.RsvpAnswer
-import com.example.ui.theme.*
+import me.kalfa.agentconsole.domain.model.CallState
+import me.kalfa.agentconsole.domain.model.RsvpAnswer
+import me.kalfa.agentconsole.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

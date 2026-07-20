@@ -6,12 +6,14 @@ Call-center agent app for kalfa.me (Hebrew RSVP SaaS): agents supervise AI voice
 
 1. **Hebrew-first RTL.** All user-facing strings in Hebrew. `LayoutDirection.Rtl` everywhere; paddings/margins use `start`/`end` only — never `left`/`right`. Phone numbers, digits, times, and dates render LTR inside RTL text.
 2. **Design system: Bento Grid.** Keep the established Bento Grid layout language — rounded cards on a clean canvas, flat design, no gradients. Brand: primary `#6C4CF1`, secondary `#6366F1`.
-3. **Supabase is the ONLY backend.** supabase-kt (auth-kt, postgrest-kt, realtime-kt) version 3.x with Ktor 3.x. Package is `io.github.jan.supabase.auth` (not gotrue). No Firebase Auth / Firestore / any Firebase dependency — the single exception is `firebase-messaging` (FCM push only). Secrets never in code: `SUPABASE_URL` / `SUPABASE_ANON_KEY` via BuildConfig from `local.properties`.
+3. **Supabase is the ONLY backend.** supabase-kt (auth-kt, postgrest-kt, realtime-kt) version 3.x with Ktor 3.x. Package is `io.github.jan.supabase.auth` (not gotrue). No Firebase Auth / Firestore / any Firebase dependency — the single exception is `firebase-messaging` (FCM push only). Secrets never in code: `SUPABASE_URL` / `SUPABASE_ANON_KEY` reach BuildConfig via the secrets-gradle-plugin from the git-ignored `.env` file (see `.env.example`).
 4. **Telephony stays behind clean interfaces:** `CallEngine`, `CallSession`, `AgentPresence` — fake/mock implementations only. Do NOT implement WebRTC or audio logic, do NOT add the Voximplant dependency, do NOT rename or remove these interfaces. The real implementation uses **`com.voximplant:voximplant-sdk:2.45.0`** (v2 production GA, do not use v3 which remains Beta) and is added later outside this tool behind the same interfaces via a single Hilt binding swap.
-5. **Architecture:** Kotlin + Jetpack Compose (Material 3), single-activity, Hilt DI, sealed classes for call/campaign state, one immutable `UiState` per ViewModel exposed as `StateFlow`. Every screen has a `@Preview` with fake data.
+5. **Architecture:** Kotlin + Jetpack Compose (Material 3), single-activity, manual DI via `di/DependencyContainer` (Hilt deliberately deferred to the Voximplant phase, where the fake→real CallEngine swap justifies it), sealed classes for call/campaign state, one immutable `UiState` per ViewModel exposed as `StateFlow`. Every screen has a `@Preview` with fake data.
 6. **Allowed libraries only:** Compose BOM, Hilt, supabase-kt, Ktor client (okhttp engine), kotlinx-serialization, Coil, firebase-messaging. Anything else — ask first.
-7. **No external knowledge access.** You cannot reach git repos or URLs. Everything needed is in this file and `SPEC-kalfa-agent-android.md`. Missing info → ask, never invent.
-8. **Functional code only.** No documentation files, READMEs, or comments-as-docs unless explicitly requested.
+7. **Source of truth.** Everything needed is in this file; if your environment cannot reach docs/repos, ask — never invent. Verify version claims against Maven Central when you can.
+8. **Identity:** base package and applicationId are `me.kalfa.agentconsole` — never `com.example` or AI-Studio-generated ids (Google Play rejects them).
+9. **KSP versioning:** KSP now uses standalone versions (2.3.x line, decoupled from Kotlin). Do not force the legacy `<kotlin>-<ksp>` format.
+10. **Functional code only.** No documentation files, READMEs, or comments-as-docs unless explicitly requested.
 
 ## Telephony & Integration Integration Specs (For Real Implementation Swapping)
 
@@ -33,16 +35,20 @@ Call-center agent app for kalfa.me (Hebrew RSVP SaaS): agents supervise AI voice
 ### 5. SmartQueue (ACD v2)
 - Live queues and agent states (Ready, DND, etc.) utilize **`require(Modules.SmartQueue)`**, which supersedes the legacy ACD v1 module.
 
-## Data model (Supabase tables, consumed via Realtime — names are fixed)
+## Data model (REAL production schema — kalfa-event-magic project; names are fixed)
 
-- `agents(id, display_name, vox_username, skill[])`
-- `agent_status(agent_id, status: ready|not_ready|dnd|in_call, updated_at)`
-- `calls(id, direction, kind: inbound|outbound|ai_rsvp, customer_phone, handled_by: ai|agent, agent_id, state, started_at, answered_at, ended_at, duration_sec, recording_url)`
-- `call_events(call_id, type, payload, at)`
-- `campaigns(id, name, event_id, state)` / `campaign_targets(campaign_id, guest_id, phone, attempts, last_result)`
-- `rsvp_results(call_id, guest_id, answer: attending|declined|maybe|callback, guests_count, notes)`
+Realtime tables (postgresChangeFlow; always start collecting BEFORE channel.subscribe()):
+- `agent_status(agent_id, status: ready|not_ready|dnd|in_call, updated_at)` — agent updates own row only
+- `console_call_feed(call_attempt_id, event_id, campaign_id, direction, kind, status, handled_by: ai|agent, agent_id, rsvp_digit, finish_reason, call_duration_sec, callback_iso, created_at, updated_at)` — trigger-fed from `call_attempts`, deliberately PII-free (no phone/transcript/recording). Live `status` values: `in_progress|completed|no_answer|cancelled|no_response`.
 
-When Supabase credentials are placeholders, Hilt binds the in-memory mock repositories behind the same interfaces; the UI never knows the difference.
+Read-only VIEWS (fetch/poll only — Supabase Realtime does not fire on views):
+- `console_campaigns(id, event_id, status: approved|closed, enabled, start_at, close_at, max_contacts)` — billing columns intentionally hidden
+- `console_rsvp_results(id, event_id, guest_id, guest_name, attending: boolean, adults, kids, note, created_at)` — note `attending` is a BOOLEAN, not an enum
+- `console_campaign_targets(id, event_id, campaign_id, contact_id, status, current_step_index, next_run_at, reached_at, stop_reason)`
+
+Write ownership (hard rule): the console READS. RSVP outcomes are written by the ElevenLabs client-tools pipeline; campaign state is billing-coupled and changed only via the beta.kalfa.me API; `outreach_state` belongs to the orchestrator. The only direct writes allowed: own `agent_status` row, and `handled_by`/`agent_id` on `console_call_feed` at takeover.
+
+Gate: all console access requires membership in `console_agents` (enforced by RLS/`is_console_agent()`).
 
 ## API contract (the ONLY external HTTP calls; JWT = Supabase session token)
 

@@ -1,10 +1,10 @@
-package com.example.ui.viewmodel
+package me.kalfa.agentconsole.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.di.DependencyContainer
-import com.example.domain.model.*
-import com.example.domain.telephony.*
+import me.kalfa.agentconsole.di.DependencyContainer
+import me.kalfa.agentconsole.domain.model.*
+import me.kalfa.agentconsole.domain.telephony.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.util.UUID

@@ -1,4 +1,4 @@
-package com.example.ui.theme
+package me.kalfa.agentconsole.ui.theme
 
 import androidx.compose.ui.graphics.Color
 

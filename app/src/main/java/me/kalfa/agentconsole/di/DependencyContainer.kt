@@ -1,10 +1,10 @@
-package com.example.di
+package me.kalfa.agentconsole.di
 
-import com.example.BuildConfig
-import com.example.data.*
-import com.example.data.mock.*
-import com.example.domain.repository.*
-import com.example.domain.telephony.*
+import me.kalfa.agentconsole.BuildConfig
+import me.kalfa.agentconsole.data.*
+import me.kalfa.agentconsole.data.mock.*
+import me.kalfa.agentconsole.domain.repository.*
+import me.kalfa.agentconsole.domain.telephony.*
 import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.realtime.Realtime

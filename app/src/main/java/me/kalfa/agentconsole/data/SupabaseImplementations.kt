@@ -1,13 +1,13 @@
-package com.example.data
+package me.kalfa.agentconsole.data
 
-import com.example.domain.model.*
-import com.example.domain.repository.CallRepository
-import com.example.domain.repository.CampaignRepository
-import com.example.domain.repository.RsvpRepository
-import com.example.domain.telephony.AgentPresence
-import com.example.domain.telephony.CallEngine
-import com.example.domain.telephony.CallSession
-import com.example.data.mock.MockCallSession
+import me.kalfa.agentconsole.domain.model.*
+import me.kalfa.agentconsole.domain.repository.CallRepository
+import me.kalfa.agentconsole.domain.repository.CampaignRepository
+import me.kalfa.agentconsole.domain.repository.RsvpRepository
+import me.kalfa.agentconsole.domain.telephony.AgentPresence
+import me.kalfa.agentconsole.domain.telephony.CallEngine
+import me.kalfa.agentconsole.domain.telephony.CallSession
+import me.kalfa.agentconsole.data.mock.MockCallSession
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.postgrest
@@ -24,6 +24,14 @@ import kotlinx.coroutines.flow.*
 import kotlinx.serialization.Serializable
 import java.util.UUID
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DTOs — wired to the REAL production console schema (kalfa-event-magic):
+//   Realtime tables : agent_status, console_call_feed (trigger-fed from call_attempts, no PII)
+//   Read-only views : console_campaigns, console_rsvp_results, console_campaign_targets
+// Writes to campaigns/targets/rsvp go through beta.kalfa.me API routes or the
+// ElevenLabs client-tools pipeline — NEVER directly from this app.
+// ─────────────────────────────────────────────────────────────────────────────
+
 @Serializable
 data class DbAgentStatus(
     val agent_id: String,
@@ -32,132 +40,145 @@ data class DbAgentStatus(
 )
 
 @Serializable
-data class DbCall(
-    val id: String,
-    val direction: String,
-    val kind: String,
-    val customer_phone: String,
-    val handled_by: String,
+data class DbConsoleCall(
+    val call_attempt_id: String,
+    val event_id: String? = null,
+    val campaign_id: String? = null,
+    val direction: String = "outbound",
+    val kind: String = "ai_rsvp",
+    val status: String? = null,
+    val handled_by: String = "ai",
     val agent_id: String? = null,
-    val state: String,
-    val started_at: String,
-    val answered_at: String? = null,
-    val ended_at: String? = null,
-    val duration_sec: Int = 0,
-    val recording_url: String? = null
+    val rsvp_digit: String? = null,
+    val finish_reason: String? = null,
+    val call_duration_sec: Int? = null,
+    val callback_iso: String? = null,
+    val created_at: String? = null,
+    val updated_at: String? = null
 )
 
 @Serializable
-data class DbCampaign(
+data class DbConsoleCampaign(
     val id: String,
-    val name: String,
-    val event_id: String,
-    val state: String
+    val event_id: String? = null,
+    val status: String? = null,
+    val enabled: Boolean = false,
+    val start_at: String? = null,
+    val close_at: String? = null,
+    val max_contacts: Int? = null
 )
 
 @Serializable
-data class DbCampaignTarget(
+data class DbConsoleTarget(
     val id: String,
-    val campaign_id: String,
-    val guest_id: String,
-    val phone: String,
-    val attempts: Int,
-    val last_result: String? = null
+    val event_id: String? = null,
+    val campaign_id: String? = null,
+    val contact_id: String? = null,
+    val status: String? = null,
+    val current_step_index: Int? = null,
+    val next_run_at: String? = null,
+    val reached_at: String? = null,
+    val stop_reason: String? = null
 )
 
 @Serializable
-data class DbRsvpResult(
-    val call_id: String,
-    val guest_id: String,
-    val answer: String,
-    val guests_count: Int,
-    val notes: String
+data class DbRsvpRow(
+    val id: String,
+    val event_id: String? = null,
+    val guest_id: String? = null,
+    val guest_name: String? = null,
+    val attending: Boolean? = null,
+    val adults: Int? = null,
+    val kids: Int? = null,
+    val note: String? = null,
+    val created_at: String? = null
 )
 
-fun DbCall.toDomain(): Call {
+// Live production statuses on call_attempts (verified 20.07.2026):
+// in_progress | completed | no_answer | cancelled | no_response
+private val TERMINAL_CALL_STATUSES =
+    setOf("completed", "no_answer", "cancelled", "no_response", "failed", "voicemail")
+
+fun DbConsoleCall.toDomain(): Call {
     val callKind = when (kind.lowercase()) {
         "inbound" -> CallKind.INBOUND
         "outbound" -> CallKind.OUTBOUND
         else -> CallKind.AI_RSVP
     }
-    val callState = when (state.lowercase()) {
-        "ringing" -> CallState.RINGING
-        "active" -> CallState.ACTIVE
-        "monitored" -> CallState.MONITORED
-        "taken_over" -> CallState.TAKEN_OVER
-        else -> CallState.DISCONNECTED
+    val st = status?.lowercase().orEmpty()
+    val callState = when {
+        st in TERMINAL_CALL_STATUSES -> CallState.DISCONNECTED
+        handled_by == "agent" -> CallState.TAKEN_OVER
+        st == "in_progress" -> CallState.ACTIVE
+        st.isEmpty() || st == "created" || st == "queued" || st == "ringing" -> CallState.RINGING
+        else -> CallState.ACTIVE
     }
     return Call(
-        id = id,
+        id = call_attempt_id,
         direction = direction,
         kind = callKind,
-        voxSessionId = "vox-${id.take(8)}",
-        customerPhone = customer_phone,
-        customerName = "אורח $id",
-        eventName = "אירוע",
+        voxSessionId = "vox-${call_attempt_id.take(8)}",
+        customerPhone = "", // PII stays server-side by design; feed carries no phone
+        customerName = "אורח",
+        eventName = event_id?.let { "אירוע ${it.take(8)}" } ?: "אירוע",
         handledBy = handled_by,
         agentId = agent_id,
         state = callState,
-        startedAt = started_at,
-        answeredAt = answered_at,
-        endedAt = ended_at,
-        durationSec = duration_sec,
-        recordingUrl = recording_url,
+        startedAt = created_at ?: "",
+        answeredAt = null,
+        endedAt = if (callState == CallState.DISCONNECTED) updated_at else null,
+        durationSec = call_duration_sec ?: 0,
+        recordingUrl = null, // recordings are service-role only; exposed later via API
         transcript = emptyList()
     )
 }
 
-fun DbCampaign.toDomain(): Campaign {
-    val campState = when (state.lowercase()) {
-        "active" -> CampaignState.ACTIVE
-        "completed" -> CampaignState.COMPLETED
+fun DbConsoleCampaign.toDomain(total: Int, done: Int): Campaign {
+    val campState = when {
+        status?.lowercase() == "closed" -> CampaignState.COMPLETED
+        !enabled -> CampaignState.PAUSED
+        status?.lowercase() == "approved" -> CampaignState.ACTIVE
         else -> CampaignState.PAUSED
     }
     return Campaign(
         id = id,
-        name = name,
-        eventId = event_id,
-        eventName = "אירוע $event_id",
+        name = "קמפיין ${id.take(8)}",
+        eventId = event_id ?: "",
+        eventName = event_id?.let { "אירוע ${it.take(8)}" } ?: "",
         state = campState,
-        totalTargets = 100,
-        completedTargets = 45
+        totalTargets = total,
+        completedTargets = done
     )
 }
 
-fun DbCampaignTarget.toDomain(): CampaignTarget {
-    return CampaignTarget(
-        id = id,
-        campaignId = campaign_id,
-        guestId = guest_id,
-        guestName = "אורח $guest_id",
-        phone = phone,
-        attempts = attempts,
-        lastResult = last_result,
-        callId = null
-    )
-}
+fun DbConsoleTarget.toDomain(): CampaignTarget = CampaignTarget(
+    id = id,
+    campaignId = campaign_id ?: "",
+    guestId = contact_id ?: "",
+    guestName = "איש קשר",
+    phone = "", // PII not exposed in the console view
+    attempts = current_step_index ?: 0,
+    lastResult = stop_reason ?: status,
+    callId = null
+)
 
-fun DbRsvpResult.toDomain(): RsvpResult {
-    val ans = when (answer.lowercase()) {
-        "attending" -> RsvpAnswer.ATTENDING
-        "declined" -> RsvpAnswer.DECLINED
-        "maybe" -> RsvpAnswer.MAYBE
-        else -> RsvpAnswer.CALLBACK
-    }
-    return RsvpResult(
-        id = "rsvp-$call_id",
-        callId = call_id,
-        guestId = guest_id,
-        guestName = "אורח $guest_id",
-        answer = ans,
-        guestsCount = guests_count,
-        notes = notes
-    )
-}
+fun DbRsvpRow.toDomain(): RsvpResult = RsvpResult(
+    id = id,
+    callId = "",
+    guestId = guest_id ?: "",
+    guestName = guest_name ?: "אורח",
+    answer = when (attending) {
+        true -> RsvpAnswer.ATTENDING
+        false -> RsvpAnswer.DECLINED
+        null -> RsvpAnswer.CALLBACK
+    },
+    guestsCount = (adults ?: 0) + (kids ?: 0),
+    notes = note ?: ""
+)
 
 class SupabaseCallRepository(private val client: SupabaseClient) : CallRepository {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    
+
     private val _liveCalls = MutableStateFlow<List<Call>>(emptyList())
     override val liveCalls: StateFlow<List<Call>> = _liveCalls.asStateFlow()
 
@@ -166,20 +187,14 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
 
     init {
         fetchCalls()
-        
         scope.launch {
             try {
-                val channel = client.realtime.channel("calls_channel")
+                val channel = client.realtime.channel("db-console-call-feed")
                 val changeFlow = channel.postgresChangeFlow<PostgresAction>(schema = "public") {
-                    table = "calls"
+                    table = "console_call_feed"
                 }
-                
-                launch {
-                    changeFlow.collect {
-                        fetchCalls()
-                    }
-                }
-                
+                // CRITICAL: collect BEFORE subscribe(), or events are lost.
+                launch { changeFlow.collect { fetchCalls() } }
                 channel.subscribe()
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -190,10 +205,12 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
     private fun fetchCalls() {
         scope.launch {
             try {
-                val dbCalls = client.postgrest["calls"].select().decodeList<DbCall>()
-                val domainCalls = dbCalls.map { it.toDomain() }
-                _liveCalls.value = domainCalls.filter { it.state != CallState.DISCONNECTED }
-                _callHistory.value = domainCalls.filter { it.state == CallState.DISCONNECTED }
+                val rows = client.postgrest["console_call_feed"].select()
+                    .decodeList<DbConsoleCall>()
+                val calls = rows.map { it.toDomain() }
+                    .sortedByDescending { it.startedAt }
+                _liveCalls.value = calls.filter { it.state != CallState.DISCONNECTED }
+                _callHistory.value = calls.filter { it.state == CallState.DISCONNECTED }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -201,16 +218,15 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
     }
 
     override fun updateCall(call: Call) {
+        // Agents may only flag takeover ownership on the feed row; everything else
+        // is trigger-synced from call_attempts by the backend.
         scope.launch {
             try {
-                client.postgrest["calls"].update({
-                    set("state", call.state.name.lowercase())
-                    set("duration_sec", call.durationSec)
-                    set("ended_at", call.endedAt)
+                client.postgrest["console_call_feed"].update({
+                    set("handled_by", call.handledBy)
+                    set("agent_id", call.agentId)
                 }) {
-                    filter {
-                        eq("id", call.id)
-                    }
+                    filter { eq("call_attempt_id", call.id) }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -219,57 +235,26 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
     }
 
     override fun addCall(call: Call) {
-        scope.launch {
-            try {
-                val dbCall = DbCall(
-                    id = call.id,
-                    direction = call.direction,
-                    kind = call.kind.name.lowercase(),
-                    customer_phone = call.customerPhone,
-                    handled_by = call.handledBy,
-                    agent_id = call.agentId,
-                    state = call.state.name.lowercase(),
-                    started_at = call.startedAt,
-                    answered_at = call.answeredAt,
-                    ended_at = call.endedAt,
-                    duration_sec = call.durationSec,
-                    recording_url = call.recordingUrl
-                )
-                client.postgrest["calls"].insert(dbCall)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        // No-op by design: rows are created by the call_attempts trigger.
+        // Outbound calls are started via POST beta.kalfa.me/api/calls/outbound.
     }
 }
 
 class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignRepository {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    
+
     private val _campaigns = MutableStateFlow<List<Campaign>>(emptyList())
     override val campaigns: StateFlow<List<Campaign>> = _campaigns.asStateFlow()
 
     private val targetsMap = mutableMapOf<String, MutableStateFlow<List<CampaignTarget>>>()
 
     init {
-        fetchCampaigns()
-        
+        // console_campaigns / console_campaign_targets are VIEWS — Supabase Realtime
+        // does not emit postgres_changes for views, so refresh on a light poll.
         scope.launch {
-            try {
-                val channel = client.realtime.channel("campaigns_channel")
-                val changeFlow = channel.postgresChangeFlow<PostgresAction>(schema = "public") {
-                    table = "campaigns"
-                }
-                
-                launch {
-                    changeFlow.collect {
-                        fetchCampaigns()
-                    }
-                }
-                
-                channel.subscribe()
-            } catch (e: Exception) {
-                e.printStackTrace()
+            while (isActive) {
+                fetchCampaigns()
+                delay(60_000)
             }
         }
     }
@@ -277,8 +262,18 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
     private fun fetchCampaigns() {
         scope.launch {
             try {
-                val dbCamps = client.postgrest["campaigns"].select().decodeList<DbCampaign>()
-                _campaigns.value = dbCamps.map { it.toDomain() }
+                val camps = client.postgrest["console_campaigns"].select()
+                    .decodeList<DbConsoleCampaign>()
+                val targets = client.postgrest["console_campaign_targets"].select()
+                    .decodeList<DbConsoleTarget>()
+                val byCampaign = targets.groupBy { it.campaign_id }
+                _campaigns.value = camps.map { c ->
+                    val t = byCampaign[c.id].orEmpty()
+                    c.toDomain(total = t.size, done = t.count { it.reached_at != null })
+                }
+                targetsMap.forEach { (cid, flow) ->
+                    flow.value = byCampaign[cid].orEmpty().map { it.toDomain() }
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -287,86 +282,33 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
 
     override fun getTargets(campaignId: String): StateFlow<List<CampaignTarget>> {
         val flow = targetsMap.getOrPut(campaignId) { MutableStateFlow(emptyList()) }
-        fetchTargets(campaignId, flow)
+        fetchCampaigns()
         return flow.asStateFlow()
     }
 
-    private fun fetchTargets(campaignId: String, flow: MutableStateFlow<List<CampaignTarget>>) {
-        scope.launch {
-            try {
-                val dbTargets = client.postgrest["campaign_targets"].select {
-                    filter {
-                        eq("campaign_id", campaignId)
-                    }
-                }.decodeList<DbCampaignTarget>()
-                flow.value = dbTargets.map { it.toDomain() }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-    }
-
     override fun toggleCampaign(campaignId: String) {
-        scope.launch {
-            try {
-                val current = _campaigns.value.find { it.id == campaignId } ?: return@launch
-                val nextState = if (current.state == CampaignState.ACTIVE) "paused" else "active"
-                
-                client.postgrest["campaigns"].update({
-                    set("state", nextState)
-                }) {
-                    filter {
-                        eq("id", campaignId)
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        // Campaign state is billing-coupled (SUMIT) and must NOT be flipped from the
+        // client. Wire to POST beta.kalfa.me/api/campaigns/{id}/start|pause in Phase 2.
     }
 
     override fun updateTargetResult(targetId: String, result: String) {
-        scope.launch {
-            try {
-                client.postgrest["campaign_targets"].update({
-                    set("last_result", result)
-                }) {
-                    filter {
-                        eq("id", targetId)
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        // outreach_state is orchestrator-owned; the console reads it only.
     }
 }
 
 class SupabaseRsvpRepository(private val client: SupabaseClient) : RsvpRepository {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    
+
     private val _rsvpResults = MutableStateFlow<List<RsvpResult>>(emptyList())
     override val rsvpResults: StateFlow<List<RsvpResult>> = _rsvpResults.asStateFlow()
 
     init {
-        fetchRsvpResults()
-        
+        // console_rsvp_results is a VIEW (no realtime) — poll lightly; the dashboard's
+        // freshness driver is console_call_feed realtime anyway.
         scope.launch {
-            try {
-                val channel = client.realtime.channel("rsvp_channel")
-                val changeFlow = channel.postgresChangeFlow<PostgresAction>(schema = "public") {
-                    table = "rsvp_results"
-                }
-                
-                launch {
-                    changeFlow.collect {
-                        fetchRsvpResults()
-                    }
-                }
-                
-                channel.subscribe()
-            } catch (e: Exception) {
-                e.printStackTrace()
+            while (isActive) {
+                fetchRsvpResults()
+                delay(60_000)
             }
         }
     }
@@ -374,8 +316,9 @@ class SupabaseRsvpRepository(private val client: SupabaseClient) : RsvpRepositor
     private fun fetchRsvpResults() {
         scope.launch {
             try {
-                val dbRsvps = client.postgrest["rsvp_results"].select().decodeList<DbRsvpResult>()
-                _rsvpResults.value = dbRsvps.map { it.toDomain() }
+                val rows = client.postgrest["console_rsvp_results"].select()
+                    .decodeList<DbRsvpRow>()
+                _rsvpResults.value = rows.map { it.toDomain() }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -383,20 +326,9 @@ class SupabaseRsvpRepository(private val client: SupabaseClient) : RsvpRepositor
     }
 
     override fun saveRsvpResult(result: RsvpResult) {
-        scope.launch {
-            try {
-                val dbRsvp = DbRsvpResult(
-                    call_id = result.callId,
-                    guest_id = result.guestId,
-                    answer = result.answer.name.lowercase(),
-                    guests_count = result.guestsCount,
-                    notes = result.notes
-                )
-                client.postgrest["rsvp_results"].insert(dbRsvp)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        // Read-only by design: RSVP outcomes are written by the ElevenLabs agent
+        // client-tools pipeline (save_rsvp -> /api/voximplant/rsvp/:tok). The console
+        // must never write them on the AI's behalf (AGENTS.md domain rule).
     }
 }
 

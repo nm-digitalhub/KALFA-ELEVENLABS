@@ -1,25 +1,22 @@
-import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
-
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.kotlin.compose)
   alias(libs.plugins.google.devtools.ksp)
   alias(libs.plugins.roborazzi)
   alias(libs.plugins.secrets)
-  alias(libs.plugins.google.services)
   alias(libs.plugins.kotlin.serialization)
 }
 
 android {
-  namespace = "com.example"
+  namespace = "me.kalfa.agentconsole"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "com.aistudio.kalfaagent.bdfgtz"
+    applicationId = "me.kalfa.agentconsole"
     minSdk = 24
     targetSdk = 36
-    versionCode = 4
-    versionName = "4.0"
+    versionCode = 5
+    versionName = "5.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -40,12 +37,6 @@ android {
         keyPassword = "android"
       }
     }
-    create("debugConfig") {
-      storeFile = file("${rootDir}/debug.keystore")
-      storePassword = "android"
-      keyAlias = "androiddebugkey"
-      keyPassword = "android"
-    }
   }
 
   buildTypes {
@@ -55,7 +46,6 @@ android {
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
-    debug { signingConfig = signingConfigs.getByName("debugConfig") }
   }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
@@ -75,7 +65,7 @@ secrets {
   defaultPropertiesFileName = ".env.example"
 }
 
-googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }
+// google-services plugin + google-services.json are added in Phase 2 (FCM push, real device)
 
 // Some unused dependencies are commented out below instead of being removed.
 // This makes it easy to add them back in the future if needed.
@@ -98,11 +88,6 @@ dependencies {
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
 
-  // Room
-  implementation(libs.androidx.room.ktx)
-  implementation(libs.androidx.room.runtime)
-  "ksp"(libs.androidx.room.compiler)
-
   // Supabase (BOM-managed) — versions come from the BOM, never inline
   implementation(platform(libs.supabase.bom))
   implementation(libs.supabase.auth)
@@ -110,9 +95,8 @@ dependencies {
   implementation(libs.supabase.realtime)
   implementation(libs.ktor.client.okhttp)   // MUST stay 3.1.2 — matches supabase-kt 3.1.4
 
-  // DI
-  implementation(libs.hilt.android)
-  "ksp"(libs.hilt.compiler)
+  // DI: manual service locator (di/DependencyContainer). Hilt intentionally deferred
+  // to the Voximplant phase, where the fake->real CallEngine swap justifies it.
 
   // Serialization / images / push
   implementation(libs.kotlinx.serialization.json)

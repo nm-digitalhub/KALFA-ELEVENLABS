@@ -1,4 +1,4 @@
-package com.example
+package me.kalfa.agentconsole
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider

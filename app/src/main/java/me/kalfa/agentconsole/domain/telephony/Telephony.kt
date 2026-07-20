@@ -1,7 +1,7 @@
-package com.example.domain.telephony
+package me.kalfa.agentconsole.domain.telephony
 
-import com.example.domain.model.AgentStatus
-import com.example.domain.model.CallState
+import me.kalfa.agentconsole.domain.model.AgentStatus
+import me.kalfa.agentconsole.domain.model.CallState
 import kotlinx.coroutines.flow.StateFlow
 
 interface CallSession {
