@@ -1,2 +1,0 @@
-- name: Create APK Repository
-  uses: KalleDK/actions-apkrepo@v0.0.45
