@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import me.kalfa.agentconsole.domain.model.*
 import me.kalfa.agentconsole.ui.screens.*
+import me.kalfa.agentconsole.ui.screens.AuthGate
 import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
 import me.kalfa.agentconsole.ui.viewmodel.*
 
@@ -27,6 +28,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
+                AuthGate {
                 val state by viewModel.uiState.collectAsState()
 
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
@@ -152,6 +154,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+                }
                 }
             }
         }
