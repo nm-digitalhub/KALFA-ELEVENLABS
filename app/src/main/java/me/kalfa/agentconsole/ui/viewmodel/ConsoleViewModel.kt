@@ -13,15 +13,6 @@ import io.github.jan.supabase.postgrest.postgrest
 import kotlinx.serialization.Serializable
 import me.kalfa.agentconsole.di.ErrorBus
 
-sealed class Screen {
-    object Dashboard : Screen()
-    object LiveCalls : Screen()
-    object Campaigns : Screen()
-    object History : Screen()
-    object Events : Screen()
-    data class EventDetail(val eventId: String) : Screen()
-    data class CallDetail(val call: Call, val returnTo: Screen = History) : Screen()
-}
 
 @Serializable
 private data class MeRow(
@@ -33,7 +24,6 @@ private data class MeRow(
 )
 
 data class ConsoleUiState(
-    val currentScreen: Screen = Screen.Dashboard,
     val agentStatus: AgentStatus = AgentStatus.NOT_READY,
     val agentName: String = "נציג KALFA",
     val agentEmail: String = "",
@@ -235,18 +225,15 @@ class ConsoleViewModel : ViewModel() {
                     it.copy(
                         me = me,
                         agentName = me?.displayName ?: metaName ?: user.email ?: "נציג",
-                        agentEmail = user.email ?: "",
-                        // Managers land on the events overview; agents on the ops dashboard
-                        currentScreen = if (me?.canManageVoice == true && it.currentScreen == Screen.Dashboard)
-                            Screen.Events else it.currentScreen
+                        agentEmail = user.email ?: ""
                     )
                 }
             } catch (e: Exception) { e.printStackTrace() }
         }
     }
 
-    fun selectCall(call: Call, returnTo: Screen = Screen.History) {
-        _uiState.update { it.copy(currentScreen = Screen.CallDetail(call, returnTo), selectedAnalysis = null, analysisLoading = true) }
+    fun selectCall(call: Call) {
+        _uiState.update { it.copy(selectedAnalysis = null, analysisLoading = true) }
         viewModelScope.launch {
             val analysis = callRepo.getCallAnalysis(call.id)
             _uiState.update { it.copy(selectedAnalysis = analysis, analysisLoading = false) }
@@ -291,10 +278,6 @@ class ConsoleViewModel : ViewModel() {
 
     fun closeAiAgent(callId: String) {
         viewModelScope.launch { callEngine.sendAgentCommand(callId, "close_agent") }
-    }
-
-    fun setScreen(screen: Screen) {
-        _uiState.update { it.copy(currentScreen = screen) }
     }
 
     fun setAgentStatus(status: AgentStatus) {
