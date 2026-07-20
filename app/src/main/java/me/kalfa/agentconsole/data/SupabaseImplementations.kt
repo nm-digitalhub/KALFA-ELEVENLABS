@@ -267,15 +267,30 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
         }
     }
 
+    /**
+     * Best-effort event-name lookup. Decoupled from the feed read on purpose:
+     * console_events is only used to label calls, so a missing/failing view must
+     * NOT block the realtime feed (which was the load-bearing bug — a single
+     * failing console_events read left calls/history/campaigns permanently empty).
+     */
+    private suspend fun refreshEventNames() {
+        if (_eventNames.value.isNotEmpty()) return
+        try {
+            val evs = client.postgrest["console_events"].select()
+                .decodeList<DbConsoleEvent>()
+            _eventNames.value = evs.associate { it.event_id to (it.event_name ?: "") }
+            _events.value = evs.map { it.toDomain() }
+        } catch (e: Exception) {
+            e.printStackTrace() // names stay empty; calls still render with a fallback label
+        }
+    }
+
     private fun fetchCalls() {
         scope.launch {
+            // Event names are a display nicety — fetch them independently so a
+            // failure here can never block the feed below.
+            refreshEventNames()
             try {
-                if (_eventNames.value.isEmpty()) {
-                    val evs = client.postgrest["console_events"].select()
-                        .decodeList<DbConsoleEvent>()
-                    _eventNames.value = evs.associate { it.event_id to (it.event_name ?: "") }
-                    _events.value = evs.map { it.toDomain() }
-                }
                 val names = _eventNames.value
                 val rows = client.postgrest["console_call_feed"].select()
                     .decodeList<DbConsoleCall>()
@@ -349,10 +364,17 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
 
     private fun fetchCampaigns() {
         scope.launch {
-            try {
-                val evs = client.postgrest["console_events"].select()
+            // Event names label campaigns only — read them best-effort so a missing/
+            // failing console_events view never blocks campaign+target population.
+            val names: Map<String, String> = try {
+                client.postgrest["console_events"].select()
                     .decodeList<DbConsoleEvent>()
-                val names = evs.associate { it.event_id to (it.event_name ?: "") }
+                    .associate { it.event_id to (it.event_name ?: "") }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                emptyMap()
+            }
+            try {
                 val camps = client.postgrest["console_campaigns"].select()
                     .decodeList<DbConsoleCampaign>()
                 val targets = client.postgrest["console_campaign_targets"].select()
