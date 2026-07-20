@@ -1,4 +1,4 @@
-package com.example.domain.model
+package me.kalfa.agentconsole.domain.model
 
 enum class AgentStatus(val labelHebrew: String) {
     READY("זמין"),

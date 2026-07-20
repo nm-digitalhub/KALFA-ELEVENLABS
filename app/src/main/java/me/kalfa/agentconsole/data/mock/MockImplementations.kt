@@ -1,12 +1,12 @@
-package com.example.data.mock
+package me.kalfa.agentconsole.data.mock
 
-import com.example.domain.model.*
-import com.example.domain.repository.CallRepository
-import com.example.domain.repository.CampaignRepository
-import com.example.domain.repository.RsvpRepository
-import com.example.domain.telephony.AgentPresence
-import com.example.domain.telephony.CallEngine
-import com.example.domain.telephony.CallSession
+import me.kalfa.agentconsole.domain.model.*
+import me.kalfa.agentconsole.domain.repository.CallRepository
+import me.kalfa.agentconsole.domain.repository.CampaignRepository
+import me.kalfa.agentconsole.domain.repository.RsvpRepository
+import me.kalfa.agentconsole.domain.telephony.AgentPresence
+import me.kalfa.agentconsole.domain.telephony.CallEngine
+import me.kalfa.agentconsole.domain.telephony.CallSession
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow

@@ -1,4 +1,4 @@
-package com.example.ui.screens
+package me.kalfa.agentconsole.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -19,11 +19,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import com.example.domain.model.Campaign
-import com.example.domain.model.CampaignState
-import com.example.ui.theme.ColorSuccess
-import com.example.ui.theme.ColorWarning
-import com.example.ui.theme.MyApplicationTheme
+import me.kalfa.agentconsole.domain.model.Campaign
+import me.kalfa.agentconsole.domain.model.CampaignState
+import me.kalfa.agentconsole.ui.theme.ColorSuccess
+import me.kalfa.agentconsole.ui.theme.ColorWarning
+import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

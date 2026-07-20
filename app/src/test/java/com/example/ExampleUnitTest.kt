@@ -1,4 +1,4 @@
-package com.example
+package me.kalfa.agentconsole
 
 import org.junit.Assert.*
 import org.junit.Test

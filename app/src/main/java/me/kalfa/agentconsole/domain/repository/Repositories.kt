@@ -1,9 +1,9 @@
-package com.example.domain.repository
+package me.kalfa.agentconsole.domain.repository
 
-import com.example.domain.model.Call
-import com.example.domain.model.Campaign
-import com.example.domain.model.CampaignTarget
-import com.example.domain.model.RsvpResult
+import me.kalfa.agentconsole.domain.model.Call
+import me.kalfa.agentconsole.domain.model.Campaign
+import me.kalfa.agentconsole.domain.model.CampaignTarget
+import me.kalfa.agentconsole.domain.model.RsvpResult
 import kotlinx.coroutines.flow.StateFlow
 
 interface CallRepository {

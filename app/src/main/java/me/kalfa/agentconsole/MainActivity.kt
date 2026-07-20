@@ -1,4 +1,4 @@
-package com.example
+package me.kalfa.agentconsole
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -14,10 +14,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import com.example.domain.model.*
-import com.example.ui.screens.*
-import com.example.ui.theme.MyApplicationTheme
-import com.example.ui.viewmodel.*
+import me.kalfa.agentconsole.domain.model.*
+import me.kalfa.agentconsole.ui.screens.*
+import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
+import me.kalfa.agentconsole.ui.viewmodel.*
 
 class MainActivity : ComponentActivity() {
     private val viewModel: ConsoleViewModel by viewModels()

@@ -1,13 +1,13 @@
-package com.example.data
+package me.kalfa.agentconsole.data
 
-import com.example.domain.model.*
-import com.example.domain.repository.CallRepository
-import com.example.domain.repository.CampaignRepository
-import com.example.domain.repository.RsvpRepository
-import com.example.domain.telephony.AgentPresence
-import com.example.domain.telephony.CallEngine
-import com.example.domain.telephony.CallSession
-import com.example.data.mock.MockCallSession
+import me.kalfa.agentconsole.domain.model.*
+import me.kalfa.agentconsole.domain.repository.CallRepository
+import me.kalfa.agentconsole.domain.repository.CampaignRepository
+import me.kalfa.agentconsole.domain.repository.RsvpRepository
+import me.kalfa.agentconsole.domain.telephony.AgentPresence
+import me.kalfa.agentconsole.domain.telephony.CallEngine
+import me.kalfa.agentconsole.domain.telephony.CallSession
+import me.kalfa.agentconsole.data.mock.MockCallSession
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.postgrest
