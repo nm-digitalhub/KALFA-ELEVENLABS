@@ -31,6 +31,7 @@ data class ConsoleUiState(
     val agentEmail: String = "",
     val connectionError: String? = null,
     val selectedAnalysis: CallAnalysis? = null,
+    val liveTranscripts: Map<String, List<TranscriptLine>> = emptyMap(),
     val analysisLoading: Boolean = false,
     val activeAiCallsCount: Int = 0,
     val queueDepth: Int = 2,
@@ -146,6 +147,18 @@ class ConsoleViewModel : ViewModel() {
         }
 
         viewModelScope.launch { ErrorBus.lastError.collect { err -> _uiState.update { it.copy(connectionError = err) } } }
+
+        // Live captions: keep Broadcast subscriptions in sync with active AI calls
+        DependencyContainer.liveTranscriptManager?.let { mgr ->
+            viewModelScope.launch {
+                callRepo.liveCalls.collect { calls ->
+                    mgr.sync(calls.filter { it.handledBy == "ai" }.map { it.id }.toSet())
+                }
+            }
+            viewModelScope.launch {
+                mgr.transcripts.collect { m -> _uiState.update { it.copy(liveTranscripts = m) } }
+            }
+        }
         loadIdentity()
     }
 
@@ -199,6 +212,21 @@ class ConsoleViewModel : ViewModel() {
             digits.startsWith("0") && digits.length == 9 -> "+972" + digits.drop(1)
             else -> null
         }
+    }
+
+    fun whisperToAi(callId: String, text: String) {
+        if (text.isBlank()) return
+        viewModelScope.launch {
+            callEngine.sendAgentCommand(callId, "contextual_update", mapOf("text" to text.trim()))
+        }
+    }
+
+    fun muteAiOnce(callId: String) {
+        viewModelScope.launch { callEngine.sendAgentCommand(callId, "clear_buffer") }
+    }
+
+    fun closeAiAgent(callId: String) {
+        viewModelScope.launch { callEngine.sendAgentCommand(callId, "close_agent") }
     }
 
     fun setScreen(screen: Screen) {

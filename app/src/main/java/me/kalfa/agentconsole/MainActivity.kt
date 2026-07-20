@@ -157,6 +157,10 @@ class MainActivity : ComponentActivity() {
                                 }
                                 Screen.LiveCalls -> {
                                     LiveCallsScreen(
+                                        liveTranscripts = state.liveTranscripts,
+                                        onWhisper = { id, text -> viewModel.whisperToAi(id, text) },
+                                        onMuteAi = { viewModel.muteAiOnce(it) },
+                                        onCloseAi = { viewModel.closeAiAgent(it) },
                                         liveCalls = state.liveCalls,
                                         onMonitor = { viewModel.monitorCall(it) },
                                         onTakeover = { viewModel.takeoverCall(it) },

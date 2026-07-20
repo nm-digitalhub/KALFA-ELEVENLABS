@@ -27,6 +27,18 @@ interface CallEngine {
     fun startOutboundCall(phone: String, customerName: String): CallSession
     fun monitorCall(callId: String): CallSession
     fun takeoverCall(callId: String): CallSession
+
+    /**
+     * Sends a management command to the ElevenLabs AgentsClient of a live AI call,
+     * via POST beta.kalfa.me/api/calls/{id}/agent-command. Commands:
+     * contextual_update {text} | user_message {text} | clear_buffer | close_agent.
+     * Default no-op keeps mock mode working.
+     */
+    suspend fun sendAgentCommand(
+        callId: String,
+        command: String,
+        payload: Map<String, String> = emptyMap()
+    ): Boolean = false
 }
 
 interface AgentPresence {

@@ -24,6 +24,9 @@ import kotlinx.coroutines.flow.*
 import kotlinx.serialization.Serializable
 import java.util.UUID
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import io.ktor.client.statement.*
 import kotlinx.serialization.json.jsonPrimitive
 import me.kalfa.agentconsole.di.ErrorBus
 import me.kalfa.agentconsole.di.AppVisibility
@@ -506,6 +509,32 @@ class SupabaseCallEngineImpl(
                 e.printStackTrace()
             }
         }
+    }
+
+    override suspend fun sendAgentCommand(
+        callId: String,
+        command: String,
+        payload: Map<String, String>
+    ): Boolean = try {
+        val jwt = getJwt()
+        val body = buildJsonObject {
+            put("command", command)
+            payload.forEach { (k, v) -> put(k, v) }
+        }.toString()
+        val resp = httpClient.post("https://beta.kalfa.me/api/calls/$callId/agent-command") {
+            header(HttpHeaders.Authorization, "Bearer $jwt")
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }
+        val ok = resp.status.value in 200..299
+        if (!ok) ErrorBus.post(
+            if (resp.status.value == 409) "השיחה כבר לא פעילה" else "פקודת AI נכשלה (${resp.status.value})"
+        )
+        ok
+    } catch (e: Exception) {
+        e.printStackTrace()
+        ErrorBus.post("פקודת AI נכשלה — בדוק חיבור")
+        false
     }
 
     override fun startOutboundCall(phone: String, customerName: String): CallSession {

@@ -1,6 +1,7 @@
 package me.kalfa.agentconsole.di
 
 import me.kalfa.agentconsole.BuildConfig
+import me.kalfa.agentconsole.data.LiveTranscriptManager
 import me.kalfa.agentconsole.data.*
 import me.kalfa.agentconsole.data.mock.*
 import me.kalfa.agentconsole.domain.repository.*
@@ -83,4 +84,8 @@ object DependencyContainer {
     
     val callEngine: CallEngine get() = supabaseCallEngine ?: mockCallEngine
     val agentPresence: AgentPresence get() = (supabaseCallEngine ?: mockCallEngine) as AgentPresence
+
+    val liveTranscriptManager: LiveTranscriptManager? by lazy {
+        supabaseClient?.let { LiveTranscriptManager(it) }
+    }
 }

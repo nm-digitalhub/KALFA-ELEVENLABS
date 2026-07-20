@@ -1,5 +1,7 @@
 package me.kalfa.agentconsole.domain.model
 
+import kotlinx.serialization.Serializable
+
 enum class AgentStatus(val labelHebrew: String) {
     READY("זמין"),
     NOT_READY("לא זמין"),
@@ -96,4 +98,11 @@ data class CallAnalysis(
     val children: Int?,
     val evalCriteria: Map<String, String> = emptyMap(), // rsvp_captured, dnc_honored...
     val analysisAt: String?
+)
+
+@Serializable
+data class TranscriptLine(
+    val role: String,   // "user" | "agent"
+    val text: String,
+    val at: Long = 0L
 )
