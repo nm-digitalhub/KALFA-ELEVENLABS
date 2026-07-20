@@ -106,6 +106,13 @@ dependencies {
   implementation(libs.coil.network.okhttp)
   implementation(libs.firebase.messaging)
 
+  // Telephony — Voximplant Android SDK v2 (production GA). The Voximplant phase is
+  // open (AGENTS.md "Phase status"); real CallEngine/CallSession are built behind
+  // the existing interfaces against this SDK. Do NOT use v3 (androidsdk3, Beta).
+  implementation(libs.voximplant.sdk)
+  // Runtime permission flow (RECORD_AUDIO) for self-managed VoIP.
+  implementation(libs.accompanist.permissions)
+
   // Testing
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
