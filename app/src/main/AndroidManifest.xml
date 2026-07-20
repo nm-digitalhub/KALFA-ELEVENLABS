@@ -2,6 +2,35 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!--
+      Network. Previously undeclared: the app only reached the network because
+      ktor/okhttp merge INTERNET in from their library manifests. Declared here so
+      the dependency is explicit rather than inherited.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+      Self-managed VoIP (Voximplant SDK v2 phase — see AGENTS.md §3).
+      RECORD_AUDIO and MANAGE_OWN_CALLS are runtime-sensitive and Play Console
+      requires a declared use; they are here because the console genuinely carries
+      two-way voice on monitor/takeover, not for convenience.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Android 12+ (API 31) Bluetooth headset routing. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- Microphone is required for the console to function; not an optional feature. -->
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="true" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -22,6 +51,24 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          Self-managed ConnectionService (AGENTS.md §3). Register the PhoneAccount
+          with CAPABILITY_SELF_MANAGED at runtime; Telecom owns audio focus and
+          routing during a call, so this must exist before real audio is wired.
+          TODO(voximplant-phase): implement me.kalfa.agentconsole.telephony.ConsoleConnectionService
+          and remove tools:ignore once the class lands.
+        -->
+        <!--
+        <service
+            android:name=".telephony.ConsoleConnectionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
+        -->
     </application>
 
 </manifest>
