@@ -23,13 +23,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.navigation.toRoute
-import me.kalfa.agentconsole.ui.CallDetailRoute
-import me.kalfa.agentconsole.ui.DashboardRoute
-import me.kalfa.agentconsole.ui.EventDetailRoute
-import me.kalfa.agentconsole.ui.EventsRoute
-import me.kalfa.agentconsole.ui.HistoryRoute
-import me.kalfa.agentconsole.ui.LiveCallsRoute
+import me.kalfa.agentconsole.ui.*
 import me.kalfa.agentconsole.ui.screens.*
 import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
 import me.kalfa.agentconsole.ui.viewmodel.ConsoleUiState
@@ -62,14 +58,13 @@ class MainActivity : ComponentActivity() {
                     }
 
                     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                        // Adaptive nav: bottom bar on compact, rail on expanded. Hidden entirely during a call.
+                        AdaptiveConsoleScaffold(
+                            navController = navController,
+                            showNavigation = state.currentSession == null
+                        ) {
                         Scaffold(
-                            modifier = Modifier.fillMaxSize(),
-                            bottomBar = {
-                                // Bottom navigation is hidden during an active call session
-                                if (state.currentSession == null) {
-                                    ConsoleBottomBar(navController)
-                                }
-                            }
+                            modifier = Modifier.fillMaxSize()
                         ) { innerPadding ->
                             val contentModifier = Modifier.padding(innerPadding)
 
@@ -119,6 +114,7 @@ class MainActivity : ComponentActivity() {
                                 ConsoleNavHost(navController, state, viewModel, contentModifier)
                             }
                         }
+                        }
                     }
                 }
             }
@@ -127,7 +123,16 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun ConsoleBottomBar(navController: NavHostController) {
+private fun AdaptiveConsoleScaffold(
+    navController: NavHostController,
+    showNavigation: Boolean,
+    content: @Composable () -> Unit
+) {
+    if (!showNavigation) {
+        content()
+        return
+    }
+
     val backStack by navController.currentBackStackEntryAsState()
     val dest = backStack?.destination
 
@@ -139,38 +144,27 @@ private fun ConsoleBottomBar(navController: NavHostController) {
         }
     }
 
-    NavigationBar(
-        containerColor = MaterialTheme.colorScheme.surface,
-        tonalElevation = 8.dp
+    NavigationSuiteScaffold(
+        navigationSuiteItems = {
+            consoleDestinations.forEach { d: ConsoleDestination ->
+                val selected = dest?.hierarchy?.any { h ->
+                    d.routeClasses.any { rc -> h.hasRoute(rc) }
+                } == true
+                item(
+                    selected = selected,
+                    onClick = { navigateTop(d.route) },
+                    icon = {
+                        Icon(
+                            imageVector = if (selected) d.selectedIcon else d.unselectedIcon,
+                            contentDescription = d.label
+                        )
+                    },
+                    label = { Text(d.label) }
+                )
+            }
+        }
     ) {
-        NavigationBarItem(
-            selected = dest?.hierarchy?.any { it.hasRoute(DashboardRoute::class) } == true,
-            onClick = { navigateTop(DashboardRoute) },
-            icon = { Icon(imageVector = Icons.Default.Dashboard, contentDescription = "דשבורד") },
-            label = { Text("דשבורד") }
-        )
-        NavigationBarItem(
-            selected = dest?.hierarchy?.any { it.hasRoute(LiveCallsRoute::class) } == true,
-            onClick = { navigateTop(LiveCallsRoute) },
-            icon = { Icon(imageVector = Icons.Default.Hearing, contentDescription = "שיחות חיות") },
-            label = { Text("שיחות חיות") }
-        )
-        NavigationBarItem(
-            selected = dest?.hierarchy?.any {
-                it.hasRoute(EventsRoute::class) || it.hasRoute(EventDetailRoute::class)
-            } == true,
-            onClick = { navigateTop(EventsRoute) },
-            icon = { Icon(imageVector = Icons.Default.Campaign, contentDescription = "אירועים") },
-            label = { Text("אירועים") }
-        )
-        NavigationBarItem(
-            selected = dest?.hierarchy?.any {
-                it.hasRoute(HistoryRoute::class) || it.hasRoute(CallDetailRoute::class)
-            } == true,
-            onClick = { navigateTop(HistoryRoute) },
-            icon = { Icon(imageVector = Icons.Default.History, contentDescription = "היסטוריה") },
-            label = { Text("היסטוריה") }
-        )
+        content()
     }
 }
 
