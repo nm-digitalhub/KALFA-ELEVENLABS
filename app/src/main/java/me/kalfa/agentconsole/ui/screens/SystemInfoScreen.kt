@@ -2,6 +2,7 @@ package me.kalfa.agentconsole.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -65,27 +66,24 @@ fun SystemInfoScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                InfoCard(title = "גרסת אפליקציה") {
+                InfoCard("גרסת אפליקציה") {
                     InfoRow("גרסה", BuildConfig.VERSION_NAME)
                     InfoRow("מספר בנייה", BuildConfig.VERSION_CODE.toString())
                 }
             }
-
             item {
-                InfoCard(title = "חיבור נתונים") {
+                InfoCard("חיבור נתונים") {
                     StatusRow("סופאבייס", supabaseConfigured, if (supabaseConfigured) "מוגדר" else "מצב הדגמה")
                     StatusRow("חיבור אחרון", connectionError == null, connectionError ?: "תקין")
                 }
             }
-
             item {
-                InfoCard(title = "יכולות שיחה") {
-                    val modeText = if (capabilities.isSimulation) {
-                        "מצב מדומה: אין שמע אמיתי במכשיר"
-                    } else {
-                        "מנוע שיחות אמיתי מחובר"
-                    }
-                    StatusRow("מצב מנוע", !capabilities.isSimulation, modeText)
+                InfoCard("יכולות שיחה") {
+                    StatusRow(
+                        "מצב מנוע",
+                        !capabilities.isSimulation,
+                        if (capabilities.isSimulation) "מצב מדומה: אין שמע אמיתי במכשיר" else "מנוע שיחות אמיתי מחובר"
+                    )
                     StatusRow("שיחה יוצאת", capabilities.outboundCalling)
                     StatusRow("האזנה שקטה", capabilities.silentMonitoring)
                     StatusRow("השתלטות", capabilities.takeover)
@@ -97,44 +95,15 @@ fun SystemInfoScreen(
                     StatusRow("שמירת תוצאת נציג", capabilities.manualRsvpPersistence)
                 }
             }
-
             if (capabilities.isSimulation) {
-                item {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer
-                        ),
-                        shape = RoundedCornerShape(20.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalAlignment = Alignment.Top
-                        ) {
-                            Icon(
-                                Icons.Default.Warning,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Text(
-                                text = "מסכי השיחה פעילים לצורכי בקרה והדגמה, אך פעולות שמע במכשיר עדיין אינן מחוברות למנוע ווקסאימפלנט אמיתי.",
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        }
-                    }
-                }
+                item { SimulationWarning() }
             }
         }
     }
 }
 
 @Composable
-private fun InfoCard(
-    title: String,
-    content: @Composable Column.() -> Unit
-) {
+private fun InfoCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         shape = RoundedCornerShape(20.dp),
@@ -179,11 +148,7 @@ private fun StatusRow(label: String, available: Boolean, detail: String? = null)
         Column(modifier = Modifier.weight(1f)) {
             Text(label, style = MaterialTheme.typography.bodyMedium)
             if (!detail.isNullOrBlank()) {
-                Text(
-                    detail,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         Icon(
@@ -191,6 +156,28 @@ private fun StatusRow(label: String, available: Boolean, detail: String? = null)
             contentDescription = null,
             tint = if (available) Color(0xFF16A36A) else MaterialTheme.colorScheme.error
         )
+    }
+}
+
+@Composable
+private fun SimulationWarning() {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer)
+            Text(
+                text = "מסכי השיחה פעילים לצורכי בקרה והדגמה, אך פעולות שמע במכשיר עדיין אינן מחוברות למנוע ווקסאימפלנט אמיתי.",
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
     }
 }
 
