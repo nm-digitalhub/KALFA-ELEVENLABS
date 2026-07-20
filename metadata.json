@@ -1,0 +1,6 @@
+{
+  "name": "KALFA Agent Console",
+  "description": "Hebrew RSVP call-center agent application for kalfa.me with real-time AI call monitoring and campaign dialer",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
