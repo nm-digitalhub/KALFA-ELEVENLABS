@@ -8,6 +8,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.SmartToy
+import me.kalfa.agentconsole.domain.model.TranscriptLine
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -34,6 +38,13 @@ import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LiveCallsScreen(
+    eventOptions: List<Pair<String, String>> = emptyList(),
+    selectedEventId: String? = null,
+    onSelectEvent: (String?) -> Unit = {},
+    liveTranscripts: Map<String, List<TranscriptLine>> = emptyMap(),
+    onWhisper: (String, String) -> Unit = { _, _ -> },
+    onMuteAi: (String) -> Unit = {},
+    onCloseAi: (String) -> Unit = {},
     liveCalls: List<Call>,
     onMonitor: (String) -> Unit,
     onTakeover: (String) -> Unit,
@@ -124,6 +135,7 @@ fun LiveCallsScreen(
                     }
                 }
             } else {
+                EventFilterChips(events = eventOptions, selectedEventId = selectedEventId, onSelect = onSelectEvent)
                 LazyColumn(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -133,7 +145,11 @@ fun LiveCallsScreen(
                         LiveCallCard(
                             call = call,
                             onMonitor = { onMonitor(call.id) },
-                            onTakeover = { onTakeover(call.id) }
+                            onTakeover = { onTakeover(call.id) },
+                            liveLines = liveTranscripts[call.id].orEmpty(),
+                            onWhisper = { text -> onWhisper(call.id, text) },
+                            onMuteAi = { onMuteAi(call.id) },
+                            onCloseAi = { onCloseAi(call.id) }
                         )
                     }
                 }
@@ -146,8 +162,14 @@ fun LiveCallsScreen(
 fun LiveCallCard(
     call: Call,
     onMonitor: () -> Unit,
-    onTakeover: () -> Unit
+    onTakeover: () -> Unit,
+    liveLines: List<TranscriptLine> = emptyList(),
+    onWhisper: (String) -> Unit = {},
+    onMuteAi: () -> Unit = {},
+    onCloseAi: () -> Unit = {}
 ) {
+    var whisperText by remember { mutableStateOf("") }
+    var confirmClose by remember { mutableStateOf(false) }
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
@@ -257,6 +279,99 @@ fun LiveCallCard(
                             modifier = Modifier.weight(1f)
                         )
                     }
+                }
+            }
+
+            // ── AI management (live captions from Broadcast + whisper + controls) ──
+            if (call.handledBy == "ai") {
+                if (liveLines.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                RoundedCornerShape(12.dp)
+                            )
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        liveLines.takeLast(3).forEach { line ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
+                                Text(
+                                    text = if (line.role == "agent") "בוט" else "אורח",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (line.role == "agent") MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.secondary
+                                )
+                                Text(
+                                    text = line.text,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = whisperText,
+                        onValueChange = { whisperText = it },
+                        placeholder = { Text("הנחיה ל-AI (הלחשה)...", style = MaterialTheme.typography.bodySmall) },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodySmall,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilledIconButton(
+                        onClick = {
+                            if (whisperText.isNotBlank()) { onWhisper(whisperText); whisperText = "" }
+                        },
+                        enabled = whisperText.isNotBlank()
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "שלח הנחיה", modifier = Modifier.size(18.dp))
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    TextButton(onClick = onMuteAi, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.VolumeOff, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("השתק AI", style = MaterialTheme.typography.labelMedium)
+                    }
+                    TextButton(
+                        onClick = { confirmClose = true },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Icon(Icons.Default.SmartToy, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("סיים AI", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+
+                if (confirmClose) {
+                    AlertDialog(
+                        onDismissRequest = { confirmClose = false },
+                        title = { Text("לסיים את סוכן ה-AI?") },
+                        text = { Text("ה-AI יתנתק מהשיחה; שיחת הטלפון עצמה תישאר פעילה עד השתלטות או ניתוק.") },
+                        confirmButton = {
+                            TextButton(onClick = { confirmClose = false; onCloseAi() }) { Text("סיים AI") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { confirmClose = false }) { Text("ביטול") }
+                        }
+                    )
                 }
             }
 

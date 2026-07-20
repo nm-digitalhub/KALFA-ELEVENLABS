@@ -27,6 +27,10 @@ import me.kalfa.agentconsole.ui.theme.*
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HistoryScreen(
+    eventOptions: List<Pair<String, String>> = emptyList(),
+    selectedEventId: String? = null,
+    onSelectEvent: (String?) -> Unit = {},
+    onCallClick: (Call) -> Unit = {},
     callHistory: List<Call>,
     rsvpResults: List<RsvpResult>,
     modifier: Modifier = Modifier
@@ -102,10 +106,12 @@ fun HistoryScreen(
                 }
             }
 
+            EventFilterChips(events = eventOptions, selectedEventId = selectedEventId, onSelect = onSelectEvent)
+
             // Tab Content
             Box(modifier = Modifier.weight(1f)) {
                 if (selectedTab == 0) {
-                    CallHistoryList(callHistory = callHistory)
+                    CallHistoryList(callHistory = callHistory, onCallClick = onCallClick)
                 } else {
                     RsvpResultsList(rsvpResults = rsvpResults)
                 }
@@ -115,7 +121,7 @@ fun HistoryScreen(
 }
 
 @Composable
-fun CallHistoryList(callHistory: List<Call>) {
+fun CallHistoryList(callHistory: List<Call>, onCallClick: (Call) -> Unit = {}) {
     if (callHistory.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(text = "אין שיחות בהיסטוריה", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f))
@@ -126,15 +132,16 @@ fun CallHistoryList(callHistory: List<Call>) {
             contentPadding = PaddingValues(bottom = 24.dp)
         ) {
             items(callHistory) { call ->
-                HistoryCallCard(call = call)
+                HistoryCallCard(call = call, onClick = { onCallClick(call) })
             }
         }
     }
 }
 
 @Composable
-fun HistoryCallCard(call: Call) {
+fun HistoryCallCard(call: Call, onClick: () -> Unit = {}) {
     Card(
+        onClick = onClick,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         shape = RoundedCornerShape(24.dp),

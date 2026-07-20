@@ -15,8 +15,8 @@ android {
     applicationId = "me.kalfa.agentconsole"
     minSdk = 24
     targetSdk = 36
-    versionCode = 5
-    versionName = "5.0"
+    versionCode = 10
+    versionName = "5.5"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -73,9 +73,11 @@ dependencies {
   // Compose (BOM-managed)
   implementation(platform(libs.androidx.compose.bom))
   implementation(libs.androidx.activity.compose)
+  implementation(libs.androidx.navigation.compose)
   implementation(libs.androidx.compose.material.icons.core)
   implementation(libs.androidx.compose.material.icons.extended)
   implementation(libs.androidx.compose.material3)
+  implementation(libs.androidx.compose.material3.adaptive.navigation.suite)
   implementation(libs.androidx.compose.ui)
   implementation(libs.androidx.compose.ui.graphics)
   implementation(libs.androidx.compose.ui.tooling.preview)

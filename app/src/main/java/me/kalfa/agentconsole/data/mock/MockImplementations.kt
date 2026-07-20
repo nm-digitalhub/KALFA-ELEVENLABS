@@ -79,6 +79,14 @@ class MockCallSession(
 }
 
 class MockCallRepositoryImpl : CallRepository {
+    override val events = kotlinx.coroutines.flow.MutableStateFlow(listOf(
+        ConsoleEvent("event-1", "חתונה של דני ורוני", "wedding", "2026-08-25T19:00:00Z", true),
+        ConsoleEvent("event-2", "בר מצווה של איתי", "bar_mitzvah", "2026-09-02T18:30:00Z", true),
+        ConsoleEvent("event-3", "חינה של ספיר ועומר", "henna", "2026-07-30T20:00:00Z", true)
+    ))
+    override val eventNames = kotlinx.coroutines.flow.MutableStateFlow(mapOf(
+        "event-1" to "חתונה של דני ורוני", "event-2" to "בר מצווה של איתי", "event-3" to "חינה של ספיר ועומר"
+    ))
     private val _liveCalls = MutableStateFlow<List<Call>>(emptyList())
     override val liveCalls: StateFlow<List<Call>> = _liveCalls.asStateFlow()
 
@@ -98,6 +106,7 @@ class MockCallRepositoryImpl : CallRepository {
                 voxSessionId = "vox-sess-1",
                 customerPhone = "052-345-6789",
                 customerName = "יוסי כהן",
+                eventId = "event-1",
                 eventName = "חתונה של דני ורוני",
                 handledBy = "ai",
                 agentId = null,
@@ -122,6 +131,7 @@ class MockCallRepositoryImpl : CallRepository {
                 voxSessionId = "vox-sess-2",
                 customerPhone = "054-987-6543",
                 customerName = "מיכל לוי",
+                eventId = "event-2",
                 eventName = "בר מצווה של איתי",
                 handledBy = "ai",
                 agentId = null,
@@ -143,6 +153,7 @@ class MockCallRepositoryImpl : CallRepository {
                 voxSessionId = "vox-sess-3",
                 customerPhone = "050-111-2222",
                 customerName = "אבי אברהם",
+                eventId = "event-3",
                 eventName = "חינה של ספיר ועומר",
                 handledBy = "ai",
                 agentId = null,
@@ -164,6 +175,7 @@ class MockCallRepositoryImpl : CallRepository {
                 voxSessionId = "vox-sess-hist1",
                 customerPhone = "052-123-4567",
                 customerName = "שירה מזרחי",
+                eventId = "event-1",
                 eventName = "חתונה של דני ורוני",
                 handledBy = "ai",
                 agentId = null,
@@ -188,6 +200,7 @@ class MockCallRepositoryImpl : CallRepository {
                 voxSessionId = "vox-sess-hist2",
                 customerPhone = "054-444-5555",
                 customerName = "רוני דניאל",
+                eventId = "event-2",
                 eventName = "בר מצווה של איתי",
                 handledBy = "agent",
                 agentId = "agent-123",
@@ -210,6 +223,7 @@ class MockCallRepositoryImpl : CallRepository {
                 voxSessionId = "vox-sess-hist3",
                 customerPhone = "050-777-8888",
                 customerName = "נועה פרץ",
+                eventId = "event-3",
                 eventName = "חינה של ספיר ועומר",
                 handledBy = "agent",
                 agentId = "agent-123",
@@ -348,9 +362,9 @@ class MockRsvpRepositoryImpl : RsvpRepository {
 
     private fun prepopulateData() {
         val initial = listOf(
-            RsvpResult("rsvp-1", "hist-1", "g100", "שירה מזרחי", RsvpAnswer.DECLINED, 0, "אירוע משפחתי אחר"),
-            RsvpResult("rsvp-2", "hist-2", "g101", "רוני דניאל", RsvpAnswer.ATTENDING, 3, "שני מבוגרים וילד אחד, צמחוני אחד"),
-            RsvpResult("rsvp-3", "hist-3", "g102", "נועה פרץ", RsvpAnswer.MAYBE, 2, "תחזיר תשובה סופית ביומיים הקרובים")
+            RsvpResult(id = "rsvp-1", eventId = "event-1", callId = "hist-1", guestId = "g100", guestName = "שירה מזרחי", answer = RsvpAnswer.DECLINED, guestsCount = 0, notes = "אירוע משפחתי אחר"),
+            RsvpResult(id = "rsvp-2", eventId = "event-2", callId = "hist-2", guestId = "g101", guestName = "רוני דניאל", answer = RsvpAnswer.ATTENDING, guestsCount = 3, notes = "שני מבוגרים וילד אחד, צמחוני אחד"),
+            RsvpResult(id = "rsvp-3", eventId = "event-3", callId = "hist-3", guestId = "g102", guestName = "נועה פרץ", answer = RsvpAnswer.MAYBE, guestsCount = 2, notes = "תחזיר תשובה סופית ביומיים הקרובים")
         )
         _rsvpResults.value = initial
     }

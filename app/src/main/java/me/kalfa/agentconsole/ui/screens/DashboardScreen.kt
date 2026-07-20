@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -31,6 +32,9 @@ import me.kalfa.agentconsole.ui.theme.*
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
+    agentName: String = "נציג KALFA",
+    agentEmail: String = "",
+    onLogout: () -> Unit = {},
     agentStatus: AgentStatus,
     activeAiCalls: Int,
     queueDepth: Int,
@@ -67,7 +71,7 @@ fun DashboardScreen(
                 ) {
                     Column {
                         Text(
-                            text = "שלום, נציג KALFA",
+                            text = "שלום, $agentName",
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
                         )
@@ -78,20 +82,21 @@ fun DashboardScreen(
                             color = MaterialTheme.colorScheme.onBackground
                         )
                     }
-                    Box(
-                        modifier = Modifier
-                            .size(42.dp)
-                            .background(
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
-                                shape = RoundedCornerShape(12.dp)
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.SupportAgent,
-                            contentDescription = "סוכן",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        IconButton(onClick = onLogout) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Logout,
+                                contentDescription = "התנתקות",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        if (agentEmail.isNotEmpty()) {
+                            Text(
+                                text = agentEmail,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
+                            )
+                        }
                     }
                 }
             }

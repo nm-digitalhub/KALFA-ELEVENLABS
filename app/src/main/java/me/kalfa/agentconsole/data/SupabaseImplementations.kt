@@ -23,6 +23,13 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.Serializable
 import java.util.UUID
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import io.ktor.client.statement.*
+import kotlinx.serialization.json.jsonPrimitive
+import me.kalfa.agentconsole.di.ErrorBus
+import me.kalfa.agentconsole.di.AppVisibility
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DTOs — wired to the REAL production console schema (kalfa-event-magic):
@@ -78,7 +85,10 @@ data class DbConsoleTarget(
     val current_step_index: Int? = null,
     val next_run_at: String? = null,
     val reached_at: String? = null,
-    val stop_reason: String? = null
+    val reached_channel: String? = null,
+    val stop_reason: String? = null,
+    val guest_name: String? = null,
+    val phone: String? = null
 )
 
 @Serializable
@@ -94,12 +104,59 @@ data class DbRsvpRow(
     val created_at: String? = null
 )
 
+@Serializable
+data class DbConsoleEvent(
+    val event_id: String,
+    val event_name: String? = null,
+    val event_type: String? = null,
+    val event_date: String? = null,
+    val has_campaign: Boolean = false
+)
+
+fun DbConsoleEvent.toDomain(): ConsoleEvent = ConsoleEvent(
+    id = event_id,
+    name = event_name ?: "אירוע",
+    type = event_type,
+    date = event_date,
+    hasCampaign = has_campaign
+)
+
+@Serializable
+data class DbCallAnalysis(
+    val call_attempt_id: String,
+    val event_id: String? = null,
+    val call_successful: String? = null,
+    val status: String? = null,
+    val score: Double? = null,
+    val call_duration_secs: Int? = null,
+    val termination_reason: String? = null,
+    val el_eval: JsonObject? = null,
+    val rsvp_status: String? = null,
+    val adults: Int? = null,
+    val children: Int? = null,
+    val analysis_at: String? = null
+)
+
+fun DbCallAnalysis.toDomain(): CallAnalysis = CallAnalysis(
+    callAttemptId = call_attempt_id,
+    eventId = event_id,
+    callSuccessful = call_successful,
+    score = score,
+    durationSec = call_duration_secs,
+    terminationReason = termination_reason,
+    rsvpStatus = rsvp_status,
+    adults = adults,
+    children = children,
+    evalCriteria = el_eval?.mapValues { it.value.jsonPrimitive.content } ?: emptyMap(),
+    analysisAt = analysis_at
+)
+
 // Live production statuses on call_attempts (verified 20.07.2026):
 // in_progress | completed | no_answer | cancelled | no_response
 private val TERMINAL_CALL_STATUSES =
     setOf("completed", "no_answer", "cancelled", "no_response", "failed", "voicemail")
 
-fun DbConsoleCall.toDomain(): Call {
+fun DbConsoleCall.toDomain(eventName: String? = null): Call {
     val callKind = when (kind.lowercase()) {
         "inbound" -> CallKind.INBOUND
         "outbound" -> CallKind.OUTBOUND
@@ -115,12 +172,13 @@ fun DbConsoleCall.toDomain(): Call {
     }
     return Call(
         id = call_attempt_id,
+        eventId = event_id ?: "",
         direction = direction,
         kind = callKind,
         voxSessionId = "vox-${call_attempt_id.take(8)}",
         customerPhone = "", // PII stays server-side by design; feed carries no phone
         customerName = "אורח",
-        eventName = event_id?.let { "אירוע ${it.take(8)}" } ?: "אירוע",
+        eventName = eventName ?: event_id?.let { "אירוע ${it.take(8)}" } ?: "אירוע",
         handledBy = handled_by,
         agentId = agent_id,
         state = callState,
@@ -133,7 +191,7 @@ fun DbConsoleCall.toDomain(): Call {
     )
 }
 
-fun DbConsoleCampaign.toDomain(total: Int, done: Int): Campaign {
+fun DbConsoleCampaign.toDomain(total: Int, done: Int, eventName: String? = null): Campaign {
     val campState = when {
         status?.lowercase() == "closed" -> CampaignState.COMPLETED
         !enabled -> CampaignState.PAUSED
@@ -142,9 +200,9 @@ fun DbConsoleCampaign.toDomain(total: Int, done: Int): Campaign {
     }
     return Campaign(
         id = id,
-        name = "קמפיין ${id.take(8)}",
+        name = eventName?.let { "אישורי הגעה — $it" } ?: "קמפיין ${id.take(8)}",
         eventId = event_id ?: "",
-        eventName = event_id?.let { "אירוע ${it.take(8)}" } ?: "",
+        eventName = eventName ?: (event_id?.let { "אירוע ${it.take(8)}" } ?: ""),
         state = campState,
         totalTargets = total,
         completedTargets = done
@@ -155,8 +213,8 @@ fun DbConsoleTarget.toDomain(): CampaignTarget = CampaignTarget(
     id = id,
     campaignId = campaign_id ?: "",
     guestId = contact_id ?: "",
-    guestName = "איש קשר",
-    phone = "", // PII not exposed in the console view
+    guestName = guest_name ?: "איש קשר",
+    phone = phone ?: "", // empty unless view_customer_data (DB-gated)
     attempts = current_step_index ?: 0,
     lastResult = stop_reason ?: status,
     callId = null
@@ -164,6 +222,7 @@ fun DbConsoleTarget.toDomain(): CampaignTarget = CampaignTarget(
 
 fun DbRsvpRow.toDomain(): RsvpResult = RsvpResult(
     id = id,
+    eventId = event_id ?: "",
     callId = "",
     guestId = guest_id ?: "",
     guestName = guest_name ?: "אורח",
@@ -178,6 +237,12 @@ fun DbRsvpRow.toDomain(): RsvpResult = RsvpResult(
 
 class SupabaseCallRepository(private val client: SupabaseClient) : CallRepository {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    private val _eventNames = MutableStateFlow<Map<String, String>>(emptyMap())
+    override val eventNames: StateFlow<Map<String, String>> = _eventNames.asStateFlow()
+
+    private val _events = MutableStateFlow<List<ConsoleEvent>>(emptyList())
+    override val events: StateFlow<List<ConsoleEvent>> = _events.asStateFlow()
 
     private val _liveCalls = MutableStateFlow<List<Call>>(emptyList())
     override val liveCalls: StateFlow<List<Call>> = _liveCalls.asStateFlow()
@@ -205,16 +270,37 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
     private fun fetchCalls() {
         scope.launch {
             try {
+                if (_eventNames.value.isEmpty()) {
+                    val evs = client.postgrest["console_events"].select()
+                        .decodeList<DbConsoleEvent>()
+                    _eventNames.value = evs.associate { it.event_id to (it.event_name ?: "") }
+                    _events.value = evs.map { it.toDomain() }
+                }
+                val names = _eventNames.value
                 val rows = client.postgrest["console_call_feed"].select()
                     .decodeList<DbConsoleCall>()
-                val calls = rows.map { it.toDomain() }
+                val calls = rows.map { it.toDomain(names[it.event_id]) }
                     .sortedByDescending { it.startedAt }
                 _liveCalls.value = calls.filter { it.state != CallState.DISCONNECTED }
                 _callHistory.value = calls.filter { it.state == CallState.DISCONNECTED }
+                ErrorBus.clear()
             } catch (e: Exception) {
                 e.printStackTrace()
+                ErrorBus.post("שגיאה בטעינת שיחות — בדוק חיבור")
             }
         }
+    }
+
+    override fun refresh() { _eventNames.value = emptyMap(); fetchCalls() }
+
+    override suspend fun getCallAnalysis(callId: String): CallAnalysis? = try {
+        client.postgrest["console_call_analysis"].select {
+            filter { eq("call_attempt_id", callId) }
+        }.decodeList<DbCallAnalysis>().firstOrNull()?.toDomain()
+    } catch (e: Exception) {
+        e.printStackTrace()
+        ErrorBus.post("שגיאה בטעינת ניתוח שיחה")
+        null
     }
 
     override fun updateCall(call: Call) {
@@ -253,15 +339,20 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
         // does not emit postgres_changes for views, so refresh on a light poll.
         scope.launch {
             while (isActive) {
-                fetchCampaigns()
+                if (AppVisibility.isForeground.value) fetchCampaigns()
                 delay(60_000)
             }
         }
     }
 
+    override fun refresh() = fetchCampaigns()
+
     private fun fetchCampaigns() {
         scope.launch {
             try {
+                val evs = client.postgrest["console_events"].select()
+                    .decodeList<DbConsoleEvent>()
+                val names = evs.associate { it.event_id to (it.event_name ?: "") }
                 val camps = client.postgrest["console_campaigns"].select()
                     .decodeList<DbConsoleCampaign>()
                 val targets = client.postgrest["console_campaign_targets"].select()
@@ -269,13 +360,15 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
                 val byCampaign = targets.groupBy { it.campaign_id }
                 _campaigns.value = camps.map { c ->
                     val t = byCampaign[c.id].orEmpty()
-                    c.toDomain(total = t.size, done = t.count { it.reached_at != null })
+                    c.toDomain(total = t.size, done = t.count { it.reached_at != null }, eventName = names[c.event_id])
                 }
+                ErrorBus.clear()
                 targetsMap.forEach { (cid, flow) ->
                     flow.value = byCampaign[cid].orEmpty().map { it.toDomain() }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
+                ErrorBus.post("שגיאה בטעינת קמפיינים — בדוק חיבור")
             }
         }
     }
@@ -307,11 +400,13 @@ class SupabaseRsvpRepository(private val client: SupabaseClient) : RsvpRepositor
         // freshness driver is console_call_feed realtime anyway.
         scope.launch {
             while (isActive) {
-                fetchRsvpResults()
+                if (AppVisibility.isForeground.value) fetchRsvpResults()
                 delay(60_000)
             }
         }
     }
+
+    override fun refresh() = fetchRsvpResults()
 
     private fun fetchRsvpResults() {
         scope.launch {
@@ -319,8 +414,10 @@ class SupabaseRsvpRepository(private val client: SupabaseClient) : RsvpRepositor
                 val rows = client.postgrest["console_rsvp_results"].select()
                     .decodeList<DbRsvpRow>()
                 _rsvpResults.value = rows.map { it.toDomain() }
+                ErrorBus.clear()
             } catch (e: Exception) {
                 e.printStackTrace()
+                ErrorBus.post("שגיאה בטעינת תוצאות RSVP")
             }
         }
     }
@@ -430,6 +527,32 @@ class SupabaseCallEngineImpl(
                 e.printStackTrace()
             }
         }
+    }
+
+    override suspend fun sendAgentCommand(
+        callId: String,
+        command: String,
+        payload: Map<String, String>
+    ): Boolean = try {
+        val jwt = getJwt()
+        val body = buildJsonObject {
+            put("command", command)
+            payload.forEach { (k, v) -> put(k, v) }
+        }.toString()
+        val resp = httpClient.post("https://beta.kalfa.me/api/calls/$callId/agent-command") {
+            header(HttpHeaders.Authorization, "Bearer $jwt")
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }
+        val ok = resp.status.value in 200..299
+        if (!ok) ErrorBus.post(
+            if (resp.status.value == 409) "השיחה כבר לא פעילה" else "פקודת AI נכשלה (${resp.status.value})"
+        )
+        ok
+    } catch (e: Exception) {
+        e.printStackTrace()
+        ErrorBus.post("פקודת AI נכשלה — בדוק חיבור")
+        false
     }
 
     override fun startOutboundCall(phone: String, customerName: String): CallSession {
