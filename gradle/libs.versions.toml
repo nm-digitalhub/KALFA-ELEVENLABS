@@ -18,7 +18,7 @@ runner = "1.6.2"
 kotlinxCoroutinesAndroid = "1.10.2"
 kotlinxCoroutinesCore = "1.10.2"
 accompanistPermissions = "0.37.3"
-voximplant = "2.45.0"
+voximplant = "3.2.0"
 playServicesLocation = "21.3.0"
 cameraCamera2 = "1.5.0"
 cameraLifecycle = "1.5.0"
@@ -67,7 +67,12 @@ coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref 
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinxCoroutinesAndroid" }
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "kotlinxCoroutinesCore" }
 accompanist-permissions = { group = "com.google.accompanist", name = "accompanist-permissions", version.ref = "accompanistPermissions" }
-voximplant-sdk = { group = "com.voximplant", name = "voximplant-sdk", version.ref = "voximplant" }
+# Voximplant Android SDK v3 (modular, Kotlin/coroutines, Compose-friendly). The BOM
+# aligns core+calls; only the BOM carries the version.ref. (Replaces the legacy
+# monolithic v2 `voximplant-sdk`, whose Java listener API this app never used.)
+voximplant-bom = { group = "com.voximplant", name = "android-sdk-bom", version.ref = "voximplant" }
+voximplant-core = { group = "com.voximplant", name = "android-sdk-core" }
+voximplant-calls = { group = "com.voximplant", name = "android-sdk-calls" }
 play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
 androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "cameraCamera2" }
 androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "cameraLifecycle" }

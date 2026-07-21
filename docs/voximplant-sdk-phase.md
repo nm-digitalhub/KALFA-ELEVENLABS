@@ -1,5 +1,18 @@
 # Voximplant SDK phase — pre-implementation review & handoff
 
+> **UPDATE 2026-07 — SDK line changed to v3, backend blocker cleared.** Two facts
+> below are now stale: (1) `/api/agents/sdk-auth` **exists** (integration reference
+> §6.6), so the login layer is buildable; (2) the modular **v3** SDK
+> (`com.voximplant:android-sdk-*`) left beta — `3.2.0` is stable and actively
+> maintained (Maven `<release>`, updated 2026-07-15), so the "keep v2, v3 is Beta"
+> decision no longer holds. This app is Compose + coroutines, so it now builds
+> against **v3** (`android-sdk-bom` + `-core` + `-calls`). The login layer
+> (`telephony/vox/VoxClientManager` + `VoxAuthenticator`/`VoxSdkAuthClient`) is
+> implemented against the v3 `Client` object. `VoxConfig.node` is set to **Node2**
+> (confirmed from the kalfarsvp account: API endpoint `api-node2.voximplant.com`).
+> Login stays MAU-gated (not auto-invoked). Monitor/takeover still need the backend
+> Conference + an `AgentSdkTest` scenario before they can be verified on-device.
+
 Status: **design locked, implementation gated on backend.** This documents the
 verified state so the human-agent SDK leg (login → monitor → takeover) can be built
 against something testable, rather than blind. Every claim is tagged **[verified]**
