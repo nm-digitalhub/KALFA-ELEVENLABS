@@ -10,6 +10,10 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -116,6 +120,7 @@ fun CampaignCard(
     val completionRatio = if (campaign.totalTargets > 0) {
         campaign.completedTargets.toFloat() / campaign.totalTargets.toFloat()
     } else 0f
+    var confirming by remember { mutableStateOf(false) }
 
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -203,9 +208,13 @@ fun CampaignCard(
                         Text("הקמפיין הושלם בהצלחה", style = MaterialTheme.typography.labelLarge)
                     }
                 } else {
+                    // Activate / pause for real via the console route (onToggle ->
+                    // toggleCampaign -> POST /api/campaigns/{id}/status). Activation is
+                    // billing-guarded server-side (an authorized J5 hold is required);
+                    // confirm first since either direction changes sending.
                     val isActive = campaign.state == CampaignState.ACTIVE
                     Button(
-                        onClick = onToggle,
+                        onClick = { confirming = true },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (isActive) ColorWarning else MaterialTheme.colorScheme.primary
                         ),
@@ -221,6 +230,26 @@ fun CampaignCard(
                             text = if (isActive) "השהה קמפיין" else "הפעל קמפיין",
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold
+                        )
+                    }
+                    if (confirming) {
+                        AlertDialog(
+                            onDismissRequest = { confirming = false },
+                            title = { Text(if (isActive) "להשהות את הקמפיין?" else "להפעיל את הקמפיין?") },
+                            text = {
+                                Text(
+                                    if (isActive) "הפניות החדשות ייעצרו. ניתן להפעיל שוב מאוחר יותר."
+                                    else "המערכת תתחיל לפנות לנמענים לפי לוח הזמנים והכללים (נדרשת תפיסת מסגרת מאושרת)."
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { confirming = false; onToggle() }) {
+                                    Text(if (isActive) "השהה" else "הפעל")
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { confirming = false }) { Text("ביטול") }
+                            },
                         )
                     }
                 }

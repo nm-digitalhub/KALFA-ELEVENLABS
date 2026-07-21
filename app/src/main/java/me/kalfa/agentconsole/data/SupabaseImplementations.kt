@@ -192,10 +192,15 @@ fun DbConsoleCall.toDomain(eventName: String? = null): Call {
 }
 
 fun DbConsoleCampaign.toDomain(total: Int, done: Int, eventName: String? = null): Campaign {
-    val campState = when {
-        status?.lowercase() == "closed" -> CampaignState.COMPLETED
-        !enabled -> CampaignState.PAUSED
-        status?.lowercase() == "approved" -> CampaignState.ACTIVE
+    // campaign_status enum: draft, pending_approval, approved, scheduled, active,
+    // paused, closed, awaiting_invoice, billed, paid, cancelled. The ONLY sending
+    // state is 'active' (console_campaigns.enabled is literally `status = 'active'`);
+    // the earlier 'approved' value is pre-send. A finished campaign is closed/billed/
+    // paid/cancelled; anything else is not-yet-sending → paused. (Before: only
+    // 'approved' mapped to ACTIVE, so a genuinely active campaign showed "מושהה".)
+    val campState = when (status?.lowercase()) {
+        "active" -> CampaignState.ACTIVE
+        "closed", "billed", "paid", "cancelled" -> CampaignState.COMPLETED
         else -> CampaignState.PAUSED
     }
     return Campaign(
@@ -370,6 +375,7 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
 
     private val targetsMap = mutableMapOf<String, MutableStateFlow<List<CampaignTarget>>>()
     private val eventGuestsMap = mutableMapOf<String, MutableStateFlow<List<EventGuest>>>()
+    private val httpClient = HttpClient(OkHttp)
 
     init {
         // console_campaigns / console_campaign_targets are VIEWS — Supabase Realtime
@@ -443,9 +449,39 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
         return flow.asStateFlow()
     }
 
+    // Flip a campaign active<->paused via the console route. Active -> pause;
+    // anything else -> activate. Activation is billing-guarded server-side (the route
+    // requires an authorized J5 hold), so a paused-with-no-hold campaign returns 409
+    // and we surface the reason. On success we re-read so the badge/button update.
     override fun toggleCampaign(campaignId: String) {
-        // Campaign state is billing-coupled (SUMIT) and must NOT be flipped from the
-        // client. Wire to POST beta.kalfa.me/api/campaigns/{id}/start|pause in Phase 2.
+        scope.launch {
+            try {
+                val current = _campaigns.value.firstOrNull { it.id == campaignId } ?: return@launch
+                val action = if (current.state == CampaignState.ACTIVE) "pause" else "activate"
+                val jwt = client.auth.currentAccessTokenOrNull() ?: return@launch
+                val body = buildJsonObject { put("action", action) }.toString()
+                val resp = httpClient.post("https://beta.kalfa.me/api/campaigns/$campaignId/status") {
+                    header(HttpHeaders.Authorization, "Bearer $jwt")
+                    contentType(ContentType.Application.Json)
+                    setBody(body)
+                }
+                if (resp.status.value in 200..299) {
+                    ErrorBus.clear()
+                    fetchCampaigns()
+                } else ErrorBus.post(
+                    when (resp.status.value) {
+                        403 -> "אין הרשאה לשנות את מצב הקמפיין"
+                        404 -> "הקמפיין לא נמצא"
+                        409 -> if (action == "activate")
+                            "להפעלת הקמפיין נדרשת תפיסת מסגרת מאושרת" else "לא ניתן לשנות את מצב הקמפיין כעת"
+                        else -> "שינוי מצב הקמפיין נכשל (${resp.status.value})"
+                    }
+                )
+            } catch (e: Exception) {
+                e.printStackTrace()
+                ErrorBus.post("שינוי מצב הקמפיין נכשל — בדוק חיבור")
+            }
+        }
     }
 
     override fun updateTargetResult(targetId: String, result: String) {
