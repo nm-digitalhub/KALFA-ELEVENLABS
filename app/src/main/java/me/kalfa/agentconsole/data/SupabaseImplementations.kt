@@ -220,6 +220,27 @@ fun DbConsoleTarget.toDomain(): CampaignTarget = CampaignTarget(
     callId = null
 )
 
+@Serializable
+data class DbConsoleEventGuest(
+    val guest_id: String,
+    val event_id: String,
+    val guest_name: String? = null,
+    val dialable: Boolean = false,
+    val phone: String? = null, // null unless view_customer_data (DB-gated)
+    val rsvp_status: String? = null,
+    val has_active_campaign: Boolean = false
+)
+
+fun DbConsoleEventGuest.toDomain(): EventGuest = EventGuest(
+    guestId = guest_id,
+    eventId = event_id,
+    guestName = guest_name ?: "אורח",
+    dialable = dialable,
+    phone = phone ?: "",
+    rsvpStatus = rsvp_status,
+    hasActiveCampaign = has_active_campaign
+)
+
 fun DbRsvpRow.toDomain(): RsvpResult = RsvpResult(
     id = id,
     eventId = event_id ?: "",
@@ -348,6 +369,7 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
     override val campaigns: StateFlow<List<Campaign>> = _campaigns.asStateFlow()
 
     private val targetsMap = mutableMapOf<String, MutableStateFlow<List<CampaignTarget>>>()
+    private val eventGuestsMap = mutableMapOf<String, MutableStateFlow<List<EventGuest>>>()
 
     init {
         // console_campaigns / console_campaign_targets are VIEWS — Supabase Realtime
@@ -398,6 +420,26 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
     override fun getTargets(campaignId: String): StateFlow<List<CampaignTarget>> {
         val flow = targetsMap.getOrPut(campaignId) { MutableStateFlow(emptyList()) }
         fetchCampaigns()
+        return flow.asStateFlow()
+    }
+
+    // The event's actual guests (console_event_guests), server-filtered by event.
+    // Carries the REAL guests.id the manual-dial route resolves by, plus dialable +
+    // has_active_campaign so the UI offers a dial only when the route would accept
+    // it. Resilient: if the view is absent (migration not yet pushed) the read fails
+    // quietly and the list stays empty rather than blocking the screen.
+    override fun getEventGuests(eventId: String): StateFlow<List<EventGuest>> {
+        val flow = eventGuestsMap.getOrPut(eventId) { MutableStateFlow(emptyList()) }
+        scope.launch {
+            try {
+                val rows = client.postgrest["console_event_guests"].select {
+                    filter { eq("event_id", eventId) }
+                }.decodeList<DbConsoleEventGuest>()
+                flow.value = rows.map { it.toDomain() }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
         return flow.asStateFlow()
     }
 

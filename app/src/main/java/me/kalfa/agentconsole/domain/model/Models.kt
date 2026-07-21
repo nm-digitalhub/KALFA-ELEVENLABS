@@ -70,6 +70,22 @@ data class CampaignTarget(
     val callId: String?
 )
 
+// A guest of an event, sourced from the console_event_guests view. Distinct from
+// CampaignTarget (which is an outreach_state row keyed by contact_id): this carries
+// the REAL guests.id the manual-dial route resolves by, plus the two flags the UI
+// needs to decide whether a dial is even offerable — `dialable` (the guest has a
+// phone) and `hasActiveCampaign` (the route's own 409 gate). `phone` is empty
+// unless the agent holds view_customer_data (gated server-side by the view).
+data class EventGuest(
+    val guestId: String,
+    val eventId: String,
+    val guestName: String,
+    val dialable: Boolean,
+    val phone: String,
+    val rsvpStatus: String?,
+    val hasActiveCampaign: Boolean
+)
+
 enum class RsvpAnswer(val labelHebrew: String) {
     ATTENDING("מגיע"),
     DECLINED("לא מגיע"),

@@ -201,6 +201,11 @@ class ConsoleViewModel : ViewModel() {
     fun targetsFor(campaignId: String): List<CampaignTarget> =
         campaignRepo.getTargets(campaignId).value
 
+    // The event's guests for the manual-dial list (console_event_guests). Returns a
+    // StateFlow the detail screen collects, so the list fills in when the fetch lands.
+    fun eventGuests(eventId: String): StateFlow<List<EventGuest>> =
+        campaignRepo.getEventGuests(eventId)
+
     fun setEventFilter(eventId: String?) {
         _uiState.update { it.copy(selectedEventFilter = eventId) }
     }
