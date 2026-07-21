@@ -61,7 +61,13 @@ data class DbConsoleCall(
     val call_duration_sec: Int? = null,
     val callback_iso: String? = null,
     val created_at: String? = null,
-    val updated_at: String? = null
+    val updated_at: String? = null,
+    // Takeover-coordination columns (added 20.7) — read so a monitor/takeover
+    // implementation can tell who owns a live call (spec §3/§8.5). Nullable +
+    // defaulted, so they decode safely even before any row populates them.
+    val takeover_claimed_at: String? = null,
+    val takeover_request_id: String? = null,
+    val participation_state: String? = null
 )
 
 @Serializable
@@ -198,11 +204,15 @@ fun DbConsoleCampaign.toDomain(total: Int, done: Int, eventName: String? = null)
     // the earlier 'approved' value is pre-send. A finished campaign is closed/billed/
     // paid/cancelled; anything else is not-yet-sending → paused. (Before: only
     // 'approved' mapped to ACTIVE, so a genuinely active campaign showed "מושהה".)
-    val campState = when (status?.lowercase()) {
+    val raw = status?.lowercase()
+    val campState = when (raw) {
         "active" -> CampaignState.ACTIVE
         "closed", "billed", "paid", "cancelled" -> CampaignState.COMPLETED
         else -> CampaignState.PAUSED
     }
+    // Togglable from the console ONLY when the raw status is 'active'/'paused' —
+    // the only states POST /api/campaigns/{id}/status accepts (spec §6.5). Other
+    // pre-send states (approved/scheduled/…) 409 there; the UI shows no button.
     return Campaign(
         id = id,
         name = eventName?.let { "אישורי הגעה — $it" } ?: "קמפיין ${id.take(8)}",
@@ -210,7 +220,8 @@ fun DbConsoleCampaign.toDomain(total: Int, done: Int, eventName: String? = null)
         eventName = eventName ?: (event_id?.let { "אירוע ${it.take(8)}" } ?: ""),
         state = campState,
         totalTargets = total,
-        completedTargets = done
+        completedTargets = done,
+        runControllable = raw == "active" || raw == "paused"
     )
 }
 
