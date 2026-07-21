@@ -161,7 +161,7 @@ private fun GuestsTab(
                         val answer = answersByGuestName[g.guestName]?.answer?.labelHebrew
                         val sub = listOfNotNull(
                             g.phone.ifEmpty { null },
-                            answer ?: g.rsvpStatus
+                            answer ?: g.rsvpStatus?.let { rsvpStatusHebrew(it) }
                         ).joinToString(" · ")
                         if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -201,4 +201,21 @@ private fun EmptyLine(text: String) {
     Text(text, style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(vertical = 8.dp))
+}
+
+// Raw console_event_guests.rsvp_status → Hebrew. Falls back to the raw value so
+// an unknown status still shows something rather than nothing (spec §8.3:
+// 'exhausted' was previously shown untranslated in the guest card).
+private fun rsvpStatusHebrew(raw: String): String = when (raw.lowercase()) {
+    "attending", "confirmed" -> "אישר הגעה"
+    "declined" -> "לא מגיע"
+    "maybe" -> "אולי"
+    "callback" -> "ביקש שיחה חוזרת"
+    "pending", "pending_contact" -> "ממתין"
+    "reached", "reached_billed" -> "נוצר קשר"
+    "no_answer" -> "אין מענה"
+    "wrong_number" -> "מספר שגוי"
+    "stopped" -> "הופסק"
+    "exhausted" -> "מוצה"
+    else -> raw
 }

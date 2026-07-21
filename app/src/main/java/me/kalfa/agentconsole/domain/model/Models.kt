@@ -56,7 +56,14 @@ data class Campaign(
     val eventName: String,
     val state: CampaignState,
     val totalTargets: Int,
-    val completedTargets: Int
+    val completedTargets: Int,
+    // True ONLY when the raw campaign_status is 'active' or 'paused' — the only
+    // two states POST /api/campaigns/{id}/status accepts (spec §6.5). Every other
+    // state (draft/pending_approval/approved/scheduled/awaiting_invoice) is NOT
+    // togglable from the console: the first activation is the owner's on the web,
+    // and the route 409s it. The UI renders a run-control button only when this is
+    // true, so it never shows a control the backend would refuse (spec §9).
+    val runControllable: Boolean = false
 )
 
 data class CampaignTarget(

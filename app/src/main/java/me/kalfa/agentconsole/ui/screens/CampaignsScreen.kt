@@ -207,7 +207,7 @@ fun CampaignCard(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("הקמפיין הושלם בהצלחה", style = MaterialTheme.typography.labelLarge)
                     }
-                } else {
+                } else if (campaign.runControllable) {
                     // Activate / pause for real via the console route (onToggle ->
                     // toggleCampaign -> POST /api/campaigns/{id}/status). Activation is
                     // billing-guarded server-side (an authorized J5 hold is required);
@@ -252,6 +252,16 @@ fun CampaignCard(
                             },
                         )
                     }
+                } else {
+                    // Not yet activatable from the console (draft/pending_approval/
+                    // approved/scheduled/awaiting_invoice). The status route 409s these —
+                    // the first activation is the owner's on the web (spec §6.5). Show a
+                    // read-only note, never a button the backend would refuse (spec §9).
+                    Text(
+                        text = "ההפעלה הראשונה מתבצעת על ידי בעל האירוע באתר",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
                 }
             }
         }
@@ -294,7 +304,8 @@ fun CampaignsScreenPreview() {
                     eventName = "חתונה של רון וטל",
                     state = CampaignState.ACTIVE,
                     totalTargets = 150,
-                    completedTargets = 95
+                    completedTargets = 95,
+                    runControllable = true
                 ),
                 Campaign(
                     id = "2",
@@ -303,7 +314,8 @@ fun CampaignsScreenPreview() {
                     eventName = "ברית לתינוק לוי",
                     state = CampaignState.PAUSED,
                     totalTargets = 100,
-                    completedTargets = 45
+                    completedTargets = 45,
+                    runControllable = true
                 )
             ),
             onToggleCampaign = {}
