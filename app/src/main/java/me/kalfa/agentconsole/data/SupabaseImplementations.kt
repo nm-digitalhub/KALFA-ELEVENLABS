@@ -577,6 +577,27 @@ class SupabaseCallEngineImpl(
         false
     }
 
+    // Hang up the live call (the guest conversation) via the dedicated /end route —
+    // NOT an agent-command. Reuses the same JWT + client as sendAgentCommand; the
+    // route reads no body, so none is sent. 2xx = delivered (async teardown); the
+    // call row records the real outcome, and the live-calls list drops it once the
+    // terminal callback fires.
+    override suspend fun endCall(callId: String): Boolean = try {
+        val jwt = getJwt()
+        val resp = httpClient.post("https://beta.kalfa.me/api/calls/$callId/end") {
+            header(HttpHeaders.Authorization, "Bearer $jwt")
+        }
+        val ok = resp.status.value in 200..299
+        if (!ok) ErrorBus.post(
+            if (resp.status.value == 409) "השיחה כבר לא פעילה" else "ניתוק השיחה נכשל (${resp.status.value})"
+        )
+        ok
+    } catch (e: Exception) {
+        e.printStackTrace()
+        ErrorBus.post("ניתוק השיחה נכשל — בדוק חיבור")
+        false
+    }
+
     override fun startOutboundCall(phone: String, customerName: String): CallSession {
         _currentSession.value?.hangup()
         

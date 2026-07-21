@@ -280,6 +280,13 @@ class ConsoleViewModel : ViewModel() {
         viewModelScope.launch { callEngine.sendAgentCommand(callId, "close_agent") }
     }
 
+    // Hang up the live call (guest conversation). Real, wired to POST
+    // /api/calls/{id}/end. On success the row goes terminal and the live-calls list
+    // drops it; failures are surfaced by the engine on the error banner.
+    fun endCall(callId: String) {
+        viewModelScope.launch { callEngine.endCall(callId) }
+    }
+
     fun setAgentStatus(status: AgentStatus) {
         agentPresence.setStatus(status)
     }
