@@ -289,6 +289,14 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
 
     init {
         fetchCalls()
+        // console_events is a VIEW (no realtime, §4) — poll lightly in the foreground
+        // so a deleted/renamed event disappears without restarting the app (spec §8.4).
+        scope.launch {
+            while (isActive) {
+                if (AppVisibility.isForeground.value) fetchEvents()
+                delay(60_000)
+            }
+        }
         scope.launch {
             try {
                 val channel = client.realtime.channel("db-console-call-feed")
@@ -312,6 +320,16 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
      */
     private suspend fun refreshEventNames() {
         if (_eventNames.value.isNotEmpty()) return
+        fetchEvents()
+    }
+
+    // Full (unconditional) read of console_events → the event list + the name cache.
+    // console_events is a VIEW, so Supabase Realtime never emits for it (§4 publishes
+    // only agent_status / console_call_feed / human_agent_call_legs); the foreground
+    // poll in init is what makes a DELETED or renamed event disappear without
+    // restarting the app (spec §8.4). REPLACE semantics — _events is overwritten, so
+    // a row that is gone upstream is dropped here too.
+    private suspend fun fetchEvents() {
         try {
             val evs = client.postgrest["console_events"].select()
                 .decodeList<DbConsoleEvent>()
