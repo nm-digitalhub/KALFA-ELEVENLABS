@@ -53,13 +53,25 @@ jobs:
 
       - name: Create local environment file
         shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          if [ ! -f .env ]; then
+          # Real Supabase (anon key is a PUBLIC, RLS-protected client key) → the app
+          # runs CONFIGURED: real login screen + real events/feed. Without the secrets
+          # it falls back to the placeholder .env, which builds a MOCK-mode APK (no
+          # login, fabricated data) — hence the loud warning so a mock build is never
+          # mistaken for a real one.
+          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_ANON_KEY" ]; then
+            printf 'SUPABASE_URL=%s\nSUPABASE_ANON_KEY=%s\n' "$SUPABASE_URL" "$SUPABASE_ANON_KEY" > .env
+            echo "Wrote .env from repository secrets — real Supabase (configured build)."
+          elif [ ! -f .env ]; then
             if [ -f .env.example ]; then
               cp .env.example .env
             else
               touch .env
             fi
+            echo "::warning::SUPABASE_URL/SUPABASE_ANON_KEY secrets are not set — building in MOCK mode from placeholders (no login, fabricated data). Add the two repo secrets for a real build."
           fi
 
       - name: Create temporary debug keystore
