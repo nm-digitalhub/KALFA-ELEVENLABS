@@ -165,9 +165,11 @@ private fun GuestsTab(
                         if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    // Per-guest dial DISABLED until app-initiated outbound is wired
+                    // to a real enqueue route (never a mock call).
                     if (canManageVoice && t.phone.isNotEmpty()) {
-                        FilledTonalIconButton(onClick = { onDialTarget(t.phone, t.guestName) }) {
-                            Icon(Icons.Default.Call, contentDescription = "חייג", modifier = Modifier.size(18.dp))
+                        FilledTonalIconButton(onClick = { onDialTarget(t.phone, t.guestName) }, enabled = false) {
+                            Icon(Icons.Default.Call, contentDescription = "חייג (בקרוב)", modifier = Modifier.size(18.dp))
                         }
                     }
                 }

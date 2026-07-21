@@ -298,6 +298,10 @@ fun DashboardScreen(
                             shape = RoundedCornerShape(12.dp)
                         )
 
+                        // App-initiated outbound dialing is DISABLED: there is no
+                        // enqueue route yet (the worker owns dispatch), so tapping
+                        // this must not open a mock call. Re-enable when
+                        // POST /api/events/{id}/outreach-call ships.
                         Button(
                             onClick = {
                                 if (outPhone.isNotBlank() && outName.isNotBlank()) {
@@ -306,6 +310,7 @@ fun DashboardScreen(
                                     outName = ""
                                 }
                             },
+                            enabled = false,
                             modifier = Modifier.fillMaxWidth(),
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                             shape = RoundedCornerShape(14.dp),
@@ -313,7 +318,7 @@ fun DashboardScreen(
                         ) {
                             Icon(imageVector = Icons.Default.Call, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("התחל שיחה", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text("חיוג יזום — בקרוב", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         }
                     }
                 }

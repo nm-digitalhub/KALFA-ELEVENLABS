@@ -280,32 +280,36 @@ class ConsoleViewModel : ViewModel() {
         viewModelScope.launch { callEngine.sendAgentCommand(callId, "close_agent") }
     }
 
+    // Hang up the live call (guest conversation). Real, wired to POST
+    // /api/calls/{id}/end. On success the row goes terminal and the live-calls list
+    // drops it; failures are surfaced by the engine on the error banner.
+    fun endCall(callId: String) {
+        viewModelScope.launch { callEngine.endCall(callId) }
+    }
+
     fun setAgentStatus(status: AgentStatus) {
         agentPresence.setStatus(status)
     }
 
-    fun monitorCall(callId: String) {
-        viewModelScope.launch {
-            callEngine.monitorCall(callId)
-        }
+    // Live-listen (monitor), takeover, and app-initiated outbound dialing are NOT
+    // wired end-to-end: each needs a real human-agent Voximplant SDK leg, a backend
+    // route (monitor / takeover / outreach-call — none exist yet), and for
+    // monitor/takeover the VoxEngine named-Conference redesign. Per the UI-honesty
+    // rule we must never open a fake in-call session or show fake success — so these
+    // surface an honest notice and do nothing else (the mock engine is never
+    // invoked, so currentSession stays null and no fake in-call screen appears). The
+    // matching buttons are also disabled + labelled "בקרוב". The AI-supervision
+    // commands (whisper / clear / close) below ARE wired and stay live. Re-enable
+    // each of these when its backend route + SDK path ships.
+    private fun notifyNotWired(feature: String) {
+        ErrorBus.post("$feature עדיין בפיתוח — יופעל כשמנוע הטלפוניה (Voximplant) יחובר.")
     }
 
-    fun takeoverCall(callId: String) {
-        viewModelScope.launch {
-            callEngine.takeoverCall(callId)
-        }
-    }
+    fun monitorCall(callId: String) = notifyNotWired("האזנה שקטה לשיחה")
 
-    fun makeOutboundCall(phone: String, name: String) {
-        val normalized = normalizePhone(phone)
-        if (normalized == null) {
-            ErrorBus.post("מספר טלפון לא תקין: $phone")
-            return
-        }
-        viewModelScope.launch {
-            callEngine.startOutboundCall(normalized, name.ifBlank { "לקוח" })
-        }
-    }
+    fun takeoverCall(callId: String) = notifyNotWired("השתלטות על שיחה")
+
+    fun makeOutboundCall(phone: String, name: String) = notifyNotWired("חיוג יזום מהאפליקציה")
 
     fun toggleCampaign(campaignId: String) {
         campaignRepo.toggleCampaign(campaignId)

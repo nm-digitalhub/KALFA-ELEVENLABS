@@ -45,6 +45,7 @@ fun LiveCallsScreen(
     onWhisper: (String, String) -> Unit = { _, _ -> },
     onMuteAi: (String) -> Unit = {},
     onCloseAi: (String) -> Unit = {},
+    onEndCall: (String) -> Unit = {},
     liveCalls: List<Call>,
     onMonitor: (String) -> Unit,
     onTakeover: (String) -> Unit,
@@ -149,7 +150,8 @@ fun LiveCallsScreen(
                             liveLines = liveTranscripts[call.id].orEmpty(),
                             onWhisper = { text -> onWhisper(call.id, text) },
                             onMuteAi = { onMuteAi(call.id) },
-                            onCloseAi = { onCloseAi(call.id) }
+                            onCloseAi = { onCloseAi(call.id) },
+                            onEndCall = { onEndCall(call.id) }
                         )
                     }
                 }
@@ -166,10 +168,13 @@ fun LiveCallCard(
     liveLines: List<TranscriptLine> = emptyList(),
     onWhisper: (String) -> Unit = {},
     onMuteAi: () -> Unit = {},
-    onCloseAi: () -> Unit = {}
+    onCloseAi: () -> Unit = {},
+    // Null = no hang-up control (e.g. secondary surfaces that don't wire it).
+    onEndCall: (() -> Unit)? = null
 ) {
     var whisperText by remember { mutableStateOf("") }
     var confirmClose by remember { mutableStateOf(false) }
+    var confirmEnd by remember { mutableStateOf(false) }
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
@@ -344,10 +349,12 @@ fun LiveCallCard(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    // clear_buffer is a one-shot barge-in (drops the AI's buffered
+                    // speech), NOT a mute — label it for what it does.
                     TextButton(onClick = onMuteAi, modifier = Modifier.weight(1f)) {
                         Icon(Icons.Default.VolumeOff, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("השתק AI", style = MaterialTheme.typography.labelMedium)
+                        Text("עצור דיבור", style = MaterialTheme.typography.labelMedium)
                     }
                     TextButton(
                         onClick = { confirmClose = true },
@@ -382,9 +389,13 @@ fun LiveCallCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Monitor button
+                // Monitor (live-listen) — DISABLED until the human-agent SDK leg +
+                // the named-Conference redesign exist. It must never open a fake
+                // silent-listen session, so it stays unavailable ("בקרוב"), not
+                // wired to a mock.
                 OutlinedButton(
                     onClick = onMonitor,
+                    enabled = false,
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary),
                     modifier = Modifier.weight(1f),
@@ -392,12 +403,14 @@ fun LiveCallCard(
                 ) {
                     Icon(imageVector = Icons.Default.Hearing, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("האזנה שקטה", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text("האזנה — בקרוב", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                 }
 
-                // Takeover button
+                // Takeover — DISABLED until the SDK leg + atomic-claim + Conference
+                // land. Never fake a takeover of a live guest call.
                 Button(
                     onClick = onTakeover,
+                    enabled = false,
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                     modifier = Modifier.weight(1f),
@@ -405,7 +418,37 @@ fun LiveCallCard(
                 ) {
                     Icon(imageVector = Icons.Default.PhoneForwarded, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("השתלטות סוכן", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    Text("השתלטות — בקרוב", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            // Hang up the whole call (the guest conversation) — REAL, wired to
+            // POST /api/calls/{id}/end. Distinct from "סיים AI" (close_agent), which
+            // only closes the AI leg. Rendered only where a handler is provided.
+            if (onEndCall != null) {
+                OutlinedButton(
+                    onClick = { confirmEnd = true },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    contentPadding = PaddingValues(vertical = 12.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.CallEnd, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("נתק שיחה", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                }
+                if (confirmEnd) {
+                    AlertDialog(
+                        onDismissRequest = { confirmEnd = false },
+                        title = { Text("לנתק את השיחה?") },
+                        text = { Text("השיחה עם האורח תנותק. הפעולה נרשמת ומחויבת כשיחה שנוצר בה קשר.") },
+                        confirmButton = {
+                            TextButton(onClick = { confirmEnd = false; onEndCall?.invoke() }) { Text("נתק") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { confirmEnd = false }) { Text("ביטול") }
+                        }
+                    )
                 }
             }
         }

@@ -39,6 +39,15 @@ interface CallEngine {
         command: String,
         payload: Map<String, String> = emptyMap()
     ): Boolean = false
+
+    /**
+     * Hangs up a LIVE AI call — the conversation with the guest — via POST
+     * beta.kalfa.me/api/calls/{id}/end. Distinct from sendAgentCommand("close_agent"),
+     * which only closes the AI leg. 2xx means the hangup was DELIVERED; teardown is
+     * async and the call row is the record of the outcome. Default no-op keeps mock
+     * mode working.
+     */
+    suspend fun endCall(callId: String): Boolean = false
 }
 
 interface AgentPresence {

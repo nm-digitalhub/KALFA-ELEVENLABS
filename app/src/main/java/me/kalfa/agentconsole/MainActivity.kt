@@ -247,6 +247,7 @@ private fun ConsoleNavHost(
                 onWhisper = { id, text -> viewModel.whisperToAi(id, text) },
                 onMuteAi = { viewModel.muteAiOnce(it) },
                 onCloseAi = { viewModel.closeAiAgent(it) },
+                onEndCall = { viewModel.endCall(it) },
                 liveCalls = filteredLive,
                 onMonitor = { viewModel.monitorCall(it) },
                 onTakeover = { viewModel.takeoverCall(it) },
