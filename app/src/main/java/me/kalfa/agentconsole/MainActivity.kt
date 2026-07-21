@@ -264,14 +264,14 @@ private fun ConsoleNavHost(
         composable<EventDetailRoute> { entry ->
             val route = entry.toRoute<EventDetailRoute>()
             val evId = route.eventId
+            val eventGuests by remember(evId) { viewModel.eventGuests(evId) }.collectAsState()
             EventDetailScreen(
                 summary = state.eventSummaries.firstOrNull { it.event.id == evId },
                 liveCalls = state.liveCalls.filter { it.eventId == evId },
                 callHistory = state.callHistory.filter { it.eventId == evId },
                 rsvpResults = state.rsvpResults.filter { it.eventId == evId },
                 campaigns = state.campaigns.filter { it.eventId == evId },
-                targets = state.campaigns.filter { it.eventId == evId }
-                    .flatMap { viewModel.targetsFor(it.id) },
+                guests = eventGuests,
                 liveTranscripts = state.liveTranscripts,
                 canManageVoice = state.me?.canManageVoice ?: false,
                 onBack = { navController.popBackStack() },

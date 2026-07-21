@@ -21,7 +21,7 @@ fun EventDetailScreen(
     callHistory: List<Call>,
     rsvpResults: List<RsvpResult>,
     campaigns: List<Campaign>,
-    targets: List<CampaignTarget>,
+    guests: List<EventGuest>,
     liveTranscripts: Map<String, List<TranscriptLine>> = emptyMap(),
     canManageVoice: Boolean = false,
     onBack: () -> Unit = {},
@@ -66,7 +66,7 @@ fun EventDetailScreen(
         when (tab) {
             0 -> OverviewTab(summary, liveCalls, campaigns, liveTranscripts, canManageVoice,
                 onMonitor, onTakeover, onWhisper, onMuteAi, onCloseAi, onToggleCampaign)
-            1 -> GuestsTab(targets, rsvpResults, canManageVoice, onEnqueueCall)
+            1 -> GuestsTab(guests, rsvpResults, canManageVoice, onEnqueueCall)
             2 -> LazyColumn(
                 Modifier.padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -136,20 +136,20 @@ private fun OverviewTab(
 
 @Composable
 private fun GuestsTab(
-    targets: List<CampaignTarget>,
+    guests: List<EventGuest>,
     rsvpResults: List<RsvpResult>,
     canManageVoice: Boolean,
     onEnqueueCall: (String) -> Unit
 ) {
     val answersByGuestName = rsvpResults.associateBy { it.guestName }
-    var pendingCall by remember { mutableStateOf<CampaignTarget?>(null) }
+    var pendingCall by remember { mutableStateOf<EventGuest?>(null) }
     LazyColumn(
         Modifier.padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
         contentPadding = PaddingValues(vertical = 12.dp)
     ) {
-        if (targets.isEmpty()) item { EmptyLine("אין יעדי קמפיין לאירוע") }
-        items(targets, key = { it.id }) { t ->
+        if (guests.isEmpty()) item { EmptyLine("אין אורחים לאירוע") }
+        items(guests, key = { it.guestId }) { g ->
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
@@ -157,19 +157,22 @@ private fun GuestsTab(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text(t.guestName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                        val answer = answersByGuestName[t.guestName]?.answer?.labelHebrew
+                        Text(g.guestName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                        val answer = answersByGuestName[g.guestName]?.answer?.labelHebrew
                         val sub = listOfNotNull(
-                            t.phone.ifEmpty { null },
-                            answer ?: t.lastResult
+                            g.phone.ifEmpty { null },
+                            answer ?: g.rsvpStatus
                         ).joinToString(" · ")
                         if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    // Per-guest outbound — enqueues a REAL AI call via the gated
-                    // worker (POST /api/events/{eventId}/outreach-call). Confirm first.
-                    if (canManageVoice && t.phone.isNotEmpty()) {
-                        FilledTonalIconButton(onClick = { pendingCall = t }) {
+                    // Per-guest outbound — enqueues a REAL AI call via the gated worker
+                    // (POST /api/events/{eventId}/outreach-call) using the guest's real
+                    // guests.id. Offered ONLY when the event has an active campaign (the
+                    // route's own 409 gate) and the guest is dialable — so we never show
+                    // a button that the backend would immediately refuse. Confirm first.
+                    if (canManageVoice && g.dialable && g.hasActiveCampaign) {
+                        FilledTonalIconButton(onClick = { pendingCall = g }) {
                             Icon(Icons.Default.Call, contentDescription = "חייג", modifier = Modifier.size(18.dp))
                         }
                     }
@@ -178,13 +181,13 @@ private fun GuestsTab(
         }
     }
 
-    pendingCall?.let { target ->
+    pendingCall?.let { guest ->
         AlertDialog(
             onDismissRequest = { pendingCall = null },
-            title = { Text("לחייג ל${target.guestName}?") },
+            title = { Text("לחייג ל${guest.guestName}?") },
             text = { Text("המערכת תוסיף שיחת AI לתור ותחייג לפי כללי הקמפיין (הסכמה, מגבלות, יתרה).") },
             confirmButton = {
-                TextButton(onClick = { onEnqueueCall(target.guestId); pendingCall = null }) { Text("חייג") }
+                TextButton(onClick = { onEnqueueCall(guest.guestId); pendingCall = null }) { Text("חייג") }
             },
             dismissButton = {
                 TextButton(onClick = { pendingCall = null }) { Text("ביטול") }
