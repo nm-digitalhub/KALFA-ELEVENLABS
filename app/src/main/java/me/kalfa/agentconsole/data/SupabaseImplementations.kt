@@ -598,6 +598,35 @@ class SupabaseCallEngineImpl(
         false
     }
 
+    // Enqueue a real outbound AI call to an existing guest. ENQUEUE-ONLY: this
+    // POSTs {guest_id} to /api/events/{eventId}/outreach-call and the worker owns
+    // the gate chain + StartScenarios. Never dials from here. Same JWT + client as
+    // the command routes.
+    override suspend fun enqueueOutboundCall(eventId: String, guestId: String): Boolean = try {
+        val jwt = getJwt()
+        val body = buildJsonObject { put("guest_id", guestId) }.toString()
+        val resp = httpClient.post("https://beta.kalfa.me/api/events/$eventId/outreach-call") {
+            header(HttpHeaders.Authorization, "Bearer $jwt")
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }
+        val ok = resp.status.value in 200..299
+        if (!ok) ErrorBus.post(
+            when (resp.status.value) {
+                403 -> "אין הרשאה לחיוג"
+                404 -> "אורח לא נמצא"
+                409 -> "לאירוע אין קמפיין"
+                422 -> "לאורח אין מספר חיוג"
+                else -> "הוספת השיחה לתור נכשלה (${resp.status.value})"
+            }
+        )
+        ok
+    } catch (e: Exception) {
+        e.printStackTrace()
+        ErrorBus.post("הוספת השיחה לתור נכשלה — בדוק חיבור")
+        false
+    }
+
     override fun startOutboundCall(phone: String, customerName: String): CallSession {
         _currentSession.value?.hangup()
         

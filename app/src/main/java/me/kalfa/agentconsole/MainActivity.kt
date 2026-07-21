@@ -281,7 +281,7 @@ private fun ConsoleNavHost(
                 onMuteAi = { viewModel.muteAiOnce(it) },
                 onCloseAi = { viewModel.closeAiAgent(it) },
                 onToggleCampaign = { viewModel.toggleCampaign(it) },
-                onDialTarget = { phone, name -> viewModel.makeOutboundCall(phone, name) },
+                onEnqueueCall = { guestId -> viewModel.enqueueOutboundCall(evId, guestId) },
                 onCallClick = { call ->
                     viewModel.selectCall(call)
                     navController.navigate(CallDetailRoute(call.id))

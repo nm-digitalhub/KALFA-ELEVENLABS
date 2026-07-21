@@ -309,7 +309,20 @@ class ConsoleViewModel : ViewModel() {
 
     fun takeoverCall(callId: String) = notifyNotWired("השתלטות על שיחה")
 
-    fun makeOutboundCall(phone: String, name: String) = notifyNotWired("חיוג יזום מהאפליקציה")
+    // Free-form dialing (arbitrary phone, no event/guest) does NOT fit the backend
+    // enqueue route and stays gated. The real path is enqueueOutboundCall below —
+    // per an EXISTING guest within an event.
+    fun makeOutboundCall(phone: String, name: String) = notifyNotWired("חיוג יזום חופשי")
+
+    // Real outbound: enqueue an AI call to an existing guest via the gated worker
+    // (POST /api/events/{eventId}/outreach-call). On success the call surfaces in
+    // the feed once the worker dials; failures are shown by the engine.
+    fun enqueueOutboundCall(eventId: String, guestId: String) {
+        viewModelScope.launch {
+            val ok = callEngine.enqueueOutboundCall(eventId, guestId)
+            if (ok) ErrorBus.post("השיחה נוספה לתור — המערכת תחייג לפי כללי הקמפיין")
+        }
+    }
 
     fun toggleCampaign(campaignId: String) {
         campaignRepo.toggleCampaign(campaignId)

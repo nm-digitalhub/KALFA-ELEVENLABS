@@ -48,6 +48,16 @@ interface CallEngine {
      * mode working.
      */
     suspend fun endCall(callId: String): Boolean = false
+
+    /**
+     * Enqueues ONE real outbound AI call to an EXISTING guest, via POST
+     * beta.kalfa.me/api/events/{eventId}/outreach-call {guest_id}. ENQUEUE-ONLY:
+     * the backend worker owns every gate (consent/DNC/reached/campaign-active/
+     * caps/balance/event-day) + the actual dial. 2xx = queued (not yet dialing);
+     * the call surfaces in the feed once the worker dials. Default no-op keeps mock
+     * mode working.
+     */
+    suspend fun enqueueOutboundCall(eventId: String, guestId: String): Boolean = false
 }
 
 interface AgentPresence {

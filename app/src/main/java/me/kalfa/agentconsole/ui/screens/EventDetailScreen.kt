@@ -31,7 +31,7 @@ fun EventDetailScreen(
     onMuteAi: (String) -> Unit = {},
     onCloseAi: (String) -> Unit = {},
     onToggleCampaign: (String) -> Unit = {},
-    onDialTarget: (phone: String, name: String) -> Unit = { _, _ -> },
+    onEnqueueCall: (guestId: String) -> Unit = {},
     onCallClick: (Call) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -66,7 +66,7 @@ fun EventDetailScreen(
         when (tab) {
             0 -> OverviewTab(summary, liveCalls, campaigns, liveTranscripts, canManageVoice,
                 onMonitor, onTakeover, onWhisper, onMuteAi, onCloseAi, onToggleCampaign)
-            1 -> GuestsTab(targets, rsvpResults, canManageVoice, onDialTarget)
+            1 -> GuestsTab(targets, rsvpResults, canManageVoice, onEnqueueCall)
             2 -> LazyColumn(
                 Modifier.padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -139,9 +139,10 @@ private fun GuestsTab(
     targets: List<CampaignTarget>,
     rsvpResults: List<RsvpResult>,
     canManageVoice: Boolean,
-    onDialTarget: (String, String) -> Unit
+    onEnqueueCall: (String) -> Unit
 ) {
     val answersByGuestName = rsvpResults.associateBy { it.guestName }
+    var pendingCall by remember { mutableStateOf<CampaignTarget?>(null) }
     LazyColumn(
         Modifier.padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -165,16 +166,30 @@ private fun GuestsTab(
                         if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    // Per-guest dial DISABLED until app-initiated outbound is wired
-                    // to a real enqueue route (never a mock call).
+                    // Per-guest outbound — enqueues a REAL AI call via the gated
+                    // worker (POST /api/events/{eventId}/outreach-call). Confirm first.
                     if (canManageVoice && t.phone.isNotEmpty()) {
-                        FilledTonalIconButton(onClick = { onDialTarget(t.phone, t.guestName) }, enabled = false) {
-                            Icon(Icons.Default.Call, contentDescription = "חייג (בקרוב)", modifier = Modifier.size(18.dp))
+                        FilledTonalIconButton(onClick = { pendingCall = t }) {
+                            Icon(Icons.Default.Call, contentDescription = "חייג", modifier = Modifier.size(18.dp))
                         }
                     }
                 }
             }
         }
+    }
+
+    pendingCall?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingCall = null },
+            title = { Text("לחייג ל${target.guestName}?") },
+            text = { Text("המערכת תוסיף שיחת AI לתור ותחייג לפי כללי הקמפיין (הסכמה, מגבלות, יתרה).") },
+            confirmButton = {
+                TextButton(onClick = { onEnqueueCall(target.guestId); pendingCall = null }) { Text("חייג") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingCall = null }) { Text("ביטול") }
+            },
+        )
     }
 }
 
