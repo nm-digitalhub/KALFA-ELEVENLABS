@@ -6,10 +6,15 @@ import me.kalfa.agentconsole.data.*
 import me.kalfa.agentconsole.data.mock.*
 import me.kalfa.agentconsole.domain.repository.*
 import me.kalfa.agentconsole.domain.telephony.*
+import me.kalfa.agentconsole.telephony.vox.VoxClientManager
+import me.kalfa.agentconsole.telephony.vox.VoxSdkAuthClient
 import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.realtime.Realtime
 import io.github.jan.supabase.auth.Auth
+import io.github.jan.supabase.auth.auth
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.okhttp.OkHttp
 
 object DependencyContainer {
     val isSupabaseConfigured: Boolean by lazy {
@@ -87,5 +92,17 @@ object DependencyContainer {
 
     val liveTranscriptManager: LiveTranscriptManager? by lazy {
         supabaseClient?.let { LiveTranscriptManager(it) }
+    }
+
+    // Voximplant v3 human-agent SDK client (login/connect for monitor/takeover legs).
+    // Created lazily but DELIBERATELY NOT logged in here — a login costs Voximplant
+    // MAU quota, so ensureLoggedIn(me.voxUsername) is called only when a real leg must
+    // be handled (that flow ships with monitor/takeover, gated on the backend
+    // Conference). null when Supabase isn't configured.
+    val voxClientManager: VoxClientManager? by lazy {
+        val client = supabaseClient ?: return@lazy null
+        val http = HttpClient(OkHttp)
+        val authClient = VoxSdkAuthClient(http, getJwt = { client.auth.currentAccessTokenOrNull() })
+        VoxClientManager(authClient)
     }
 }

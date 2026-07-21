@@ -20,7 +20,8 @@ private data class MeRow(
     val display_name: String? = null,
     val platform_role: String? = null,
     val platform_rank: Int = 0,
-    val permissions: List<String> = emptyList()
+    val permissions: List<String> = emptyList(),
+    val vox_username: String? = null
 )
 
 data class ConsoleUiState(
@@ -223,7 +224,8 @@ class ConsoleViewModel : ViewModel() {
                         displayName = it.display_name ?: metaName ?: user.email ?: "נציג",
                         platformRole = it.platform_role ?: "",
                         platformRank = it.platform_rank,
-                        permissions = it.permissions.toSet()
+                        permissions = it.permissions.toSet(),
+                        voxUsername = it.vox_username
                     )
                 }
                 _uiState.update {

@@ -144,7 +144,11 @@ data class ConsoleMe(
     val displayName: String,
     val platformRole: String,
     val platformRank: Int,
-    val permissions: Set<String>
+    val permissions: Set<String>,
+    // The agent's Voximplant SDK short username (console_me.vox_username), assigned
+    // server-side on agent enrolment. null ⇒ no identity provisioned yet — the SDK
+    // login must not be attempted (it would 409 at /api/agents/sdk-auth).
+    val voxUsername: String? = null
 ) {
     val canManageVoice get() = "manage_voice" in permissions
     val canViewCustomerData get() = "view_customer_data" in permissions
