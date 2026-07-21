@@ -8,10 +8,10 @@
 > decision no longer holds. This app is Compose + coroutines, so it now builds
 > against **v3** (`android-sdk-bom` + `-core` + `-calls`). The login layer
 > (`telephony/vox/VoxClientManager` + `VoxAuthenticator`/`VoxSdkAuthClient`) is
-> implemented against the v3 `Client` object; one runtime value is still required —
-> `VoxConfig.node` (the account's data-center Node, which v3 needs explicitly and v2
-> auto-discovered). Login stays MAU-gated (not auto-invoked). Monitor/takeover still
-> need the backend Conference + `AgentSdkTest` scenario before they can be verified.
+> implemented against the v3 `Client` object. `VoxConfig.node` is set to **Node2**
+> (confirmed from the kalfarsvp account: API endpoint `api-node2.voximplant.com`).
+> Login stays MAU-gated (not auto-invoked). Monitor/takeover still need the backend
+> Conference + an `AgentSdkTest` scenario before they can be verified on-device.
 
 Status: **design locked, implementation gated on backend.** This documents the
 verified state so the human-agent SDK leg (login → monitor → takeover) can be built

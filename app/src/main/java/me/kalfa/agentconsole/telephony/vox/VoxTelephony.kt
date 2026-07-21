@@ -32,11 +32,10 @@ object VoxConfig {
     const val ACCOUNT = "kalfarsvp"
 
     // The account's Voximplant data-center node. v3 REQUIRES this explicitly in
-    // ConnectOptions (unlike v2, which auto-discovered it). It MUST match the real
-    // node kalfarsvp is hosted on (Voximplant control panel → account) — a wrong
-    // node makes connect() fail. Non-secret; single source of truth here.
-    // TODO(owner): confirm kalfarsvp's node and set it. Placeholder until confirmed.
-    val node: Node = Node.Node4
+    // ConnectOptions (unlike v2, which auto-discovered it). CONFIRMED from the
+    // kalfarsvp account credentials (API endpoint api-node2.voximplant.com → "node 2"),
+    // 2026-07. Non-secret; single source of truth here.
+    val node: Node = Node.Node2
 
     // The exact full-username the SDK expects. Getting the "@app.account…" suffix
     // wrong is the #1 silent auth failure, so it is built in ONE place and tested.
