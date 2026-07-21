@@ -344,10 +344,12 @@ fun LiveCallCard(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    // clear_buffer is a one-shot barge-in (drops the AI's buffered
+                    // speech), NOT a mute — label it for what it does.
                     TextButton(onClick = onMuteAi, modifier = Modifier.weight(1f)) {
                         Icon(Icons.Default.VolumeOff, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("השתק AI", style = MaterialTheme.typography.labelMedium)
+                        Text("עצור דיבור", style = MaterialTheme.typography.labelMedium)
                     }
                     TextButton(
                         onClick = { confirmClose = true },
@@ -382,9 +384,13 @@ fun LiveCallCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Monitor button
+                // Monitor (live-listen) — DISABLED until the human-agent SDK leg +
+                // the named-Conference redesign exist. It must never open a fake
+                // silent-listen session, so it stays unavailable ("בקרוב"), not
+                // wired to a mock.
                 OutlinedButton(
                     onClick = onMonitor,
+                    enabled = false,
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary),
                     modifier = Modifier.weight(1f),
@@ -392,12 +398,14 @@ fun LiveCallCard(
                 ) {
                     Icon(imageVector = Icons.Default.Hearing, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("האזנה שקטה", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text("האזנה — בקרוב", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                 }
 
-                // Takeover button
+                // Takeover — DISABLED until the SDK leg + atomic-claim + Conference
+                // land. Never fake a takeover of a live guest call.
                 Button(
                     onClick = onTakeover,
+                    enabled = false,
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                     modifier = Modifier.weight(1f),
@@ -405,7 +413,7 @@ fun LiveCallCard(
                 ) {
                     Icon(imageVector = Icons.Default.PhoneForwarded, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("השתלטות סוכן", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    Text("השתלטות — בקרוב", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
                 }
             }
         }
