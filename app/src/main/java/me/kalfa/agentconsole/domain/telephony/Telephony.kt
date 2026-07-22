@@ -3,6 +3,8 @@ package me.kalfa.agentconsole.domain.telephony
 import me.kalfa.agentconsole.domain.model.AgentStatus
 import me.kalfa.agentconsole.domain.model.CallState
 import me.kalfa.agentconsole.domain.error.AppResult
+import me.kalfa.agentconsole.domain.model.CallDispatchStatus
+import me.kalfa.agentconsole.domain.model.OutboundDispatchReceipt
 import kotlinx.coroutines.flow.StateFlow
 
 interface CallSession {
@@ -24,6 +26,8 @@ interface CallEngine {
     val currentSession: StateFlow<CallSession?>
     val activeAiCallsCount: StateFlow<Int>
     val queueDepth: StateFlow<Int>
+    val dispatchStatuses: StateFlow<Map<String, CallDispatchStatus>>
+        get() = kotlinx.coroutines.flow.MutableStateFlow(emptyMap())
     
     fun startOutboundCall(phone: String, customerName: String): CallSession
     fun monitorCall(callId: String): CallSession
@@ -58,8 +62,12 @@ interface CallEngine {
      * the call surfaces in the feed once the worker dials. Default no-op keeps mock
      * mode working.
      */
-    suspend fun enqueueOutboundCall(eventId: String, guestId: String): AppResult<Unit> =
-        AppResult.Success(Unit)
+    suspend fun enqueueOutboundCall(
+        eventId: String,
+        guestId: String
+    ): AppResult<OutboundDispatchReceipt> = AppResult.Failure(
+        me.kalfa.agentconsole.domain.error.AppFailure.Unknown
+    )
 }
 
 interface AgentPresence {

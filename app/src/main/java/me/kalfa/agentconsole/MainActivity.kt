@@ -367,6 +367,7 @@ private fun ConsoleNavHost(
                 campaigns = state.campaigns.filter { it.eventId == evId },
                 guests = eventGuests,
                 guestCallFailures = state.guestCallFailures,
+                guestDispatchStatuses = state.guestDispatchStatuses,
                 campaignFailures = state.campaignFailures,
                 liveTranscripts = state.liveTranscripts,
                 canManageVoice = state.me?.canManageVoice ?: false,
