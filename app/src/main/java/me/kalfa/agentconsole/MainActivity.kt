@@ -27,6 +27,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import me.kalfa.agentconsole.telephony.EnsureCallAudioPermission
 import me.kalfa.agentconsole.ui.*
 import me.kalfa.agentconsole.ui.screens.*
 import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
@@ -63,7 +64,10 @@ class MainActivity : ComponentActivity() {
                         // Adaptive nav: bottom bar on compact, rail on expanded. Hidden entirely during a call.
                         AdaptiveConsoleScaffold(
                             navController = navController,
-                            showNavigation = state.currentSession == null
+                            // Hide nav exactly when the (DEBUG-only) in-call overlay shows.
+                            // In release currentSession is always null (see below), so nav
+                            // always shows.
+                            showNavigation = !(state.currentSession != null && BuildConfig.DEBUG)
                         ) {
                             Scaffold(
                                 modifier = Modifier.fillMaxSize()
@@ -90,9 +94,15 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
 
-                                // Full-screen InCall overlay while a session is active
+                                // Full-screen in-call overlay — DEBUG-only. In a release
+                                // build the real engine never fabricates a session (it
+                                // throws until the telephony-wiring step) and the ViewModel
+                                // gates monitor/takeover/outbound to an honest "בקרוב"
+                                // notice, so this fake in-call surface is structurally
+                                // unreachable in production. Kept for DEBUG demos and as the
+                                // layout the telephony-wiring step will wire for real.
                                 val session = state.currentSession
-                                if (session != null) {
+                                if (session != null && BuildConfig.DEBUG) {
                                     InCallScreen(
                                         customerName = session.customerName,
                                         customerPhone = session.customerPhone,
@@ -239,6 +249,9 @@ private fun ConsoleNavHost(
             )
         }
         composable<LiveCallsRoute> {
+            // Obtain mic + notification permissions at the live-supervision surface, so
+            // the grant is in hand before the telephony-wiring step attaches a real leg.
+            EnsureCallAudioPermission()
             LiveCallsScreen(
                 eventOptions = eventOptions,
                 selectedEventId = filterId,
