@@ -29,6 +29,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import me.kalfa.agentconsole.telephony.EnsureCallAudioPermission
 import me.kalfa.agentconsole.ui.*
+import me.kalfa.agentconsole.ui.message.AppMessageHost
+import me.kalfa.agentconsole.ui.message.AppSnackbarHost
 import me.kalfa.agentconsole.ui.screens.*
 import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
 import me.kalfa.agentconsole.ui.viewmodel.ConsoleUiState
@@ -69,61 +71,57 @@ class MainActivity : ComponentActivity() {
                             // always shows.
                             showNavigation = !(state.currentSession != null && BuildConfig.DEBUG)
                         ) {
+                            val snackbarHostState = remember { SnackbarHostState() }
                             Scaffold(
-                                modifier = Modifier.fillMaxSize()
+                                modifier = Modifier.fillMaxSize(),
+                                snackbarHost = { AppSnackbarHost(snackbarHostState) }
                             ) { innerPadding ->
-                                val contentModifier = Modifier.padding(innerPadding)
-
-                                state.connectionError?.let { err ->
-                                    Surface(
-                                        color = MaterialTheme.colorScheme.errorContainer,
-                                        modifier = Modifier.fillMaxWidth().padding(innerPadding)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Text(err, style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                                modifier = Modifier.weight(1f))
-                                            TextButton(onClick = { viewModel.refreshAll(); viewModel.dismissError() }) {
-                                                Text("רענן")
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Full-screen in-call overlay — DEBUG-only. In a release
-                                // build the real engine never fabricates a session (it
-                                // throws until the telephony-wiring step) and the ViewModel
-                                // gates monitor/takeover/outbound to an honest "בקרוב"
-                                // notice, so this fake in-call surface is structurally
-                                // unreachable in production. Kept for DEBUG demos and as the
-                                // layout the telephony-wiring step will wire for real.
-                                val session = state.currentSession
-                                if (session != null && BuildConfig.DEBUG) {
-                                    InCallScreen(
-                                        customerName = session.customerName,
-                                        customerPhone = session.customerPhone,
-                                        state = state.currentSessionState,
-                                        isMuted = state.currentSessionMuted,
-                                        isHeld = state.currentSessionHeld,
-                                        durationSec = state.currentSessionDuration,
-                                        notes = state.inCallNotes,
-                                        rsvpAnswer = state.inCallRsvpAnswer,
-                                        guestsCount = state.inCallGuestsCount,
-                                        onNotesChange = { viewModel.updateInCallNotes(it) },
-                                        onRsvpAnswerChange = { viewModel.updateInCallRsvpAnswer(it) },
-                                        onGuestsCountChange = { viewModel.updateInCallGuestsCount(it) },
-                                        onMuteToggle = { viewModel.toggleMute() },
-                                        onHoldToggle = { viewModel.toggleHold() },
-                                        onSendDtmf = { viewModel.sendDtmf(it) },
-                                        onHangup = { viewModel.hangupDirectly() },
-                                        onSubmitRsvpAndHangup = { viewModel.submitRsvpAndHangup() }
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(innerPadding)
+                                ) {
+                                    AppMessageHost(
+                                        messages = state.globalMessages,
+                                        onAction = { },
+                                        onDismiss = viewModel::dismissMessage
                                     )
-                                } else {
-                                    ConsoleNavHost(navController, state, viewModel, contentModifier)
+
+                                    val contentModifier = Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f)
+
+                                    // Full-screen in-call overlay — DEBUG-only. In a release
+                                    // build the real engine never fabricates a session (it
+                                    // throws until the telephony-wiring step) and the ViewModel
+                                    // gates monitor/takeover/outbound to an honest "בקרוב"
+                                    // notice, so this fake in-call surface is structurally
+                                    // unreachable in production. Kept for DEBUG demos and as the
+                                    // layout the telephony-wiring step will wire for real.
+                                    val session = state.currentSession
+                                    if (session != null && BuildConfig.DEBUG) {
+                                        InCallScreen(
+                                            customerName = session.customerName,
+                                            customerPhone = session.customerPhone,
+                                            state = state.currentSessionState,
+                                            isMuted = state.currentSessionMuted,
+                                            isHeld = state.currentSessionHeld,
+                                            durationSec = state.currentSessionDuration,
+                                            notes = state.inCallNotes,
+                                            rsvpAnswer = state.inCallRsvpAnswer,
+                                            guestsCount = state.inCallGuestsCount,
+                                            onNotesChange = { viewModel.updateInCallNotes(it) },
+                                            onRsvpAnswerChange = { viewModel.updateInCallRsvpAnswer(it) },
+                                            onGuestsCountChange = { viewModel.updateInCallGuestsCount(it) },
+                                            onMuteToggle = { viewModel.toggleMute() },
+                                            onHoldToggle = { viewModel.toggleHold() },
+                                            onSendDtmf = { viewModel.sendDtmf(it) },
+                                            onHangup = { viewModel.hangupDirectly() },
+                                            onSubmitRsvpAndHangup = { viewModel.submitRsvpAndHangup() }
+                                        )
+                                    } else {
+                                        ConsoleNavHost(navController, state, viewModel, contentModifier)
+                                    }
                                 }
                             }
                         }
