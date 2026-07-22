@@ -3,6 +3,9 @@ package me.kalfa.agentconsole.ui.screens
 import me.kalfa.agentconsole.domain.error.AppFailure
 import me.kalfa.agentconsole.domain.model.CallDispatchStatus
 import me.kalfa.agentconsole.domain.model.EventGuest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 internal data class ManualDialAvailability(
     val enabled: Boolean,
@@ -83,4 +86,17 @@ internal fun dispatchPresentation(dispatch: CallDispatchStatus): DispatchPresent
         body = body,
         retryAllowed = dispatch.status == "failed" || dispatch.reason == "max_concurrency"
     )
+}
+
+internal fun formatCallbackScheduledAt(raw: String): String {
+    val parsers = listOf(
+        "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+        "yyyy-MM-dd'T'HH:mm:ssXXX"
+    )
+    val parsed: Date? = parsers.firstNotNullOfOrNull { pattern ->
+        runCatching { SimpleDateFormat(pattern, Locale.US).parse(raw) }.getOrNull()
+    }
+    return parsed?.let {
+        SimpleDateFormat("dd.MM.yyyy HH:mm", Locale("he", "IL")).format(it)
+    } ?: raw
 }

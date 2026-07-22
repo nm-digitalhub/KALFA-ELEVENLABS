@@ -242,7 +242,7 @@ private fun GuestsTab(
                                 id = "guest-${g.guestId}-callback",
                                 severity = MessageSeverity.INFO,
                                 title = "האורח ביקש שיחת חזרה",
-                                body = "שיחת החזרה תתבצע אוטומטית ב־${g.callbackScheduledAt}."
+                                body = "שיחת החזרה תתבצע אוטומטית ב־${formatCallbackScheduledAt(g.callbackScheduledAt!!)}."
                             ),
                             onAction = { }
                         )
