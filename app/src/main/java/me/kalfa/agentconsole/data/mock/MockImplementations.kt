@@ -7,6 +7,7 @@ import me.kalfa.agentconsole.domain.repository.RsvpRepository
 import me.kalfa.agentconsole.domain.telephony.AgentPresence
 import me.kalfa.agentconsole.domain.telephony.CallEngine
 import me.kalfa.agentconsole.domain.telephony.CallSession
+import me.kalfa.agentconsole.domain.error.AppResult
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -324,7 +325,7 @@ class MockCampaignRepositoryImpl : CampaignRepository {
         return targetsMap.getOrPut(campaignId) { MutableStateFlow(emptyList()) }.asStateFlow()
     }
 
-    override fun toggleCampaign(campaignId: String) {
+    override suspend fun toggleCampaign(campaignId: String): AppResult<Unit> {
         _campaigns.update { list ->
             list.map { camp ->
                 if (camp.id == campaignId) {
@@ -337,6 +338,7 @@ class MockCampaignRepositoryImpl : CampaignRepository {
                 } else camp
             }
         }
+        return AppResult.Success(Unit)
     }
 
     override fun updateTargetResult(targetId: String, result: String) {
