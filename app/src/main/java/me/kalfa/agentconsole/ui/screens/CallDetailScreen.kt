@@ -12,6 +12,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import me.kalfa.agentconsole.domain.model.Call
 import me.kalfa.agentconsole.domain.model.CallAnalysis
+import me.kalfa.agentconsole.ui.message.FailureContext
+import me.kalfa.agentconsole.ui.message.InlineMessage
+import me.kalfa.agentconsole.ui.message.MessageSeverity
+import me.kalfa.agentconsole.ui.message.MessageAction
+import me.kalfa.agentconsole.ui.message.UiMessage
+import me.kalfa.agentconsole.ui.message.toHebrewMessage
+import me.kalfa.agentconsole.ui.state.LoadState
 
 private val EVAL_LABELS = mapOf(
     "rsvp_captured" to "תשובת RSVP נקלטה",
@@ -23,9 +30,9 @@ private val EVAL_LABELS = mapOf(
 @Composable
 fun CallDetailScreen(
     call: Call,
-    analysis: CallAnalysis?,
-    loading: Boolean,
+    analysisState: LoadState<CallAnalysis?>,
     onBack: () -> Unit,
+    onRetryAnalysis: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -55,56 +62,85 @@ fun CallDetailScreen(
             }
         }
 
-        when {
-            loading -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+        when (analysisState) {
+            LoadState.Initial, LoadState.Loading -> Box(
+                Modifier.fillMaxWidth().padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
                 CircularProgressIndicator()
             }
-            analysis == null -> Card {
-                Text(
-                    "אין עדיין ניתוח לשיחה זו — הניתוח נוצר אוטומטית בסיום שיחות AI.",
-                    Modifier.padding(16.dp),
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-            else -> {
-                Card {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("תוצאת השיחה", style = MaterialTheme.typography.titleMedium)
-                        InfoRow("הצלחה", when (analysis.callSuccessful) {
-                            "success" -> "✓ הצליחה"
-                            "failure" -> "✗ נכשלה"
-                            else -> analysis.callSuccessful ?: "לא ידוע"
-                        })
-                        analysis.score?.let { InfoRow("ציון", "%.0f".format(it * 100) + "%") }
-                        analysis.rsvpStatus?.let { InfoRow("סטטוס RSVP", it) }
-                        val guests = (analysis.adults ?: 0) + (analysis.children ?: 0)
-                        if (guests > 0) InfoRow("אורחים", "$guests (מבוגרים: ${analysis.adults ?: 0}, ילדים: ${analysis.children ?: 0})")
-                        analysis.terminationReason?.let { InfoRow("סיבת סיום", it) }
-                    }
+            is LoadState.Failure -> InlineMessage(
+                message = UiMessage(
+                    id = "analysis-load-failure",
+                    severity = MessageSeverity.ERROR,
+                    title = "לא ניתן לטעון את ניתוח השיחה",
+                    body = analysisState.failure.toHebrewMessage(FailureContext.ANALYSIS),
+                    primaryAction = MessageAction("נסה שוב", "retry_analysis")
+                ),
+                onAction = { actionId ->
+                    if (actionId == "retry_analysis") onRetryAnalysis()
                 }
-                if (analysis.evalCriteria.isNotEmpty()) {
+            )
+            is LoadState.Content -> {
+                val analysis = analysisState.value
+                if (analysis == null) {
                     Card {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("קריטריוני איכות", style = MaterialTheme.typography.titleMedium)
-                            analysis.evalCriteria.forEach { (key, value) ->
-                                InfoRow(EVAL_LABELS[key] ?: key,
-                                    if (value.contains("success") || value == "true") "✓" else value)
-                            }
-                        }
+                        Text(
+                            "אין עדיין ניתוח לשיחה זו — הניתוח נוצר אוטומטית בסיום שיחות AI.",
+                            Modifier.padding(16.dp),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
                     }
+                } else {
+                    AnalysisContent(analysis)
                 }
-                Card(colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                )) {
-                    Text(
-                        "תמלול מלא של השיחה יתווסף בשלב הבא (דורש הרחבת צינור ה-webhook).",
-                        Modifier.padding(16.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnalysisContent(analysis: CallAnalysis) {
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("תוצאת השיחה", style = MaterialTheme.typography.titleMedium)
+            InfoRow("הצלחה", when (analysis.callSuccessful) {
+                "success" -> "הצליחה"
+                "failure" -> "נכשלה"
+                else -> analysis.callSuccessful ?: "לא ידוע"
+            })
+            analysis.score?.let { InfoRow("ציון", "%.0f".format(it * 100) + "%") }
+            analysis.rsvpStatus?.let { InfoRow("סטטוס RSVP", it) }
+            val guests = (analysis.adults ?: 0) + (analysis.children ?: 0)
+            if (guests > 0) InfoRow(
+                "אורחים",
+                "$guests (מבוגרים: ${analysis.adults ?: 0}, ילדים: ${analysis.children ?: 0})"
+            )
+            analysis.terminationReason?.let { InfoRow("סיבת סיום", it) }
+        }
+    }
+    if (analysis.evalCriteria.isNotEmpty()) {
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("קריטריוני איכות", style = MaterialTheme.typography.titleMedium)
+                analysis.evalCriteria.forEach { (key, value) ->
+                    InfoRow(
+                        EVAL_LABELS[key] ?: key,
+                        if (value.contains("success") || value == "true") "הושלם" else value
                     )
                 }
             }
         }
+    }
+    Card(colors = CardDefaults.cardColors(
+        containerColor = MaterialTheme.colorScheme.surfaceVariant
+    )) {
+        Text(
+            "תמלול מלא של השיחה יתווסף בשלב הבא (דורש הרחבת צינור ה-webhook).",
+            Modifier.padding(16.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

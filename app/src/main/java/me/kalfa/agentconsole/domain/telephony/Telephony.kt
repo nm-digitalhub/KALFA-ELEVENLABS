@@ -2,6 +2,7 @@ package me.kalfa.agentconsole.domain.telephony
 
 import me.kalfa.agentconsole.domain.model.AgentStatus
 import me.kalfa.agentconsole.domain.model.CallState
+import me.kalfa.agentconsole.domain.error.AppResult
 import kotlinx.coroutines.flow.StateFlow
 
 interface CallSession {
@@ -38,7 +39,7 @@ interface CallEngine {
         callId: String,
         command: String,
         payload: Map<String, String> = emptyMap()
-    ): Boolean = false
+    ): AppResult<Unit> = AppResult.Success(Unit)
 
     /**
      * Hangs up a LIVE AI call — the conversation with the guest — via POST
@@ -47,7 +48,7 @@ interface CallEngine {
      * async and the call row is the record of the outcome. Default no-op keeps mock
      * mode working.
      */
-    suspend fun endCall(callId: String): Boolean = false
+    suspend fun endCall(callId: String): AppResult<Unit> = AppResult.Success(Unit)
 
     /**
      * Enqueues ONE real outbound AI call to an EXISTING guest, via POST
@@ -57,7 +58,8 @@ interface CallEngine {
      * the call surfaces in the feed once the worker dials. Default no-op keeps mock
      * mode working.
      */
-    suspend fun enqueueOutboundCall(eventId: String, guestId: String): Boolean = false
+    suspend fun enqueueOutboundCall(eventId: String, guestId: String): AppResult<Unit> =
+        AppResult.Success(Unit)
 }
 
 interface AgentPresence {

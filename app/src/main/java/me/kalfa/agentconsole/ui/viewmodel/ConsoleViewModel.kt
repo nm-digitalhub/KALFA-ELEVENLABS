@@ -5,15 +5,23 @@ import androidx.lifecycle.viewModelScope
 import me.kalfa.agentconsole.di.DependencyContainer
 import me.kalfa.agentconsole.domain.model.*
 import me.kalfa.agentconsole.domain.telephony.*
+import me.kalfa.agentconsole.domain.error.AppFailure
+import me.kalfa.agentconsole.domain.error.AppResult
+import me.kalfa.agentconsole.domain.error.RepositoryHealth
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.util.UUID
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.postgrest
 import kotlinx.serialization.Serializable
-import me.kalfa.agentconsole.di.ErrorBus
 import me.kalfa.agentconsole.ui.message.AppMessageCenter
+import me.kalfa.agentconsole.ui.message.FailureContext
+import me.kalfa.agentconsole.ui.message.MessageAction
+import me.kalfa.agentconsole.ui.message.MessageSeverity
 import me.kalfa.agentconsole.ui.message.UiMessage
+import me.kalfa.agentconsole.ui.message.UiEffect
+import me.kalfa.agentconsole.ui.message.toHebrewMessage
+import me.kalfa.agentconsole.ui.state.LoadState
 
 
 @Serializable
@@ -35,9 +43,13 @@ data class ConsoleUiState(
     val eventSummaries: List<EventSummary> = emptyList(),
     val selectedEventFilter: String? = null,
     val globalMessages: List<UiMessage> = emptyList(),
-    val selectedAnalysis: CallAnalysis? = null,
+    val callHealth: RepositoryHealth = RepositoryHealth.Loading,
+    val campaignHealth: RepositoryHealth = RepositoryHealth.Loading,
+    val rsvpHealth: RepositoryHealth = RepositoryHealth.Loading,
+    val analysisState: LoadState<CallAnalysis?> = LoadState.Initial,
+    val guestCallFailures: Map<String, AppFailure> = emptyMap(),
+    val campaignFailures: Map<String, AppFailure> = emptyMap(),
     val liveTranscripts: Map<String, List<TranscriptLine>> = emptyMap(),
-    val analysisLoading: Boolean = false,
     val activeAiCallsCount: Int = 0,
     val queueDepth: Int = 2,
     val liveCalls: List<Call> = emptyList(),
@@ -64,6 +76,51 @@ class ConsoleViewModel : ViewModel() {
 
     private val _uiState = MutableStateFlow(ConsoleUiState())
     val uiState: StateFlow<ConsoleUiState> = _uiState.asStateFlow()
+    private val _effects = MutableSharedFlow<UiEffect>(extraBufferCapacity = 8)
+    val effects: SharedFlow<UiEffect> = _effects.asSharedFlow()
+
+    private fun observeRepositoryHealth(
+        health: StateFlow<RepositoryHealth>,
+        messageId: String,
+        title: String,
+        retryActionId: String
+    ) {
+        viewModelScope.launch {
+            health.collect { status ->
+                when (status) {
+                    RepositoryHealth.Loading -> Unit
+                    RepositoryHealth.Fresh -> AppMessageCenter.resolve(messageId)
+                    is RepositoryHealth.Stale -> {
+                        if (status.hasCachedData) {
+                            AppMessageCenter.publish(
+                                UiMessage(
+                                    id = messageId,
+                                    severity = MessageSeverity.WARNING,
+                                    title = title,
+                                    body = "מוצגים הנתונים האחרונים שנקלטו.",
+                                    primaryAction = MessageAction("נסה שוב", retryActionId),
+                                    dismissible = true,
+                                    deduplicationKey = messageId
+                                )
+                            )
+                        } else {
+                            AppMessageCenter.resolve(messageId)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun handleCallOperation(result: AppResult<Unit>) {
+        if (result is AppResult.Failure) {
+            _effects.emit(
+                UiEffect.ShowSnackbar(
+                    result.reason.toHebrewMessage(FailureContext.LIVE_CALL)
+                )
+            )
+        }
+    }
 
     init {
         // Collect from all dependencies to compile the single, unified UI state!
@@ -156,6 +213,39 @@ class ConsoleViewModel : ViewModel() {
                 _uiState.update { it.copy(globalMessages = messages) }
             }
         }
+        viewModelScope.launch {
+            callRepo.health.collect { health ->
+                _uiState.update { it.copy(callHealth = health) }
+            }
+        }
+        viewModelScope.launch {
+            campaignRepo.health.collect { health ->
+                _uiState.update { it.copy(campaignHealth = health) }
+            }
+        }
+        viewModelScope.launch {
+            rsvpRepo.health.collect { health ->
+                _uiState.update { it.copy(rsvpHealth = health) }
+            }
+        }
+        observeRepositoryHealth(
+            health = callRepo.health,
+            messageId = "calls-stale",
+            title = "נתוני השיחות אינם מעודכנים",
+            retryActionId = "retry_calls"
+        )
+        observeRepositoryHealth(
+            health = campaignRepo.health,
+            messageId = "campaigns-stale",
+            title = "נתוני הקמפיינים אינם מעודכנים",
+            retryActionId = "retry_campaigns"
+        )
+        observeRepositoryHealth(
+            health = rsvpRepo.health,
+            messageId = "rsvp-stale",
+            title = "תוצאות האישורים אינן מעודכנות",
+            retryActionId = "retry_rsvp"
+        )
 
         // Live captions: keep Broadcast subscriptions in sync with active AI calls
         DependencyContainer.liveTranscriptManager?.let { mgr ->
@@ -246,18 +336,33 @@ class ConsoleViewModel : ViewModel() {
     }
 
     fun selectCall(call: Call) {
-        _uiState.update { it.copy(selectedAnalysis = null, analysisLoading = true) }
+        _uiState.update { it.copy(analysisState = LoadState.Loading) }
         viewModelScope.launch {
-            val analysis = callRepo.getCallAnalysis(call.id)
-            _uiState.update { it.copy(selectedAnalysis = analysis, analysisLoading = false) }
+            when (val result = callRepo.getCallAnalysis(call.id)) {
+                is AppResult.Success -> _uiState.update {
+                    it.copy(analysisState = LoadState.Content(result.value))
+                }
+                is AppResult.Failure -> _uiState.update {
+                    it.copy(
+                        analysisState = LoadState.Failure(
+                            failure = result.reason,
+                            staleContentAvailable = false
+                        )
+                    )
+                }
+            }
         }
     }
 
-    fun refreshAll() {
-        callRepo.refresh(); campaignRepo.refresh(); rsvpRepo.refresh()
-    }
-
     fun dismissMessage(messageId: String) = AppMessageCenter.dismiss(messageId)
+
+    fun handleGlobalMessageAction(actionId: String) {
+        when (actionId) {
+            "retry_calls" -> callRepo.refresh()
+            "retry_campaigns" -> campaignRepo.refresh()
+            "retry_rsvp" -> rsvpRepo.refresh()
+        }
+    }
 
     fun logout() {
         val client = DependencyContainer.supabaseClient ?: return
@@ -281,23 +386,25 @@ class ConsoleViewModel : ViewModel() {
     fun whisperToAi(callId: String, text: String) {
         if (text.isBlank()) return
         viewModelScope.launch {
-            callEngine.sendAgentCommand(callId, "contextual_update", mapOf("text" to text.trim()))
+            handleCallOperation(
+                callEngine.sendAgentCommand(callId, "contextual_update", mapOf("text" to text.trim()))
+            )
         }
     }
 
     fun muteAiOnce(callId: String) {
-        viewModelScope.launch { callEngine.sendAgentCommand(callId, "clear_buffer") }
+        viewModelScope.launch { handleCallOperation(callEngine.sendAgentCommand(callId, "clear_buffer")) }
     }
 
     fun closeAiAgent(callId: String) {
-        viewModelScope.launch { callEngine.sendAgentCommand(callId, "close_agent") }
+        viewModelScope.launch { handleCallOperation(callEngine.sendAgentCommand(callId, "close_agent")) }
     }
 
     // Hang up the live call (guest conversation). Real, wired to POST
     // /api/calls/{id}/end. On success the row goes terminal and the live-calls list
     // drops it; failures are surfaced by the engine on the error banner.
     fun endCall(callId: String) {
-        viewModelScope.launch { callEngine.endCall(callId) }
+        viewModelScope.launch { handleCallOperation(callEngine.endCall(callId)) }
     }
 
     fun setAgentStatus(status: AgentStatus) {
@@ -315,7 +422,9 @@ class ConsoleViewModel : ViewModel() {
     // commands (whisper / clear / close) below ARE wired and stay live. Re-enable
     // each of these when its backend route + SDK path ships.
     private fun notifyNotWired(feature: String) {
-        ErrorBus.post("$feature עדיין בפיתוח — יופעל כשמנוע הטלפוניה (Voximplant) יחובר.")
+        _effects.tryEmit(
+            UiEffect.ShowSnackbar("$feature עדיין אינו זמין באפליקציה.")
+        )
     }
 
     fun monitorCall(callId: String) = notifyNotWired("האזנה שקטה לשיחה")
@@ -332,13 +441,36 @@ class ConsoleViewModel : ViewModel() {
     // the feed once the worker dials; failures are shown by the engine.
     fun enqueueOutboundCall(eventId: String, guestId: String) {
         viewModelScope.launch {
-            val ok = callEngine.enqueueOutboundCall(eventId, guestId)
-            if (ok) ErrorBus.post("השיחה נוספה לתור — המערכת תחייג לפי כללי הקמפיין")
+            when (val result = callEngine.enqueueOutboundCall(eventId, guestId)) {
+                is AppResult.Success -> {
+                    _uiState.update {
+                        it.copy(guestCallFailures = it.guestCallFailures - guestId)
+                    }
+                    _effects.emit(
+                        UiEffect.ShowSnackbar("השיחה נוספה לתור ותצא לפי כללי הקמפיין.")
+                    )
+                }
+                is AppResult.Failure -> _uiState.update {
+                    it.copy(guestCallFailures = it.guestCallFailures + (guestId to result.reason))
+                }
+            }
         }
     }
 
     fun toggleCampaign(campaignId: String) {
-        campaignRepo.toggleCampaign(campaignId)
+        viewModelScope.launch {
+            when (val result = campaignRepo.toggleCampaign(campaignId)) {
+                is AppResult.Success -> {
+                    _uiState.update {
+                        it.copy(campaignFailures = it.campaignFailures - campaignId)
+                    }
+                    _effects.emit(UiEffect.ShowSnackbar("מצב הקמפיין עודכן."))
+                }
+                is AppResult.Failure -> _uiState.update {
+                    it.copy(campaignFailures = it.campaignFailures + (campaignId to result.reason))
+                }
+            }
+        }
     }
 
     // In call form inputs

@@ -27,10 +27,16 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import kotlinx.coroutines.flow.collect
 import me.kalfa.agentconsole.telephony.EnsureCallAudioPermission
 import me.kalfa.agentconsole.ui.*
 import me.kalfa.agentconsole.ui.message.AppMessageHost
 import me.kalfa.agentconsole.ui.message.AppSnackbarHost
+import me.kalfa.agentconsole.ui.message.FailureContext
+import me.kalfa.agentconsole.ui.message.FullScreenErrorState
+import me.kalfa.agentconsole.ui.message.UiEffect
+import me.kalfa.agentconsole.ui.message.toHebrewMessage
+import me.kalfa.agentconsole.domain.error.RepositoryHealth
 import me.kalfa.agentconsole.ui.screens.*
 import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
 import me.kalfa.agentconsole.ui.viewmodel.ConsoleUiState
@@ -72,6 +78,22 @@ class MainActivity : ComponentActivity() {
                             showNavigation = !(state.currentSession != null && BuildConfig.DEBUG)
                         ) {
                             val snackbarHostState = remember { SnackbarHostState() }
+                            LaunchedEffect(snackbarHostState) {
+                                viewModel.effects.collect { effect ->
+                                    when (effect) {
+                                        is UiEffect.ShowSnackbar -> {
+                                            val result = snackbarHostState.showSnackbar(
+                                                message = effect.message,
+                                                actionLabel = effect.actionLabel,
+                                                withDismissAction = true
+                                            )
+                                            if (result == SnackbarResult.ActionPerformed) {
+                                                effect.actionId?.let(viewModel::handleGlobalMessageAction)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             Scaffold(
                                 modifier = Modifier.fillMaxSize(),
                                 snackbarHost = { AppSnackbarHost(snackbarHostState) }
@@ -83,7 +105,7 @@ class MainActivity : ComponentActivity() {
                                 ) {
                                     AppMessageHost(
                                         messages = state.globalMessages,
-                                        onAction = { },
+                                        onAction = viewModel::handleGlobalMessageAction,
                                         onDismiss = viewModel::dismissMessage
                                     )
 
@@ -227,62 +249,125 @@ private fun ConsoleNavHost(
     val filteredHistory = if (filterId == null) state.callHistory else state.callHistory.filter { it.eventId == filterId }
     val filteredRsvp = if (filterId == null) state.rsvpResults else state.rsvpResults.filter { it.eventId == filterId }
     val eventOptions = state.events.map { it.id to it.name }
+    val callBlockingFailure = (state.callHealth as? RepositoryHealth.Stale)
+        ?.takeUnless { it.hasCachedData }
+        ?.reason
+    val campaignBlockingFailure = (state.campaignHealth as? RepositoryHealth.Stale)
+        ?.takeUnless { it.hasCachedData }
+        ?.reason
+    val rsvpBlockingFailure = (state.rsvpHealth as? RepositoryHealth.Stale)
+        ?.takeUnless { it.hasCachedData }
+        ?.reason
+    val dashboardBlockingFailure =
+        callBlockingFailure ?: campaignBlockingFailure ?: rsvpBlockingFailure
 
     NavHost(
         navController = navController,
         startDestination = DashboardRoute
     ) {
         composable<DashboardRoute> {
-            DashboardScreen(
-                agentName = state.agentName,
-                agentEmail = state.agentEmail,
-                onLogout = { viewModel.logout() },
-                agentStatus = state.agentStatus,
-                activeAiCalls = state.activeAiCallsCount,
-                queueDepth = state.queueDepth,
-                rsvpResults = state.rsvpResults,
-                onStatusChange = { viewModel.setAgentStatus(it) },
-                onMakeOutboundCall = { phone, name -> viewModel.makeOutboundCall(phone, name) },
-                modifier = contentModifier
-            )
+            if (dashboardBlockingFailure != null) {
+                FullScreenErrorState(
+                    title = "לא ניתן לטעון את לוח הבקרה",
+                    message = dashboardBlockingFailure.toHebrewMessage(FailureContext.GENERAL),
+                    actionLabel = "נסה שוב",
+                    onAction = {
+                        viewModel.handleGlobalMessageAction("retry_calls")
+                        viewModel.handleGlobalMessageAction("retry_campaigns")
+                        viewModel.handleGlobalMessageAction("retry_rsvp")
+                    },
+                    modifier = contentModifier
+                )
+            } else {
+                DashboardScreen(
+                    agentName = state.agentName,
+                    agentEmail = state.agentEmail,
+                    onLogout = { viewModel.logout() },
+                    agentStatus = state.agentStatus,
+                    activeAiCalls = state.activeAiCallsCount,
+                    queueDepth = state.queueDepth,
+                    rsvpResults = state.rsvpResults,
+                    onStatusChange = { viewModel.setAgentStatus(it) },
+                    onMakeOutboundCall = { phone, name -> viewModel.makeOutboundCall(phone, name) },
+                    modifier = contentModifier
+                )
+            }
         }
         composable<LiveCallsRoute> {
-            // Obtain mic + notification permissions at the live-supervision surface, so
-            // the grant is in hand before the telephony-wiring step attaches a real leg.
-            EnsureCallAudioPermission()
-            LiveCallsScreen(
-                eventOptions = eventOptions,
-                selectedEventId = filterId,
-                onSelectEvent = { viewModel.setEventFilter(it) },
-                liveTranscripts = state.liveTranscripts,
-                onWhisper = { id, text -> viewModel.whisperToAi(id, text) },
-                onMuteAi = { viewModel.muteAiOnce(it) },
-                onCloseAi = { viewModel.closeAiAgent(it) },
-                onEndCall = { viewModel.endCall(it) },
-                liveCalls = filteredLive,
-                onMonitor = { viewModel.monitorCall(it) },
-                onTakeover = { viewModel.takeoverCall(it) },
-                modifier = contentModifier
-            )
+            if (callBlockingFailure != null) {
+                FullScreenErrorState(
+                    title = "לא ניתן לטעון את השיחות",
+                    message = callBlockingFailure.toHebrewMessage(FailureContext.GENERAL),
+                    actionLabel = "נסה שוב",
+                    onAction = { viewModel.handleGlobalMessageAction("retry_calls") },
+                    modifier = contentModifier
+                )
+            } else {
+                // Obtain mic + notification permissions at the live-supervision surface, so
+                // the grant is in hand before the telephony-wiring step attaches a real leg.
+                EnsureCallAudioPermission()
+                LiveCallsScreen(
+                    eventOptions = eventOptions,
+                    selectedEventId = filterId,
+                    onSelectEvent = { viewModel.setEventFilter(it) },
+                    liveTranscripts = state.liveTranscripts,
+                    onWhisper = { id, text -> viewModel.whisperToAi(id, text) },
+                    onMuteAi = { viewModel.muteAiOnce(it) },
+                    onCloseAi = { viewModel.closeAiAgent(it) },
+                    onEndCall = { viewModel.endCall(it) },
+                    liveCalls = filteredLive,
+                    onMonitor = { viewModel.monitorCall(it) },
+                    onTakeover = { viewModel.takeoverCall(it) },
+                    modifier = contentModifier
+                )
+            }
         }
         composable<EventsRoute> {
-            EventsScreen(
-                summaries = state.eventSummaries,
-                onEventClick = { navController.navigate(EventDetailRoute(it)) },
-                modifier = contentModifier
-            )
+            if (dashboardBlockingFailure != null) {
+                FullScreenErrorState(
+                    title = "לא ניתן לטעון את האירועים",
+                    message = dashboardBlockingFailure.toHebrewMessage(FailureContext.GENERAL),
+                    actionLabel = "נסה שוב",
+                    onAction = {
+                        viewModel.handleGlobalMessageAction("retry_calls")
+                        viewModel.handleGlobalMessageAction("retry_campaigns")
+                        viewModel.handleGlobalMessageAction("retry_rsvp")
+                    },
+                    modifier = contentModifier
+                )
+            } else {
+                EventsScreen(
+                    summaries = state.eventSummaries,
+                    onEventClick = { navController.navigate(EventDetailRoute(it)) },
+                    modifier = contentModifier
+                )
+            }
         }
         composable<EventDetailRoute> { entry ->
             val route = entry.toRoute<EventDetailRoute>()
             val evId = route.eventId
             val eventGuests by remember(evId) { viewModel.eventGuests(evId) }.collectAsState()
-            EventDetailScreen(
+            if (dashboardBlockingFailure != null) {
+                FullScreenErrorState(
+                    title = "לא ניתן לטעון את האירוע",
+                    message = dashboardBlockingFailure.toHebrewMessage(FailureContext.GENERAL),
+                    actionLabel = "נסה שוב",
+                    onAction = {
+                        viewModel.handleGlobalMessageAction("retry_calls")
+                        viewModel.handleGlobalMessageAction("retry_campaigns")
+                        viewModel.handleGlobalMessageAction("retry_rsvp")
+                    },
+                    modifier = contentModifier
+                )
+            } else EventDetailScreen(
                 summary = state.eventSummaries.firstOrNull { it.event.id == evId },
                 liveCalls = state.liveCalls.filter { it.eventId == evId },
                 callHistory = state.callHistory.filter { it.eventId == evId },
                 rsvpResults = state.rsvpResults.filter { it.eventId == evId },
                 campaigns = state.campaigns.filter { it.eventId == evId },
                 guests = eventGuests,
+                guestCallFailures = state.guestCallFailures,
+                campaignFailures = state.campaignFailures,
                 liveTranscripts = state.liveTranscripts,
                 canManageVoice = state.me?.canManageVoice ?: false,
                 onBack = { navController.popBackStack() },
@@ -301,18 +386,32 @@ private fun ConsoleNavHost(
             )
         }
         composable<HistoryRoute> {
-            HistoryScreen(
-                eventOptions = eventOptions,
-                selectedEventId = filterId,
-                onSelectEvent = { viewModel.setEventFilter(it) },
-                onCallClick = { call ->
-                    viewModel.selectCall(call)
-                    navController.navigate(CallDetailRoute(call.id))
-                },
-                callHistory = filteredHistory,
-                rsvpResults = filteredRsvp,
-                modifier = contentModifier
-            )
+            val historyBlockingFailure = callBlockingFailure ?: rsvpBlockingFailure
+            if (historyBlockingFailure != null) {
+                FullScreenErrorState(
+                    title = "לא ניתן לטעון את היסטוריית השיחות",
+                    message = historyBlockingFailure.toHebrewMessage(FailureContext.GENERAL),
+                    actionLabel = "נסה שוב",
+                    onAction = {
+                        viewModel.handleGlobalMessageAction("retry_calls")
+                        viewModel.handleGlobalMessageAction("retry_rsvp")
+                    },
+                    modifier = contentModifier
+                )
+            } else {
+                HistoryScreen(
+                    eventOptions = eventOptions,
+                    selectedEventId = filterId,
+                    onSelectEvent = { viewModel.setEventFilter(it) },
+                    onCallClick = { call ->
+                        viewModel.selectCall(call)
+                        navController.navigate(CallDetailRoute(call.id))
+                    },
+                    callHistory = filteredHistory,
+                    rsvpResults = filteredRsvp,
+                    modifier = contentModifier
+                )
+            }
         }
         composable<CallDetailRoute> { entry ->
             val route = entry.toRoute<CallDetailRoute>()
@@ -323,9 +422,9 @@ private fun ConsoleNavHost(
             } else {
                 CallDetailScreen(
                     call = call,
-                    analysis = state.selectedAnalysis,
-                    loading = state.analysisLoading,
+                    analysisState = state.analysisState,
                     onBack = { navController.popBackStack() },
+                    onRetryAnalysis = { viewModel.selectCall(call) },
                     modifier = contentModifier
                 )
             }

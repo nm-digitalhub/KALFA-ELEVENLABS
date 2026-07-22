@@ -13,6 +13,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import me.kalfa.agentconsole.domain.model.*
+import me.kalfa.agentconsole.domain.error.AppFailure
+import me.kalfa.agentconsole.ui.message.FailureContext
+import me.kalfa.agentconsole.ui.message.InlineMessage
+import me.kalfa.agentconsole.ui.message.MessageSeverity
+import me.kalfa.agentconsole.ui.message.MessageAction
+import me.kalfa.agentconsole.ui.message.UiMessage
+import me.kalfa.agentconsole.ui.message.toHebrewMessage
 
 @Composable
 fun EventDetailScreen(
@@ -22,6 +29,8 @@ fun EventDetailScreen(
     rsvpResults: List<RsvpResult>,
     campaigns: List<Campaign>,
     guests: List<EventGuest>,
+    guestCallFailures: Map<String, AppFailure> = emptyMap(),
+    campaignFailures: Map<String, AppFailure> = emptyMap(),
     liveTranscripts: Map<String, List<TranscriptLine>> = emptyMap(),
     canManageVoice: Boolean = false,
     onBack: () -> Unit = {},
@@ -65,8 +74,15 @@ fun EventDetailScreen(
 
         when (tab) {
             0 -> OverviewTab(summary, liveCalls, campaigns, liveTranscripts, canManageVoice,
-                onMonitor, onTakeover, onWhisper, onMuteAi, onCloseAi, onToggleCampaign)
-            1 -> GuestsTab(guests, rsvpResults, canManageVoice, onEnqueueCall)
+                onMonitor, onTakeover, onWhisper, onMuteAi, onCloseAi, onToggleCampaign,
+                campaignFailures)
+            1 -> GuestsTab(
+                guests,
+                rsvpResults,
+                canManageVoice,
+                onEnqueueCall,
+                guestCallFailures
+            )
             2 -> LazyColumn(
                 Modifier.padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -93,7 +109,8 @@ private fun OverviewTab(
     onWhisper: (String, String) -> Unit,
     onMuteAi: (String) -> Unit,
     onCloseAi: (String) -> Unit,
-    onToggleCampaign: (String) -> Unit
+    onToggleCampaign: (String) -> Unit,
+    campaignFailures: Map<String, AppFailure>
 ) {
     LazyColumn(
         Modifier.padding(horizontal = 16.dp),
@@ -104,10 +121,26 @@ private fun OverviewTab(
 
         campaigns.forEach { campaign ->
             item {
-                CampaignCard(
-                    campaign = campaign,
-                    onToggle = { if (canManageVoice) onToggleCampaign(campaign.id) }
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CampaignCard(
+                        campaign = campaign,
+                        onToggle = { if (canManageVoice) onToggleCampaign(campaign.id) }
+                    )
+                    campaignFailures[campaign.id]?.let { failure ->
+                        InlineMessage(
+                            message = UiMessage(
+                                id = "campaign-${campaign.id}-failure",
+                                severity = MessageSeverity.ERROR,
+                                title = "שינוי מצב הקמפיין לא הושלם",
+                                body = failure.toHebrewMessage(FailureContext.CAMPAIGN),
+                                primaryAction = MessageAction("נסה שוב", "retry_campaign")
+                            ),
+                            onAction = { actionId ->
+                                if (actionId == "retry_campaign") onToggleCampaign(campaign.id)
+                            }
+                        )
+                    }
+                }
             }
         }
 
@@ -139,7 +172,8 @@ private fun GuestsTab(
     guests: List<EventGuest>,
     rsvpResults: List<RsvpResult>,
     canManageVoice: Boolean,
-    onEnqueueCall: (String) -> Unit
+    onEnqueueCall: (String) -> Unit,
+    guestCallFailures: Map<String, AppFailure>
 ) {
     val answersByGuestName = rsvpResults.associateBy { it.guestName }
     var pendingCall by remember { mutableStateOf<EventGuest?>(null) }
@@ -150,31 +184,62 @@ private fun GuestsTab(
     ) {
         if (guests.isEmpty()) item { EmptyLine("אין אורחים לאירוע") }
         items(guests, key = { it.guestId }) { g ->
+            val alreadyReached = g.rsvpStatus?.lowercase() in setOf(
+                "reached",
+                "reached_billed",
+                "confirmed",
+                "attending"
+            )
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                Row(
+                Column(
                     Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(g.guestName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                        val answer = answersByGuestName[g.guestName]?.answer?.labelHebrew
-                        val sub = listOfNotNull(
-                            g.phone.ifEmpty { null },
-                            answer ?: g.rsvpStatus?.let { rsvpStatusHebrew(it) }
-                        ).joinToString(" · ")
-                        if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    // Per-guest outbound — enqueues a REAL AI call via the gated worker
-                    // (POST /api/events/{eventId}/outreach-call) using the guest's real
-                    // guests.id. Offered ONLY when the event has an active campaign (the
-                    // route's own 409 gate) and the guest is dialable — so we never show
-                    // a button that the backend would immediately refuse. Confirm first.
-                    if (canManageVoice && g.dialable && g.hasActiveCampaign) {
-                        FilledTonalIconButton(onClick = { pendingCall = g }) {
-                            Icon(Icons.Default.Call, contentDescription = "חייג", modifier = Modifier.size(18.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(g.guestName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            val answer = answersByGuestName[g.guestName]?.answer?.labelHebrew
+                            val sub = listOfNotNull(
+                                g.phone.ifEmpty { null },
+                                answer ?: g.rsvpStatus?.let { rsvpStatusHebrew(it) }
+                            ).joinToString(" · ")
+                            if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
+                        if (canManageVoice && g.dialable && g.hasActiveCampaign && !alreadyReached) {
+                            FilledTonalIconButton(onClick = { pendingCall = g }) {
+                                Icon(Icons.Default.Call, contentDescription = "חייג", modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                    if (alreadyReached) {
+                        InlineMessage(
+                            message = UiMessage(
+                                id = "guest-${g.guestId}-reached",
+                                severity = MessageSeverity.INFO,
+                                title = "כבר נוצר קשר עם האורח",
+                                body = "לא יבוצע חיוג נוסף, אלא אם האורח ביקש שיחה חוזרת."
+                            ),
+                            onAction = { }
+                        )
+                    }
+                    guestCallFailures[g.guestId]?.let { failure ->
+                        InlineMessage(
+                            message = UiMessage(
+                                id = "guest-${g.guestId}-call-failure",
+                                severity = MessageSeverity.ERROR,
+                                title = "השיחה לא נוספה לתור",
+                                body = failure.toHebrewMessage(FailureContext.GUEST_CALL),
+                                primaryAction = MessageAction("נסה שוב", "retry_guest_call")
+                            ),
+                            onAction = { actionId ->
+                                if (actionId == "retry_guest_call") onEnqueueCall(g.guestId)
+                            }
+                        )
                     }
                 }
             }

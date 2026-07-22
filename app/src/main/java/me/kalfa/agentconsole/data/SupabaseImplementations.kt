@@ -7,6 +7,8 @@ import me.kalfa.agentconsole.domain.repository.RsvpRepository
 import me.kalfa.agentconsole.domain.telephony.AgentPresence
 import me.kalfa.agentconsole.domain.telephony.CallEngine
 import me.kalfa.agentconsole.domain.telephony.CallSession
+import me.kalfa.agentconsole.domain.error.AppResult
+import me.kalfa.agentconsole.domain.error.RepositoryHealth
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.postgrest
@@ -26,7 +28,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import io.ktor.client.statement.*
 import kotlinx.serialization.json.jsonPrimitive
-import me.kalfa.agentconsole.di.ErrorBus
 import me.kalfa.agentconsole.di.AppVisibility
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -271,6 +272,8 @@ fun DbRsvpRow.toDomain(): RsvpResult = RsvpResult(
 )
 
 class SupabaseCallRepository(private val client: SupabaseClient) : CallRepository {
+    private val _health = MutableStateFlow<RepositoryHealth>(RepositoryHealth.Loading)
+    override val health: StateFlow<RepositoryHealth> = _health.asStateFlow()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val _eventNames = MutableStateFlow<Map<String, String>>(emptyMap())
@@ -351,24 +354,26 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
                     .sortedByDescending { it.startedAt }
                 _liveCalls.value = calls.filter { it.state != CallState.DISCONNECTED }
                 _callHistory.value = calls.filter { it.state == CallState.DISCONNECTED }
-                ErrorBus.clear()
+                _health.value = RepositoryHealth.Fresh
             } catch (e: Exception) {
                 e.printStackTrace()
-                ErrorBus.post("שגיאה בטעינת שיחות — בדוק חיבור")
+                _health.value = RepositoryHealth.Stale(
+                    reason = e.toAppFailure(),
+                    hasCachedData = _liveCalls.value.isNotEmpty() || _callHistory.value.isNotEmpty()
+                )
             }
         }
     }
 
     override fun refresh() { _eventNames.value = emptyMap(); fetchCalls() }
 
-    override suspend fun getCallAnalysis(callId: String): CallAnalysis? = try {
-        client.postgrest["console_call_analysis"].select {
+    override suspend fun getCallAnalysis(callId: String): AppResult<CallAnalysis?> = try {
+        AppResult.Success(client.postgrest["console_call_analysis"].select {
             filter { eq("call_attempt_id", callId) }
-        }.decodeList<DbCallAnalysis>().firstOrNull()?.toDomain()
+        }.decodeList<DbCallAnalysis>().firstOrNull()?.toDomain())
     } catch (e: Exception) {
         e.printStackTrace()
-        ErrorBus.post("שגיאה בטעינת ניתוח שיחה")
-        null
+        AppResult.Failure(e.toAppFailure())
     }
 
     override fun updateCall(call: Call) {
@@ -395,6 +400,8 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
 }
 
 class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignRepository {
+    private val _health = MutableStateFlow<RepositoryHealth>(RepositoryHealth.Loading)
+    override val health: StateFlow<RepositoryHealth> = _health.asStateFlow()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val _campaigns = MutableStateFlow<List<Campaign>>(emptyList())
@@ -439,13 +446,16 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
                     val t = byCampaign[c.id].orEmpty()
                     c.toDomain(total = t.size, done = t.count { it.reached_at != null }, eventName = names[c.event_id])
                 }
-                ErrorBus.clear()
+                _health.value = RepositoryHealth.Fresh
                 targetsMap.forEach { (cid, flow) ->
                     flow.value = byCampaign[cid].orEmpty().map { it.toDomain() }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
-                ErrorBus.post("שגיאה בטעינת קמפיינים — בדוק חיבור")
+                _health.value = RepositoryHealth.Stale(
+                    reason = e.toAppFailure(),
+                    hasCachedData = _campaigns.value.isNotEmpty()
+                )
             }
         }
     }
@@ -480,12 +490,13 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
     // anything else -> activate. Activation is billing-guarded server-side (the route
     // requires an authorized J5 hold), so a paused-with-no-hold campaign returns 409
     // and we surface the reason. On success we re-read so the badge/button update.
-    override fun toggleCampaign(campaignId: String) {
-        scope.launch {
-            try {
-                val current = _campaigns.value.firstOrNull { it.id == campaignId } ?: return@launch
+    override suspend fun toggleCampaign(campaignId: String): AppResult<Unit> {
+        return try {
+                val current = _campaigns.value.firstOrNull { it.id == campaignId }
+                    ?: return AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.NotFound)
                 val action = if (current.state == CampaignState.ACTIVE) "pause" else "activate"
-                val jwt = client.auth.currentAccessTokenOrNull() ?: return@launch
+                val jwt = client.auth.currentAccessTokenOrNull()
+                    ?: return AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.Unauthorized)
                 val body = buildJsonObject { put("action", action) }.toString()
                 val resp = httpClient.post("https://beta.kalfa.me/api/campaigns/$campaignId/status") {
                     header(HttpHeaders.Authorization, "Bearer $jwt")
@@ -493,22 +504,19 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
                     setBody(body)
                 }
                 if (resp.status.value in 200..299) {
-                    ErrorBus.clear()
                     fetchCampaigns()
-                } else ErrorBus.post(
-                    when (resp.status.value) {
-                        403 -> "אין הרשאה לשנות את מצב הקמפיין"
-                        404 -> "הקמפיין לא נמצא"
-                        409 -> if (action == "activate")
-                            "להפעלת הקמפיין נדרשת תפיסת מסגרת מאושרת" else "לא ניתן לשנות את מצב הקמפיין כעת"
-                        else -> "שינוי מצב הקמפיין נכשל (${resp.status.value})"
+                    AppResult.Success(Unit)
+                } else AppResult.Failure(
+                    if (resp.status.value == 409) {
+                        me.kalfa.agentconsole.domain.error.AppFailure.CampaignHoldRequired
+                    } else {
+                        failureForStatus(resp.status.value)
                     }
                 )
             } catch (e: Exception) {
                 e.printStackTrace()
-                ErrorBus.post("שינוי מצב הקמפיין נכשל — בדוק חיבור")
+                AppResult.Failure(e.toAppFailure())
             }
-        }
     }
 
     override fun updateTargetResult(targetId: String, result: String) {
@@ -517,6 +525,8 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
 }
 
 class SupabaseRsvpRepository(private val client: SupabaseClient) : RsvpRepository {
+    private val _health = MutableStateFlow<RepositoryHealth>(RepositoryHealth.Loading)
+    override val health: StateFlow<RepositoryHealth> = _health.asStateFlow()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val _rsvpResults = MutableStateFlow<List<RsvpResult>>(emptyList())
@@ -541,10 +551,13 @@ class SupabaseRsvpRepository(private val client: SupabaseClient) : RsvpRepositor
                 val rows = client.postgrest["console_rsvp_results"].select()
                     .decodeList<DbRsvpRow>()
                 _rsvpResults.value = rows.map { it.toDomain() }
-                ErrorBus.clear()
+                _health.value = RepositoryHealth.Fresh
             } catch (e: Exception) {
                 e.printStackTrace()
-                ErrorBus.post("שגיאה בטעינת תוצאות RSVP")
+                _health.value = RepositoryHealth.Stale(
+                    reason = e.toAppFailure(),
+                    hasCachedData = _rsvpResults.value.isNotEmpty()
+                )
             }
         }
     }
@@ -660,7 +673,7 @@ class SupabaseCallEngineImpl(
         callId: String,
         command: String,
         payload: Map<String, String>
-    ): Boolean = try {
+    ): AppResult<Unit> = try {
         val jwt = getJwt()
         val body = buildJsonObject {
             put("command", command)
@@ -671,15 +684,20 @@ class SupabaseCallEngineImpl(
             contentType(ContentType.Application.Json)
             setBody(body)
         }
-        val ok = resp.status.value in 200..299
-        if (!ok) ErrorBus.post(
-            if (resp.status.value == 409) "השיחה כבר לא פעילה" else "פקודת AI נכשלה (${resp.status.value})"
-        )
-        ok
+        if (resp.status.value in 200..299) {
+            AppResult.Success(Unit)
+        } else {
+            AppResult.Failure(
+                if (resp.status.value == 409) {
+                    me.kalfa.agentconsole.domain.error.AppFailure.CallNoLongerActive
+                } else {
+                    failureForStatus(resp.status.value)
+                }
+            )
+        }
     } catch (e: Exception) {
         e.printStackTrace()
-        ErrorBus.post("פקודת AI נכשלה — בדוק חיבור")
-        false
+        AppResult.Failure(e.toAppFailure())
     }
 
     // Hang up the live call (the guest conversation) via the dedicated /end route —
@@ -687,27 +705,32 @@ class SupabaseCallEngineImpl(
     // route reads no body, so none is sent. 2xx = delivered (async teardown); the
     // call row records the real outcome, and the live-calls list drops it once the
     // terminal callback fires.
-    override suspend fun endCall(callId: String): Boolean = try {
+    override suspend fun endCall(callId: String): AppResult<Unit> = try {
         val jwt = getJwt()
         val resp = httpClient.post("https://beta.kalfa.me/api/calls/$callId/end") {
             header(HttpHeaders.Authorization, "Bearer $jwt")
         }
-        val ok = resp.status.value in 200..299
-        if (!ok) ErrorBus.post(
-            if (resp.status.value == 409) "השיחה כבר לא פעילה" else "ניתוק השיחה נכשל (${resp.status.value})"
-        )
-        ok
+        if (resp.status.value in 200..299) {
+            AppResult.Success(Unit)
+        } else {
+            AppResult.Failure(
+                if (resp.status.value == 409) {
+                    me.kalfa.agentconsole.domain.error.AppFailure.CallNoLongerActive
+                } else {
+                    failureForStatus(resp.status.value)
+                }
+            )
+        }
     } catch (e: Exception) {
         e.printStackTrace()
-        ErrorBus.post("ניתוק השיחה נכשל — בדוק חיבור")
-        false
+        AppResult.Failure(e.toAppFailure())
     }
 
     // Enqueue a real outbound AI call to an existing guest. ENQUEUE-ONLY: this
     // POSTs {guest_id} to /api/events/{eventId}/outreach-call and the worker owns
     // the gate chain + StartScenarios. Never dials from here. Same JWT + client as
     // the command routes.
-    override suspend fun enqueueOutboundCall(eventId: String, guestId: String): Boolean = try {
+    override suspend fun enqueueOutboundCall(eventId: String, guestId: String): AppResult<Unit> = try {
         val jwt = getJwt()
         val body = buildJsonObject { put("guest_id", guestId) }.toString()
         val resp = httpClient.post("https://beta.kalfa.me/api/events/$eventId/outreach-call") {
@@ -715,21 +738,20 @@ class SupabaseCallEngineImpl(
             contentType(ContentType.Application.Json)
             setBody(body)
         }
-        val ok = resp.status.value in 200..299
-        if (!ok) ErrorBus.post(
-            when (resp.status.value) {
-                403 -> "אין הרשאה לחיוג"
-                404 -> "אורח לא נמצא"
-                409 -> "לאירוע אין קמפיין"
-                422 -> "לאורח אין מספר חיוג"
-                else -> "הוספת השיחה לתור נכשלה (${resp.status.value})"
-            }
-        )
-        ok
+        if (resp.status.value in 200..299) {
+            AppResult.Success(Unit)
+        } else {
+            AppResult.Failure(
+                when (resp.status.value) {
+                    409 -> me.kalfa.agentconsole.domain.error.AppFailure.NoActiveCampaign
+                    422 -> me.kalfa.agentconsole.domain.error.AppFailure.GuestMissingPhone
+                    else -> failureForStatus(resp.status.value)
+                }
+            )
+        }
     } catch (e: Exception) {
         e.printStackTrace()
-        ErrorBus.post("הוספת השיחה לתור נכשלה — בדוק חיבור")
-        false
+        AppResult.Failure(e.toAppFailure())
     }
 
     // ─────────────────────────────────────────────────────────────────────────
