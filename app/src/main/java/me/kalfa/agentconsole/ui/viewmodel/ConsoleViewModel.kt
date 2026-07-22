@@ -48,6 +48,7 @@ data class ConsoleUiState(
     val rsvpHealth: RepositoryHealth = RepositoryHealth.Loading,
     val analysisState: LoadState<CallAnalysis?> = LoadState.Initial,
     val guestCallFailures: Map<String, AppFailure> = emptyMap(),
+    val guestDispatchStatuses: Map<String, CallDispatchStatus> = emptyMap(),
     val campaignFailures: Map<String, AppFailure> = emptyMap(),
     val liveTranscripts: Map<String, List<TranscriptLine>> = emptyMap(),
     val activeAiCallsCount: Int = 0,
@@ -78,6 +79,7 @@ class ConsoleViewModel : ViewModel() {
     val uiState: StateFlow<ConsoleUiState> = _uiState.asStateFlow()
     private val _effects = MutableSharedFlow<UiEffect>(extraBufferCapacity = 8)
     val effects: SharedFlow<UiEffect> = _effects.asSharedFlow()
+    private val dispatchGuests = mutableMapOf<String, String>()
 
     private fun observeRepositoryHealth(
         health: StateFlow<RepositoryHealth>,
@@ -123,6 +125,14 @@ class ConsoleViewModel : ViewModel() {
     }
 
     init {
+        viewModelScope.launch {
+            callEngine.dispatchStatuses.collect { statuses ->
+                val byGuest = statuses.mapNotNull { (dispatchId, status) ->
+                    dispatchGuests[dispatchId]?.let { it to status }
+                }.toMap()
+                _uiState.update { it.copy(guestDispatchStatuses = byGuest) }
+            }
+        }
         // Collect from all dependencies to compile the single, unified UI state!
         viewModelScope.launch {
             combine(
@@ -443,11 +453,24 @@ class ConsoleViewModel : ViewModel() {
         viewModelScope.launch {
             when (val result = callEngine.enqueueOutboundCall(eventId, guestId)) {
                 is AppResult.Success -> {
+                    dispatchGuests[result.value.dispatchId] = guestId
+                    val accepted = callEngine.dispatchStatuses.value[result.value.dispatchId]
+                        ?: CallDispatchStatus(
+                            dispatchId = result.value.dispatchId,
+                            eventId = result.value.eventId,
+                            status = "accepted",
+                            reason = null,
+                            callAttemptId = null,
+                            updatedAt = null
+                        )
                     _uiState.update {
-                        it.copy(guestCallFailures = it.guestCallFailures - guestId)
+                        it.copy(
+                            guestCallFailures = it.guestCallFailures - guestId,
+                            guestDispatchStatuses = it.guestDispatchStatuses + (guestId to accepted)
+                        )
                     }
                     _effects.emit(
-                        UiEffect.ShowSnackbar("השיחה נוספה לתור ותצא לפי כללי הקמפיין.")
+                        UiEffect.ShowSnackbar("הבקשה נקלטה.")
                     )
                 }
                 is AppResult.Failure -> _uiState.update {

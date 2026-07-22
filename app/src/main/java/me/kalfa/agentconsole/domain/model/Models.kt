@@ -90,8 +90,30 @@ data class EventGuest(
     val dialable: Boolean,
     val phone: String,
     val rsvpStatus: String?,
-    val hasActiveCampaign: Boolean
+    val hasActiveCampaign: Boolean,
+    val reachedAt: String? = null,
+    val callbackScheduledAt: String? = null,
+    // Nullable on the wire. The UI is deliberately fail-closed and enables a
+    // manual dial only when this value is exactly true.
+    val canStartOutreachCall: Boolean? = null,
+    val callBlockReason: String? = null
 )
+
+data class OutboundDispatchReceipt(
+    val dispatchId: String,
+    val eventId: String
+)
+
+data class CallDispatchStatus(
+    val dispatchId: String,
+    val eventId: String,
+    val status: String,
+    val reason: String?,
+    val callAttemptId: String?,
+    val updatedAt: String?
+) {
+    val isFinal: Boolean get() = status != "accepted"
+}
 
 enum class RsvpAnswer(val labelHebrew: String) {
     ATTENDING("מגיע"),

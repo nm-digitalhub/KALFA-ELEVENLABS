@@ -390,6 +390,10 @@ class MockCallEngineImpl(
     private val _queueDepth = MutableStateFlow(2)
     override val queueDepth: StateFlow<Int> = _queueDepth.asStateFlow()
 
+    private val _dispatchStatuses = MutableStateFlow<Map<String, CallDispatchStatus>>(emptyMap())
+    override val dispatchStatuses: StateFlow<Map<String, CallDispatchStatus>> =
+        _dispatchStatuses.asStateFlow()
+
     private val _currentStatus = MutableStateFlow(AgentStatus.NOT_READY)
     override val currentStatus: StateFlow<AgentStatus> = _currentStatus.asStateFlow()
 
@@ -405,6 +409,23 @@ class MockCallEngineImpl(
                 _queueDepth.update { (it + (-1..1).random()).coerceIn(0, 5) }
             }
         }
+    }
+
+    override suspend fun enqueueOutboundCall(
+        eventId: String,
+        guestId: String
+    ): AppResult<OutboundDispatchReceipt> {
+        val dispatchId = UUID.randomUUID().toString()
+        val status = CallDispatchStatus(
+            dispatchId = dispatchId,
+            eventId = eventId,
+            status = "accepted",
+            reason = null,
+            callAttemptId = null,
+            updatedAt = null
+        )
+        _dispatchStatuses.update { it + (dispatchId to status) }
+        return AppResult.Success(OutboundDispatchReceipt(dispatchId, eventId))
     }
 
     override fun startOutboundCall(phone: String, customerName: String): CallSession {

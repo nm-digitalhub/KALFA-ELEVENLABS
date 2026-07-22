@@ -22,4 +22,12 @@ class FailureMessagesTest {
         assertFalse(message.contains("exception", ignoreCase = true))
         assertFalse(message.contains("api/", ignoreCase = true))
     }
+
+    @Test
+    fun alreadyReachedUsesTheFixedDomainMessage() {
+        assertEquals(
+            "כבר נוצר קשר באירוע זה.",
+            AppFailure.AlreadyReached.toHebrewMessage(FailureContext.GUEST_CALL)
+        )
+    }
 }

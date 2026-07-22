@@ -20,7 +20,7 @@ Call-center agent app for kalfa.me (Hebrew RSVP SaaS): agents supervise AI voice
 | Phase | State | Notes |
 |---|---|---|
 | Data layer (feed / campaigns / RSVP / analysis) | **DONE** | `data/SupabaseImplementations.kt` reads the real console views; realtime on `console_call_feed` |
-| Server API routes | **BLOCKED — none exist yet** | All routes in the API contract below currently 404. Verified against the `kalfa.me/beta` repo: only `/api/voximplant/*`, `/api/campaigns/[id]/{authorize,close-charge,whatsapp-send}`, `/api/elevenlabs/rsvp/update`, `/api/webhooks/whatsapp` exist. Code against the contract; surface Hebrew error states. |
+| Server API routes | **PARTIAL** | Manual outreach is live: `POST /api/events/{eventId}/outreach-call`, including typed `409/already_reached` and the `call_dispatch_status` truth channel. Other routes remain independently gated until verified live. |
 | Voximplant SDK + real telephony | **OPEN — approved** | Blocked only on `POST /api/sdk-auth` (below) for login |
 | Hilt migration | **OPEN — approved** | |
 | FCM push (`google-services.json`) | Not started | |
@@ -73,12 +73,14 @@ Realtime tables (postgresChangeFlow; always start collecting BEFORE channel.subs
 - `agent_status(agent_id, status: ready|not_ready|dnd|in_call, updated_at)` — agent updates own row only
 - `console_call_feed(call_attempt_id, event_id, campaign_id, direction, kind, status, handled_by: ai|agent, agent_id, rsvp_digit, finish_reason, call_duration_sec, callback_iso, created_at, updated_at, takeover_claimed_at, takeover_request_id, participation_state)` — trigger-fed from `call_attempts`, deliberately PII-free (no phone/transcript/recording). Live `status` values: `in_progress|completed|no_answer|cancelled|no_response`.
   - **The last three columns are the takeover coordination fields and the app does not read them yet** (`DbConsoleCall` stops at `updated_at`). They exist so two agents cannot claim the same call: claim by `takeover_request_id`, observe `takeover_claimed_at`. Wire them when takeover goes real.
+- `call_dispatch_status(dispatch_id, event_id, contact_id, call_attempt_id, status, reason, created_at, updated_at)` — one row per manual dispatch request. The route inserts `accepted` before returning 202; the worker settles it. Track by the 202 `dispatch_id`; on `dispatched`, `call_attempt_id` links to `console_call_feed`.
 
 Read-only VIEWS (fetch/poll only — Supabase Realtime does not fire on views):
 - `console_campaigns(id, event_id, status: approved|closed, enabled, start_at, close_at, max_contacts)` — billing columns intentionally hidden
 - `console_rsvp_results(id, event_id, guest_id, guest_name, attending: boolean, adults, kids, note, created_at)` — note `attending` is a BOOLEAN, not an enum
 - `console_campaign_targets(id, event_id, campaign_id, contact_id, status, current_step_index, next_run_at, reached_at, reached_channel, stop_reason, guest_name, phone)` — `phone` is empty unless the agent holds the `view_customer_data` platform permission; the view gates it in the database, so never treat a blank phone as a bug
 - `console_me(user_id, display_name, vox_username, platform_role, platform_rank, permissions)` — the agent's own identity row, and the source of `vox_username` for SDK login
+- `console_event_guests(guest_id, event_id, guest_name, dialable, phone, rsvp_status, has_active_campaign, reached_at, callback_scheduled_at, can_start_outreach_call, call_block_reason)` — manual-dial projection. Enable only when `dialable && has_active_campaign && can_start_outreach_call == true`; nullable booleans are fail-closed.
 
 Write ownership (hard rule): the console READS. RSVP outcomes are written by the ElevenLabs client-tools pipeline; campaign state is billing-coupled and changed only via the beta.kalfa.me API; `outreach_state` belongs to the orchestrator. The only direct writes allowed: own `agent_status` row, and `handled_by`/`agent_id` on `console_call_feed` at takeover.
 
@@ -86,7 +88,9 @@ Gate: console access requires membership in `console_agents` **AND** platform st
 
 ## API contract (the ONLY external HTTP calls; JWT = Supabase session token)
 
-Base `https://beta.kalfa.me`, header `Authorization: Bearer <jwt>`. **None of these exist server-side yet** (verified 2026-07-21) — code against this contract exactly, surface failures as Hebrew error states, and never invent a path. If a route you need is missing from this list, it must be added here and agreed with the server side *before* it is called from code.
+Base `https://beta.kalfa.me`, header `Authorization: Bearer <jwt>`. Route availability is tracked per entry; never infer that one deployed route makes the others live. Code against this contract exactly, surface Hebrew error states, and never invent a path. If a route you need is missing from this list, it must be added here and agreed with the server side *before* it is called from code.
+
+- `POST /api/events/{eventId}/outreach-call` `{"guest_id":"uuid"}` → `202 {"status":"accepted","dispatch_id":"uuid","event_id":"uuid"}`. A reached contact returns `409 {"code":"already_reached"}` and creates no job. After 202, `call_dispatch_status` is the truth channel; never claim the call is queued before the 202.
 
 - `POST /api/sdk-auth` `{"one_time_key":"...","username":"..."}` → `{"hash":"..."}` — server-side Voximplant login hash (§1). **Hard blocker for all real telephony.**
 - `POST /api/agents/status` `{"status":"ready|not_ready|dnd"}`
@@ -119,4 +123,3 @@ Still open: `campaigns/{id}/start|pause` is listed here but `SupabaseCampaignRep
 - Dates `DD.MM.YYYY`; times 24h `HH:mm`; phones displayed `05X-XXX-XXXX`.
 - Status labels: זמין / לא זמין / נא לא להפריע / בשיחה. Answers: מגיע / לא מגיע / אולי / חזרו אליי.
 - Microcopy short and directive; natural Hebrew over anglicisms.
-

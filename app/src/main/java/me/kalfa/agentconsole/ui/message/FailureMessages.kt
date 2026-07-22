@@ -27,6 +27,7 @@ fun AppFailure.toHebrewMessage(context: FailureContext): String =
         AppFailure.CampaignHoldRequired -> "להפעלת הקמפיין נדרשת מסגרת חיוב מאושרת."
         AppFailure.NoActiveCampaign -> "אין לאירוע קמפיין פעיל."
         AppFailure.GuestMissingPhone -> "לאורח אין מספר טלפון תקין לחיוג."
+        AppFailure.AlreadyReached -> "כבר נוצר קשר באירוע זה."
         AppFailure.Unknown -> "הפעולה לא הושלמה. נסה שוב."
     }
 

@@ -12,6 +12,7 @@ sealed interface AppFailure {
     data object CampaignHoldRequired : AppFailure
     data object NoActiveCampaign : AppFailure
     data object GuestMissingPhone : AppFailure
+    data object AlreadyReached : AppFailure
     data object Unknown : AppFailure
 }
 

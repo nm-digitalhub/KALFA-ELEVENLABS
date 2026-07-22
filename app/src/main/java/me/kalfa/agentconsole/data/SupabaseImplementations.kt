@@ -24,6 +24,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import io.ktor.client.statement.*
@@ -243,7 +244,11 @@ data class DbConsoleEventGuest(
     val dialable: Boolean = false,
     val phone: String? = null, // null unless view_customer_data (DB-gated)
     val rsvp_status: String? = null,
-    val has_active_campaign: Boolean = false
+    val has_active_campaign: Boolean = false,
+    val reached_at: String? = null,
+    val callback_scheduled_at: String? = null,
+    val can_start_outreach_call: Boolean? = null,
+    val call_block_reason: String? = null
 )
 
 fun DbConsoleEventGuest.toDomain(): EventGuest = EventGuest(
@@ -253,8 +258,41 @@ fun DbConsoleEventGuest.toDomain(): EventGuest = EventGuest(
     dialable = dialable,
     phone = phone ?: "",
     rsvpStatus = rsvp_status,
-    hasActiveCampaign = has_active_campaign
+    hasActiveCampaign = has_active_campaign,
+    reachedAt = reached_at,
+    callbackScheduledAt = callback_scheduled_at,
+    canStartOutreachCall = can_start_outreach_call,
+    callBlockReason = call_block_reason
 )
+
+@Serializable
+data class DbCallDispatchStatus(
+    val dispatch_id: String,
+    val event_id: String,
+    val status: String,
+    val reason: String? = null,
+    val call_attempt_id: String? = null,
+    val updated_at: String? = null
+)
+
+fun DbCallDispatchStatus.toDomain(): CallDispatchStatus = CallDispatchStatus(
+    dispatchId = dispatch_id,
+    eventId = event_id,
+    status = status,
+    reason = reason,
+    callAttemptId = call_attempt_id,
+    updatedAt = updated_at
+)
+
+@Serializable
+private data class OutreachCallResponse(
+    val status: String,
+    val dispatch_id: String,
+    val event_id: String
+)
+
+@Serializable
+private data class ApiErrorResponse(val code: String? = null)
 
 fun DbRsvpRow.toDomain(): RsvpResult = RsvpResult(
     id = id,
@@ -586,6 +624,12 @@ class SupabaseCallEngineImpl(
     private val _queueDepth = MutableStateFlow(2)
     override val queueDepth: StateFlow<Int> = _queueDepth.asStateFlow()
 
+    private val _dispatchStatuses = MutableStateFlow<Map<String, CallDispatchStatus>>(emptyMap())
+    override val dispatchStatuses: StateFlow<Map<String, CallDispatchStatus>> =
+        _dispatchStatuses.asStateFlow()
+    private val trackedDispatchIds = MutableStateFlow<Set<String>>(emptySet())
+    private val wireJson = Json { ignoreUnknownKeys = true }
+
     private val _currentStatus = MutableStateFlow(AgentStatus.NOT_READY)
     override val currentStatus: StateFlow<AgentStatus> = _currentStatus.asStateFlow()
 
@@ -611,6 +655,55 @@ class SupabaseCallEngineImpl(
             } catch (e: Exception) {
                 e.printStackTrace()
             }
+        }
+        scope.launch(Dispatchers.IO) {
+            try {
+                val channel = client.realtime.channel("call_dispatch_status_channel")
+                val changes = channel.postgresChangeFlow<PostgresAction>(schema = "public") {
+                    table = "call_dispatch_status"
+                }
+                // Supabase can emit immediately after subscribe; collect first.
+                launch { changes.collect { fetchTrackedDispatchStatuses() } }
+                channel.subscribe()
+                fetchTrackedDispatchStatuses()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        // Reconciliation poll is intentional: views and Realtime connections can
+        // be interrupted while the app is backgrounded. On foreground/reconnect,
+        // every dispatch_id still being tracked is read from the source of truth.
+        scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                if (AppVisibility.isForeground.value && trackedDispatchIds.value.isNotEmpty()) {
+                    fetchTrackedDispatchStatuses()
+                }
+                delay(15_000)
+            }
+        }
+    }
+
+    private suspend fun fetchTrackedDispatchStatuses() {
+        val ids = trackedDispatchIds.value
+        if (ids.isEmpty()) return
+        try {
+            val rows = ids.flatMap { dispatchId ->
+                client.postgrest["call_dispatch_status"].select {
+                    filter { eq("dispatch_id", dispatchId) }
+                }.decodeList<DbCallDispatchStatus>()
+            }
+            if (rows.isNotEmpty()) {
+                _dispatchStatuses.update { current ->
+                    current + rows.associate { it.dispatch_id to it.toDomain() }
+                }
+                val finalIds = rows.filter { it.status != "accepted" }
+                    .mapTo(mutableSetOf()) { it.dispatch_id }
+                if (finalIds.isNotEmpty()) {
+                    trackedDispatchIds.update { it - finalIds }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
@@ -730,7 +823,10 @@ class SupabaseCallEngineImpl(
     // POSTs {guest_id} to /api/events/{eventId}/outreach-call and the worker owns
     // the gate chain + StartScenarios. Never dials from here. Same JWT + client as
     // the command routes.
-    override suspend fun enqueueOutboundCall(eventId: String, guestId: String): AppResult<Unit> = try {
+    override suspend fun enqueueOutboundCall(
+        eventId: String,
+        guestId: String
+    ): AppResult<OutboundDispatchReceipt> = try {
         val jwt = getJwt()
         val body = buildJsonObject { put("guest_id", guestId) }.toString()
         val resp = httpClient.post("https://beta.kalfa.me/api/events/$eventId/outreach-call") {
@@ -738,12 +834,37 @@ class SupabaseCallEngineImpl(
             contentType(ContentType.Application.Json)
             setBody(body)
         }
-        if (resp.status.value in 200..299) {
-            AppResult.Success(Unit)
+        val responseText = resp.bodyAsText()
+        if (resp.status.value == 202) {
+            val accepted = wireJson.decodeFromString<OutreachCallResponse>(responseText)
+            val receipt = OutboundDispatchReceipt(
+                dispatchId = accepted.dispatch_id,
+                eventId = accepted.event_id
+            )
+            trackedDispatchIds.update { it + receipt.dispatchId }
+            _dispatchStatuses.update {
+                it + (receipt.dispatchId to CallDispatchStatus(
+                    dispatchId = receipt.dispatchId,
+                    eventId = receipt.eventId,
+                    status = "accepted",
+                    reason = null,
+                    callAttemptId = null,
+                    updatedAt = null
+                ))
+            }
+            scope.launch(Dispatchers.IO) { fetchTrackedDispatchStatuses() }
+            AppResult.Success(receipt)
         } else {
+            val code = runCatching {
+                wireJson.decodeFromString<ApiErrorResponse>(responseText).code
+            }.getOrNull()
             AppResult.Failure(
                 when (resp.status.value) {
-                    409 -> me.kalfa.agentconsole.domain.error.AppFailure.NoActiveCampaign
+                    409 -> if (code == "already_reached") {
+                        me.kalfa.agentconsole.domain.error.AppFailure.AlreadyReached
+                    } else {
+                        me.kalfa.agentconsole.domain.error.AppFailure.NoActiveCampaign
+                    }
                     422 -> me.kalfa.agentconsole.domain.error.AppFailure.GuestMissingPhone
                     else -> failureForStatus(resp.status.value)
                 }
