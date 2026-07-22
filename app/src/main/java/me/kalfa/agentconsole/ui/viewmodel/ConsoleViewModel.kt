@@ -12,6 +12,8 @@ import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.postgrest
 import kotlinx.serialization.Serializable
 import me.kalfa.agentconsole.di.ErrorBus
+import me.kalfa.agentconsole.ui.message.AppMessageCenter
+import me.kalfa.agentconsole.ui.message.UiMessage
 
 
 @Serializable
@@ -32,7 +34,7 @@ data class ConsoleUiState(
     val events: List<ConsoleEvent> = emptyList(),
     val eventSummaries: List<EventSummary> = emptyList(),
     val selectedEventFilter: String? = null,
-    val connectionError: String? = null,
+    val globalMessages: List<UiMessage> = emptyList(),
     val selectedAnalysis: CallAnalysis? = null,
     val liveTranscripts: Map<String, List<TranscriptLine>> = emptyMap(),
     val analysisLoading: Boolean = false,
@@ -149,7 +151,11 @@ class ConsoleViewModel : ViewModel() {
             }
         }
 
-        viewModelScope.launch { ErrorBus.lastError.collect { err -> _uiState.update { it.copy(connectionError = err) } } }
+        viewModelScope.launch {
+            AppMessageCenter.messages.collect { messages ->
+                _uiState.update { it.copy(globalMessages = messages) }
+            }
+        }
 
         // Live captions: keep Broadcast subscriptions in sync with active AI calls
         DependencyContainer.liveTranscriptManager?.let { mgr ->
@@ -251,7 +257,7 @@ class ConsoleViewModel : ViewModel() {
         callRepo.refresh(); campaignRepo.refresh(); rsvpRepo.refresh()
     }
 
-    fun dismissError() = ErrorBus.clear()
+    fun dismissMessage(messageId: String) = AppMessageCenter.dismiss(messageId)
 
     fun logout() {
         val client = DependencyContainer.supabaseClient ?: return
