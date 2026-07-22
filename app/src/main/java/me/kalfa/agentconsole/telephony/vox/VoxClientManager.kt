@@ -44,7 +44,7 @@ class VoxClientManager(private val authClient: VoxSdkAuthClient) {
     private val loginMutex = Mutex()
     @Volatile private var initialized = false
 
-    val isLoggedIn: Boolean get() = Client.getClientState() == ClientState.LoggedIn
+    val isLoggedIn: Boolean get() = Client.clientState == ClientState.LoggedIn
 
     // Idempotent one-time SDK setup. VICalls.initialize() prepares the calls
     // subsystem; the session listener keeps loginState honest across drops; the
@@ -78,10 +78,10 @@ class VoxClientManager(private val authClient: VoxSdkAuthClient) {
     suspend fun ensureLoggedIn(voxUsername: String): Result<Unit> = loginMutex.withLock {
         runCatching {
             ensureInitialized()
-            if (Client.getClientState() == ClientState.LoggedIn) return@runCatching
+            if (Client.clientState == ClientState.LoggedIn) return@runCatching
             val fullUsername = VoxConfig.fullUsername(voxUsername)
 
-            if (Client.getClientState() != ClientState.Connected) {
+            if (Client.clientState != ClientState.Connected) {
                 _loginState.value = VoxLoginState.CONNECTING
                 connectSuspend()
             }

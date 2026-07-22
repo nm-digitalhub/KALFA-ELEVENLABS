@@ -11,16 +11,24 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!--
-      Self-managed VoIP (Voximplant SDK v2 phase — see AGENTS.md §3).
-      RECORD_AUDIO and MANAGE_OWN_CALLS are runtime-sensitive and Play Console
-      requires a declared use; they are here because the console genuinely carries
-      two-way voice on monitor/takeover, not for convenience.
+      Live-agent VoIP audio (Voximplant human-agent leg — monitor / takeover).
+      RECORD_AUDIO is runtime-sensitive and requested at the live-supervision surface
+      (telephony/CallAudioPermissions); the console genuinely carries two-way voice on
+      takeover, not for convenience.
+
+      Foreground service: v1 keeps an active call alive with a `microphone`-typed FGS
+      (telephony/CallForegroundService) — deliberately NOT a `phoneCall` FGS.
+      `phoneCall` on Android 14+ additionally requires self-managed Telecom
+      (MANAGE_OWN_CALLS + a ConnectionService) OR the default-dialer role; that
+      option-(a) path is deferred to the telephony-wiring step. So MANAGE_OWN_CALLS and
+      FOREGROUND_SERVICE_PHONE_CALL are intentionally NOT declared yet — declaring
+      sensitive permissions with no matching phoneCall service is a Play-review risk.
+      They return together with the ConnectionService below when Telecom is adopted.
     -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Android 12+ (API 31) Bluetooth headset routing. -->
@@ -51,6 +59,18 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          Ongoing-call foreground service (v1, option-b). Keeps an active monitor/
+          takeover leg alive with a `microphone`-typed FGS + ongoing notification.
+          Not exported; started only in-process by the telephony-wiring step. Switches
+          to (or is complemented by) the ConnectionService below when self-managed
+          Telecom is adopted.
+        -->
+        <service
+            android:name=".telephony.CallForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
         <!--
           Self-managed ConnectionService (AGENTS.md §3). Register the PhoneAccount

@@ -7,7 +7,6 @@ import me.kalfa.agentconsole.domain.repository.RsvpRepository
 import me.kalfa.agentconsole.domain.telephony.AgentPresence
 import me.kalfa.agentconsole.domain.telephony.CallEngine
 import me.kalfa.agentconsole.domain.telephony.CallSession
-import me.kalfa.agentconsole.data.mock.MockCallSession
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.postgrest
@@ -22,7 +21,6 @@ import io.ktor.http.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.Serializable
-import java.util.UUID
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -734,121 +732,33 @@ class SupabaseCallEngineImpl(
         false
     }
 
-    override fun startOutboundCall(phone: String, customerName: String): CallSession {
-        _currentSession.value?.hangup()
-        
-        val session = MockCallSession(
-            id = "out-${UUID.randomUUID().toString().take(6)}",
-            customerPhone = phone,
-            customerName = customerName,
-            initialState = CallState.RINGING,
-            onHangup = {
-                _currentSession.value = null
-                setStatus(AgentStatus.READY)
-            },
-            onStateChange = {}
+    // ─────────────────────────────────────────────────────────────────────────
+    // Live-agent telephony (app-initiated outbound leg / monitor / takeover) is NOT
+    // wired yet. It requires a real Voximplant SDK leg answered ON the device plus
+    // the backend attach handshake — that ships in the telephony-wiring step.
+    //
+    // These previously fabricated a `MockCallSession` and fired speculative POSTs to
+    // routes that do not match the real backend contract (`/api/calls/outbound`,
+    // `/api/calls/{id}/monitor` with an ad-hoc body). That was the UI-honesty
+    // landmine: a fake in-call surface presented as a real call. They now fail loudly
+    // instead of faking. The ViewModel never calls these today (monitor / takeover /
+    // free outbound dial are gated to an honest "בקרוב" notice), so this is
+    // unreachable in production, not a regression — the throws are replaced by the
+    // real leg in the telephony-wiring step.
+    // ─────────────────────────────────────────────────────────────────────────
+    override fun startOutboundCall(phone: String, customerName: String): CallSession =
+        throw UnsupportedOperationException(
+            "startOutboundCall is not wired: app-initiated dialing is enqueue-only via " +
+                "enqueueOutboundCall(eventId, guestId); a live agent leg ships in the telephony-wiring step.",
         )
-        _currentSession.value = session
-        setStatus(AgentStatus.IN_CALL)
 
-        scope.launch(Dispatchers.IO) {
-            try {
-                val jwt = getJwt()
-                httpClient.post("https://beta.kalfa.me/api/calls/outbound") {
-                    header(HttpHeaders.Authorization, "Bearer $jwt")
-                    contentType(ContentType.Application.Json)
-                    setBody("{\"phone\":\"$phone\",\"event_id\":\"default-event\"}")
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-
-        return session
-    }
-
-    override fun monitorCall(callId: String): CallSession {
-        _currentSession.value?.hangup()
-        
-        val session = MockCallSession(
-            id = callId,
-            customerPhone = "050-000-0000",
-            customerName = "אורח משיחה $callId",
-            initialState = CallState.MONITORED,
-            onHangup = {
-                _currentSession.value = null
-            },
-            onStateChange = {}
+    override fun monitorCall(callId: String): CallSession =
+        throw UnsupportedOperationException(
+            "monitorCall is not wired: the real receive-only SDK leg ships in the telephony-wiring step.",
         )
-        _currentSession.value = session
 
-        scope.launch(Dispatchers.IO) {
-            try {
-                val jwt = getJwt()
-                httpClient.post("https://beta.kalfa.me/api/calls/$callId/monitor") {
-                    header(HttpHeaders.Authorization, "Bearer $jwt")
-                    contentType(ContentType.Application.Json)
-                    setBody("{\"mode\":\"monitor\"}")
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-
-        return session
-    }
-
-    override fun takeoverCall(callId: String): CallSession {
-        val current = _currentSession.value
-        if (current != null && current.id == callId) {
-            val mockSess = current as MockCallSession
-            mockSess.updateState(CallState.TAKEN_OVER)
-            setStatus(AgentStatus.IN_CALL)
-            
-            scope.launch(Dispatchers.IO) {
-                try {
-                    val jwt = getJwt()
-                    httpClient.post("https://beta.kalfa.me/api/calls/$callId/monitor") {
-                        header(HttpHeaders.Authorization, "Bearer $jwt")
-                        contentType(ContentType.Application.Json)
-                        setBody("{\"mode\":\"takeover\"}")
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-            return current
-        }
-
-        _currentSession.value?.hangup()
-        
-        val session = MockCallSession(
-            id = callId,
-            customerPhone = "050-000-0000",
-            customerName = "אורח משיחה $callId",
-            initialState = CallState.TAKEN_OVER,
-            onHangup = {
-                _currentSession.value = null
-                setStatus(AgentStatus.READY)
-            },
-            onStateChange = {}
+    override fun takeoverCall(callId: String): CallSession =
+        throw UnsupportedOperationException(
+            "takeoverCall is not wired: the real takeover SDK leg + atomic claim ship in the telephony-wiring step.",
         )
-        _currentSession.value = session
-        setStatus(AgentStatus.IN_CALL)
-
-        scope.launch(Dispatchers.IO) {
-            try {
-                val jwt = getJwt()
-                httpClient.post("https://beta.kalfa.me/api/calls/$callId/monitor") {
-                    header(HttpHeaders.Authorization, "Bearer $jwt")
-                    contentType(ContentType.Application.Json)
-                    setBody("{\"mode\":\"takeover\"}")
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-
-        return session
-    }
 }
