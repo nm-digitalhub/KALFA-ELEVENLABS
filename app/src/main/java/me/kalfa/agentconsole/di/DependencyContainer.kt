@@ -47,48 +47,49 @@ object DependencyContainer {
         }
     }
 
-    val callRepository: CallRepository by lazy {
-        val client = supabaseClient
-        if (client != null) {
-            SupabaseCallRepository(client)
+    // Release fail-closed: the mock implementations are a DEBUG-only convenience.
+    // A release build that isn't configured for Supabase must NOT silently boot into
+    // fabricated data — serving mock calls/guests as if they were real is exactly the
+    // dishonest failure this guard prevents. In release we fail loudly instead; a
+    // misconfigured release (secrets not injected) is a build error to fix, not a
+    // state to paper over with demo data.
+    private fun <T> mockOrFailClosed(component: String, mock: () -> T): T =
+        if (BuildConfig.DEBUG) {
+            mock()
         } else {
-            MockCallRepositoryImpl()
+            error(
+                "$component unavailable: Supabase is not configured in a release build. " +
+                    "Refusing to fall back to mock data (fail-closed)."
+            )
         }
+
+    val callRepository: CallRepository by lazy {
+        supabaseClient?.let { SupabaseCallRepository(it) }
+            ?: mockOrFailClosed("CallRepository") { MockCallRepositoryImpl() }
     }
 
     val campaignRepository: CampaignRepository by lazy {
-        val client = supabaseClient
-        if (client != null) {
-            SupabaseCampaignRepository(client)
-        } else {
-            MockCampaignRepositoryImpl()
-        }
+        supabaseClient?.let { SupabaseCampaignRepository(it) }
+            ?: mockOrFailClosed("CampaignRepository") { MockCampaignRepositoryImpl() }
     }
 
     val rsvpRepository: RsvpRepository by lazy {
-        val client = supabaseClient
-        if (client != null) {
-            SupabaseRsvpRepository(client)
-        } else {
-            MockRsvpRepositoryImpl()
-        }
+        supabaseClient?.let { SupabaseRsvpRepository(it) }
+            ?: mockOrFailClosed("RsvpRepository") { MockRsvpRepositoryImpl() }
     }
-    
+
     private val mockCallEngine: MockCallEngineImpl by lazy {
         MockCallEngineImpl(callRepository, rsvpRepository)
     }
 
     private val supabaseCallEngine: SupabaseCallEngineImpl? by lazy {
-        val client = supabaseClient
-        if (client != null) {
-            SupabaseCallEngineImpl(client, callRepository, rsvpRepository)
-        } else {
-            null
-        }
+        supabaseClient?.let { SupabaseCallEngineImpl(it, callRepository, rsvpRepository) }
     }
-    
-    val callEngine: CallEngine get() = supabaseCallEngine ?: mockCallEngine
-    val agentPresence: AgentPresence get() = (supabaseCallEngine ?: mockCallEngine) as AgentPresence
+
+    val callEngine: CallEngine get() =
+        supabaseCallEngine ?: mockOrFailClosed("CallEngine") { mockCallEngine }
+    val agentPresence: AgentPresence get() =
+        (supabaseCallEngine ?: mockOrFailClosed("AgentPresence") { mockCallEngine }) as AgentPresence
 
     val liveTranscriptManager: LiveTranscriptManager? by lazy {
         supabaseClient?.let { LiveTranscriptManager(it) }
