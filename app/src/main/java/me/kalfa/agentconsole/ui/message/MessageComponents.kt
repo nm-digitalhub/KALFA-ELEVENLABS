@@ -59,38 +59,55 @@ fun AppMessageBanner(
             .fillMaxWidth()
             .semantics { liveRegion = LiveRegionMode.Polite }
     ) {
-        Row(
+        Column(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    text = message.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.semantics { heading() }
-                )
-                message.body?.let { body ->
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
                     Text(
-                        text = body,
-                        style = MaterialTheme.typography.bodySmall
+                        text = message.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.semantics { heading() }
                     )
+                    message.body?.let { body ->
+                        Text(
+                            text = body,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+
+                if (message.dismissible) {
+                    TextButton(onClick = { onDismiss(message.id) }) {
+                        Text("סגירה")
+                    }
                 }
             }
 
-            message.primaryAction?.let { action ->
-                TextButton(onClick = { onAction(action.actionId) }) {
-                    Text(action.label)
-                }
-            }
-
-            if (message.dismissible) {
-                TextButton(onClick = { onDismiss(message.id) }) {
-                    Text("סגירה")
+            if (message.primaryAction != null || message.secondaryAction != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    message.primaryAction?.let { action ->
+                        TextButton(onClick = { onAction(action.actionId) }) {
+                            Text(action.label)
+                        }
+                    }
+                    message.secondaryAction?.let { action ->
+                        TextButton(onClick = { onAction(action.actionId) }) {
+                            Text(action.label)
+                        }
+                    }
                 }
             }
         }
@@ -125,9 +142,18 @@ fun InlineMessage(
             message.body?.let {
                 Text(text = it, style = MaterialTheme.typography.bodyMedium)
             }
-            message.primaryAction?.let { action ->
-                TextButton(onClick = { onAction(action.actionId) }) {
-                    Text(action.label)
+            if (message.primaryAction != null || message.secondaryAction != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    message.primaryAction?.let { action ->
+                        TextButton(onClick = { onAction(action.actionId) }) {
+                            Text(action.label)
+                        }
+                    }
+                    message.secondaryAction?.let { action ->
+                        TextButton(onClick = { onAction(action.actionId) }) {
+                            Text(action.label)
+                        }
+                    }
                 }
             }
         }
