@@ -5,6 +5,7 @@ import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.auth.status.SessionStatus
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.dropWhile
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 
@@ -93,3 +94,40 @@ internal fun SupabaseClient.signedInSessions(): Flow<Unit> =
  */
 internal fun SupabaseClient.hasUserSession(): Boolean =
     auth.currentAccessTokenOrNull() != null
+
+/**
+ * "The session just stopped being usable" — one emission per transition OUT of signed-in,
+ * and never the `false` a fresh collector is handed on subscription.
+ *
+ * The mirror of [enteredSignedIn], and needed because gating reads is only half of
+ * session hygiene: the rows already in memory outlive the session that was allowed to
+ * read them. These repositories are singletons on `DependencyContainer` and survive a
+ * sign-out/sign-in inside one process, so without a clear on the way out, the next agent
+ * to sign in is shown the previous agent's data.
+ *
+ * The window is not theoretical and it is not only the fetch round-trip.
+ * `refreshEventNames` returns early when `_eventNames` is already populated, so the
+ * sign-in fetch does NOT refresh it — the previous agent's event list stays on the Events
+ * screen until the 60s foreground poll replaces it. Live calls, history, campaigns, RSVP
+ * results and any already-requested targets/guest phone numbers are all visible for the
+ * shorter fetch window.
+ *
+ * `dropWhile { !it }` is what keeps a cold start quiet: `sessionStatus` begins at
+ * `Initializing`, which maps to `false`, and a process that has never been signed in has
+ * nothing to clear. Same idiom, for the same reason, as `shiftEndedAfterBeingActive` in
+ * telephony/presence — a `filter { !it }` alone would fire on the value every new
+ * collector is replayed.
+ */
+internal fun Flow<Boolean>.leftSignedIn(): Flow<Unit> =
+    distinctUntilChanged().dropWhile { !it }.filter { !it }.map { }
+
+/**
+ * [leftSignedIn] over this client's own session status.
+ *
+ * Note this fires for `RefreshFailure` as well as a real sign-out, which is correct for
+ * clearing: a session that could not be refreshed is one whose reads would now go out as
+ * `anon`, so continuing to display its rows claims a freshness the app cannot back. The
+ * data returns on the next successful sign-in via [signedInSessions].
+ */
+internal fun SupabaseClient.signedOutSessions(): Flow<Unit> =
+    auth.sessionStatus.map { it is SessionStatus.Authenticated }.leftSignedIn()
