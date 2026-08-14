@@ -83,6 +83,54 @@ object PresenceActions {
         }
     }
 
+    /**
+     * The heartbeat's re-send of the current status, WITH the agent-visible banner kept
+     * in step — the same split that [refreshAndReportRingCapability] exists to close.
+     *
+     * `PresenceForegroundService`'s heartbeat used to call `AgentPresence.setStatus`
+     * directly. That writes `_syncState`, which the persistent notification observes, so
+     * the notification recovered on its own every 30 seconds — but `setStatus` never
+     * touches `AppMessageCenter`, and `PRESENCE_MESSAGE_ID` is published and resolved
+     * only from [reportPresenceResult]. So a sync failure that healed itself on a later
+     * tick left the notification correctly showing "זמין" while the in-app banner still
+     * insisted the status had not reached the server, until the agent made some explicit
+     * status change.
+     *
+     * Found by tracing the sibling messages after the identical `ring_capability` bug was
+     * fixed, rather than by hitting it again in the field. Two surfaces disagreeing about
+     * the same fact is the failure mode; one of them being right is not good enough.
+     */
+    suspend fun resendCurrentStatus() {
+        val presence = DependencyContainer.agentPresence
+        reportPresenceResult(presence.setStatus(presence.currentStatus.value))
+    }
+
+    /**
+     * Re-attempts push-token registration on the heartbeat, but ONLY when the last
+     * attempt is on record as having failed.
+     *
+     * Registration otherwise happens exactly once per transition to READY, so a device
+     * whose registration failed for a transient reason — no network at the moment the
+     * agent went available, Google Play services still waking — stayed unregistered for
+     * the whole shift while reporting itself available. The server would route calls to
+     * it and Voximplant would have no token to push to, which is the precise shape of the
+     * incident this file's push handling keeps orbiting.
+     *
+     * Gated three ways so it costs nothing in the normal case: no retry unless
+     * [PushRegistrationState] holds a failure, none without a client, and none unless the
+     * SDK is genuinely logged in — `ensureLoggedIn` needs a vox username this service does
+     * not have, and `registerCurrentPushToken` only binds a token to an identity once the
+     * client is logged in anyway (Voximplant's Android push guide: *"the token is
+     * registered only after the client logs in"*). A logged-out client is a job for the
+     * next READY, not for the heartbeat.
+     */
+    suspend fun retryPushRegistrationIfFailed() {
+        if (PushRegistrationState.lastFailure.value == null) return
+        val vcm = DependencyContainer.voxClientManager ?: return
+        if (!vcm.isLoggedIn) return
+        reportPushRegistrationResult(vcm.registerCurrentPushToken())
+    }
+
     private fun reportPresenceResult(result: AppResult<Unit>) {
         when (result) {
             is AppResult.Success -> AppMessageCenter.resolve(PRESENCE_MESSAGE_ID)

@@ -162,13 +162,23 @@ class PresenceForegroundService : Service() {
                     if (presence.shiftActive.value) {
                         // Re-send the CURRENT status — this is a freshness refresh,
                         // not a status change (docs §1, "What the heartbeat actually
-                        // sends"). Reuses AgentPresence.setStatus deliberately rather
-                        // than adding a parallel heartbeat-only write path.
-                        presence.setStatus(presence.currentStatus.value)
+                        // sends"). Goes through PresenceActions rather than calling
+                        // AgentPresence.setStatus directly: the direct call updates
+                        // syncState (which this notification observes) but never
+                        // AppMessageCenter, so a sync failure that healed itself here
+                        // left the in-app banner insisting it hadn't. See that
+                        // function's kdoc.
+                        PresenceActions.resendCurrentStatus()
                         // No OS callback for a settings change — piggyback on the
                         // same cadence so a fix (or a new break) is reflected within
                         // one heartbeat interval, not only at service (re)start.
                         PresenceActions.refreshAndReportRingCapability(applicationContext)
+                        // Registration otherwise happens once per transition to READY,
+                        // so a transient failure at that moment (no network, Play
+                        // services still waking) left the device unregistered for the
+                        // whole shift while reporting itself available. No-ops unless
+                        // a failure is actually on record — see its kdoc.
+                        PresenceActions.retryPushRegistrationIfFailed()
                     }
                 }
             }
