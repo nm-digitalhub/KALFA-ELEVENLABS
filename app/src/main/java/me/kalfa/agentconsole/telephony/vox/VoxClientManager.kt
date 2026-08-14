@@ -282,13 +282,58 @@ class VoxClientManager(
         }
     }
 
+    /**
+     * Persist AuthParams — and never let the persistence decide whether auth worked.
+     *
+     * The one place a token write happens, because the alternative was three places
+     * and all three were wrong the same way. A bare `tokenStore.save(...)` inside a
+     * `runCatching` whose failure means "the platform rejected us" conflates two
+     * unrelated facts: what the SDK said, and whether a DataStore write landed. The
+     * SDK is authoritative about the first and knows nothing about the second.
+     *
+     * It had already been fixed once, inline, in [loginInteractively] — a full disk
+     * there made `ensureLoggedIn` report failure after `loginWithOneTimeKey` had
+     * succeeded, and PresenceActions published "המכשיר לא נרשם לקבלת שיחות" on a
+     * device that was genuinely logged in. Twice in one file means the SHAPE is the
+     * defect, not the instance, so the guard now lives in one function that every
+     * caller goes through instead of a pattern each caller has to remember.
+     *
+     * What is actually lost when a write fails is the NEXT login's silent path:
+     * `planSilentLogin` sees no usable stored pair and returns `FallBackToInteractive`,
+     * so the following login pays a one-time-key round trip. A degradation, reported
+     * as one.
+     *
+     * CancellationException is rethrown rather than logged: it IS an Exception in
+     * Kotlin, so a bare `catch (e: Exception)` would swallow the cancellation from a
+     * caller's timeout and let a timed-out attempt look like a successful login with a
+     * bad cache write.
+     */
+    private suspend fun cacheTokens(voxUsername: String, authParams: AuthParams) {
+        try {
+            tokenStore.save(voxUsername, authParams)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(
+                TAG,
+                "logged in, but caching the Voximplant tokens failed — the next login " +
+                    "will use the interactive path: ${e.message ?: e::class.simpleName}",
+            )
+        }
+    }
+
     private suspend fun trySilentAccessToken(
         fullUsername: String,
         voxUsername: String,
         tokens: StoredVoxTokens,
     ): Boolean = runCatching {
         val authParams = loginWithAccessTokenSuspend(fullUsername, tokens.accessToken)
-        if (authParams != null) tokenStore.save(voxUsername, authParams)
+        // cacheTokens, not tokenStore.save. A failed write here used to make this
+        // function return FALSE on a device the platform had just accepted, which sent
+        // ensureLoggedIn on to tryRefreshThenAccessToken — rotating a perfectly good
+        // refresh token, and spending a second and third round trip, inside a 9-15s
+        // wake budget, all because a preferences file could not be written.
+        if (authParams != null) cacheTokens(voxUsername, authParams)
     }.isSuccess
 
     private suspend fun tryRefreshThenAccessToken(
@@ -297,9 +342,15 @@ class VoxClientManager(
         tokens: StoredVoxTokens,
     ): Boolean = runCatching {
         val refreshed = refreshTokenSuspend(fullUsername, tokens.refreshToken)
-        tokenStore.save(voxUsername, refreshed) // save immediately: the refresh itself already rotated tokens
+        // Cached immediately, because the refresh has ALREADY rotated the pair
+        // server-side: the tokens this function was handed are dead from this line
+        // onward whether or not the write lands. Through cacheTokens so that a write
+        // failure cannot be mistaken for the platform refusing us — which is what
+        // reached the handler below and discarded credentials the platform had just
+        // issued.
+        cacheTokens(voxUsername, refreshed)
         val authParams = loginWithAccessTokenSuspend(fullUsername, refreshed.accessToken)
-        if (authParams != null) tokenStore.save(voxUsername, authParams)
+        if (authParams != null) cacheTokens(voxUsername, authParams)
     }.onFailure {
         // Both tokens are apparently unusable (refresh rejected, or the freshly
         // refreshed access token was itself rejected) — discard rather than leave a
@@ -317,6 +368,12 @@ class VoxClientManager(
         // a bounded caller that ran out of time has learned nothing about the tokens.
         // See refreshFailureProvesTokensDead — including the measurement showing that
         // this guard is belt-and-braces TODAY and why it is still worth writing.
+        //
+        // Now that both writes go through cacheTokens, the ONLY things that can reach
+        // this handler are the two SDK calls and a cancellation — which is what makes
+        // "the platform rejected us" a true reading of it rather than an assumed one.
+        // It was not true before: a DataStore write failure after a SUCCESSFUL refresh
+        // landed here too, and threw away tokens the platform had just issued.
         if (refreshFailureProvesTokensDead(it)) tokenStore.clearTokens()
     }.isSuccess
 
@@ -325,38 +382,11 @@ class VoxClientManager(
         val hash = authClient.fetchHash(oneTimeKey) // server-computed; may throw VoxAuthException
         val authParams = loginWithOneTimeKeySuspend(fullUsername, hash)
         // THE SDK IS LOGGED IN FROM HERE. Everything below is caching, and a caching
-        // failure must not be reported as a failed login.
-        //
-        // This line used to be a bare `tokenStore.save(...)` inside ensureLoggedIn's
-        // runCatching, so a DataStore write failure — a full disk, an IOException — made
-        // ensureLoggedIn return failure AFTER loginWithOneTimeKey had already succeeded.
-        // PresenceActions then skipped registerCurrentPushToken and published
-        // "המכשיר לא נרשם לקבלת שיחות" on a device that was genuinely logged in. The
-        // login was fine; only the cache was not.
-        //
-        // What is actually lost is the NEXT login's silent path: with no stored tokens,
-        // planSilentLogin returns FallBackToInteractive and the following login pays the
-        // one-time-key round trip again. That is a degradation, not a failure, and it is
-        // the honest thing to report as such.
-        //
-        // CancellationException is re-thrown rather than logged: it is an Exception in
-        // Kotlin, so a bare `catch (e: Exception)` here would swallow the cancellation
-        // from ensurePushRegistration's withTimeoutOrNull and let a timed-out attempt
-        // look like a successful login with a bad cache write. Same discipline as
-        // PresenceActions.persistPushRegistrationOutcome.
-        if (authParams != null) {
-            try {
-                tokenStore.save(voxUsername, authParams)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(
-                    TAG,
-                    "logged in, but caching the Voximplant tokens failed — the next login " +
-                        "will use the interactive path: ${e.message ?: e::class.simpleName}",
-                )
-            }
-        }
+        // failure must not be reported as a failed login — see cacheTokens, which is
+        // where the try/catch that used to be written out here now lives, so that the
+        // other two token writes in this file get the same protection instead of each
+        // caller having to remember it.
+        if (authParams != null) cacheTokens(voxUsername, authParams)
     }
 
     fun logout() {
