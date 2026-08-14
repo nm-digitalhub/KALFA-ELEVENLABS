@@ -690,3 +690,63 @@ between `syncState` and `pushRegistrationFailure`, pure function, no Robolectric
 `telephony/presence/PresenceStateStoreTest.kt` gained an `AppFailure` persist-name
 round-trip case plus an unrecognized-name-falls-back-to-Unknown case.
 `./gradlew testDebugUnitTest assembleDebug` — BUILD SUCCESSFUL, 55/55 tests pass.
+
+## Update 2026-08-14 (still later): `RingCapability` — declaring a permission is not holding it
+
+A manifest audit (by the owner, independently) found the gap directly: `USE_FULL_SCREEN_INTENT`
+is declared and `IncomingCallNotificationBuilder.kt` calls `.setFullScreenIntent(...,
+true)` — the only reference anywhere. Nothing checked whether the app actually *held*
+the permission. Per the Android 14 behavior-change doc: only apps whose core function
+is calling/alarms get it auto-granted; Play revokes the default grant for everything
+else; the user can turn it off regardless, permanently. `setFullScreenIntent` does not
+fail when the permission is absent — it silently degrades to a heads-up notification.
+Same failure shape as the push-token problem above, in the one code path whose entire
+purpose is to work on a locked screen.
+
+**Detection was built separately** (`telephony/vox/RingCapability.kt` +
+`RingCapabilityChecker`, `notificationsEnabled` / `channelAlerting` /
+`fullScreenIntentAllowed`, derived `canAlert` / `canRingOnLockedScreen`;
+`fullScreenIntentSettingsIntent()` for the one-tap fix, `null` below API 34 where
+there's nothing to grant). Kept deliberately separate from `AppFailure`/
+`FailureContext`: this is a device-configuration snapshot, not an attempted
+operation's outcome, and there's no HTTP status or exception to map — forcing it into
+that taxonomy would be the wrong shape.
+
+**Wired here:**
+- `PresenceNotificationBuilder.contentTextFor` gained a fourth input.
+  Priority when more than one signal is wrong: `syncState` first (not even confirmed
+  present outranks everything); then `!canAlert` (blocks every other channel too,
+  including this notification's own future updates); then push-registration (defeats
+  being *woken*, but a live app can still show its own incoming-call notification);
+  then the narrower `!canRingOnLockedScreen` gap. Two distinct Hebrew texts, matching
+  the consequence difference: `!canAlert` — "התראות למסוף חסומות — שיחות נכנסות לא
+  יוצגו כלל"; `!canRingOnLockedScreen` — "מסך שיחה נכנסת לא ייפתח במכשיר נעול —
+  שיחות עלולות להתפספס".
+- One fix-it notification action, mutually exclusive by construction
+  (`canRingOnLockedScreen` implies `canAlert`): `ACTION_APP_NOTIFICATION_SETTINGS`
+  when notifications are blocked entirely, `fullScreenIntentSettingsIntent()`'s
+  `ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT` when only the locked-screen path is
+  blocked. The general notification-settings action is one addition beyond the
+  literal ask (only the FSI-specific action was requested) — small, consistent, same
+  "give a way to fix it" principle applied to the more severe case.
+- `telephony/vox/RingCapabilityState`, a plain global object (mirrors
+  `PushRegistrationState`): no OS callback exists for "notification settings
+  changed", so `PresenceForegroundService` refreshes it once in `onCreate` (before
+  the first notification is built) and again every heartbeat tick — a fix or a new
+  break is reflected within one 30s interval, not only at service restart.
+- `PresenceActions.applyStatus`'s READY branch also publishes an `AppMessageCenter`
+  banner (new `di/DependencyContainer.appContext` — a narrow, documented escape
+  hatch for the one case where neither `ConsoleViewModel` nor
+  `PresenceActionReceiver` has a `Context` of their own) — the in-app surface for the
+  moment the agent is actually looking at the screen, pointing them at the
+  notification's own fix-it action for the locked-screen case.
+
+New tests: `RingCapabilityTest.kt` (5 tests, the owner's own — not touched) plus four
+new cases in `PresenceNotificationBuilderTest.kt` covering the priority rules against
+`RingCapability`. `./gradlew testDebugUnitTest assembleDebug` — BUILD SUCCESSFUL,
+59/59 tests pass.
+
+**Still unverified, same reason as everything else in this doc:** no physical device.
+Whether `canUseFullScreenIntent()` reports correctly, whether the settings deep links
+actually land on the right screen, and whether the fix is durable after the user
+grants it, are all open per "What could not be verified" above.

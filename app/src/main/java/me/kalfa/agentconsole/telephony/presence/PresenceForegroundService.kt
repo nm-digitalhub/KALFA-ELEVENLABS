@@ -22,6 +22,17 @@ import me.kalfa.agentconsole.di.DependencyContainer
 import me.kalfa.agentconsole.domain.error.AppFailure
 import me.kalfa.agentconsole.domain.model.AgentStatus
 import me.kalfa.agentconsole.domain.telephony.PresenceSyncState
+import me.kalfa.agentconsole.telephony.vox.RingCapability
+import me.kalfa.agentconsole.telephony.vox.RingCapabilityState
+
+// The four independent signals PresenceNotificationBuilder.build needs — grouped so
+// the combine() below doesn't have to thread an unlabeled 4-tuple through collect.
+private data class PresenceNotificationInputs(
+    val status: AgentStatus,
+    val syncState: PresenceSyncState,
+    val pushRegistrationFailure: AppFailure?,
+    val ringCapability: RingCapability?,
+)
 
 // Makes "I am on shift" a technical fact rather than a ViewModel-scoped claim that
 // dies with the Activity — see docs/android-presence-and-call-ux.md §1 for the full
@@ -49,6 +60,11 @@ class PresenceForegroundService : Service() {
         super.onCreate()
         DependencyContainer.attach(applicationContext)
         PresenceNotificationBuilder.ensureChannel(applicationContext)
+        // No OS callback exists for "notification/full-screen-intent settings
+        // changed" — refresh synchronously here (cheap, no network) so the very
+        // first notification built below already reflects reality; refreshed again
+        // every heartbeat tick (see startHeartbeatAndObservers).
+        RingCapabilityState.refresh(applicationContext)
         // Seed the in-process push-registration signal from the durable record
         // BEFORE the first notification is built below — a process that was just
         // restarted (kill, then START_STICKY) must show the truth immediately, not
@@ -73,6 +89,7 @@ class PresenceForegroundService : Service() {
                 presenceNow.currentStatus.value,
                 presenceNow.syncState.value,
                 PushRegistrationState.lastFailure.value?.failure,
+                RingCapabilityState.current.value,
             ),
         )
 
@@ -120,11 +137,13 @@ class PresenceForegroundService : Service() {
                     presence.currentStatus,
                     presence.syncState,
                     PushRegistrationState.lastFailure,
-                ) { status, sync, pushFailure -> Triple(status, sync, pushFailure) }
-                    .collect { (status, sync, pushFailure) ->
+                    RingCapabilityState.current,
+                ) { status, sync, pushFailure, ringCapability ->
+                    PresenceNotificationInputs(status, sync, pushFailure?.failure, ringCapability)
+                }.collect { inputs ->
                         if (presence.shiftActive.value) {
-                            updateNotification(status, sync, pushFailure?.failure)
-                            stateStore?.save(status, true, currentVoxUsername())
+                            updateNotification(inputs)
+                            stateStore?.save(inputs.status, true, currentVoxUsername())
                         }
                     }
             }
@@ -146,17 +165,27 @@ class PresenceForegroundService : Service() {
                         // sends"). Reuses AgentPresence.setStatus deliberately rather
                         // than adding a parallel heartbeat-only write path.
                         presence.setStatus(presence.currentStatus.value)
+                        // No OS callback for a settings change — piggyback on the
+                        // same cadence so a fix (or a new break) is reflected within
+                        // one heartbeat interval, not only at service (re)start.
+                        RingCapabilityState.refresh(applicationContext)
                     }
                 }
             }
         }
     }
 
-    private fun updateNotification(status: AgentStatus, sync: PresenceSyncState, pushRegistrationFailure: AppFailure?) {
+    private fun updateNotification(inputs: PresenceNotificationInputs) {
         val mgr = ContextCompat.getSystemService(this, android.app.NotificationManager::class.java)
         mgr?.notify(
             PresenceNotificationBuilder.NOTIFICATION_ID,
-            PresenceNotificationBuilder.build(this, status, sync, pushRegistrationFailure),
+            PresenceNotificationBuilder.build(
+                this,
+                inputs.status,
+                inputs.syncState,
+                inputs.pushRegistrationFailure,
+                inputs.ringCapability,
+            ),
         )
     }
 

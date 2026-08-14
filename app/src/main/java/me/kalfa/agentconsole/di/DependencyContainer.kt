@@ -31,6 +31,14 @@ object DependencyContainer {
         if (applicationContext == null) applicationContext = context.applicationContext
     }
 
+    // Read-only escape hatch for the rare caller that genuinely needs a raw Context
+    // and has no other way to get one — e.g. PresenceActions checking RingCapability
+    // (telephony/vox/RingCapability.kt) from a suspend function ConsoleViewModel AND
+    // a BroadcastReceiver both call, neither of which has a Context of its own.
+    // Prefer a constructed, Context-holding class (VoxTokenStore, PresenceStateStore)
+    // over reading this directly when one already exists for the job.
+    val appContext: Context? get() = applicationContext
+
     val isSupabaseConfigured: Boolean by lazy {
         try {
             val url = BuildConfig.SUPABASE_URL

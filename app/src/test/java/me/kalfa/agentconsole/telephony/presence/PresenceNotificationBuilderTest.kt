@@ -3,6 +3,7 @@ package me.kalfa.agentconsole.telephony.presence
 import me.kalfa.agentconsole.domain.error.AppFailure
 import me.kalfa.agentconsole.domain.model.AgentStatus
 import me.kalfa.agentconsole.domain.telephony.PresenceSyncState
+import me.kalfa.agentconsole.telephony.vox.RingCapability
 import me.kalfa.agentconsole.ui.message.FailureContext
 import me.kalfa.agentconsole.ui.message.toHebrewMessage
 import org.junit.Assert.assertEquals
@@ -71,6 +72,84 @@ class PresenceNotificationBuilderTest {
         val pending = PresenceNotificationBuilder.contentTextFor(AgentStatus.DND, PresenceSyncState.Pending, null)
         val synced = PresenceNotificationBuilder.contentTextFor(AgentStatus.DND, PresenceSyncState.Synced, null)
         assertNotEquals(pending, synced)
+    }
+
+    // The gap this was built for: declaring USE_FULL_SCREEN_INTENT in the manifest is
+    // not the same as holding it (Android 14+ auto-revokes for non-calling apps, and
+    // the user can turn it off regardless) — setFullScreenIntent degrades silently to
+    // a heads-up notification with no error anywhere. A synced, fully-registered
+    // agent must still see this, or a locked-phone missed call looks like nothing
+    // happened at all.
+    @Test
+    fun `an otherwise-healthy agent still sees a locked-screen ring gap`() {
+        val text = PresenceNotificationBuilder.contentTextFor(
+            AgentStatus.READY,
+            PresenceSyncState.Synced,
+            pushRegistrationFailure = null,
+            ringCapability = RingCapability(
+                notificationsEnabled = true,
+                channelAlerting = true,
+                fullScreenIntentAllowed = false,
+            ),
+        )
+        assertNotEquals("סטטוס: זמין", text)
+    }
+
+    // The more severe of the two RingCapability problems: notifications blocked
+    // entirely means no call reaches this agent at all, not just a missed lock-screen
+    // ring — it must read as more urgent than, and distinct from, the locked-screen-
+    // only case above.
+    @Test
+    fun `notifications fully blocked reads differently from the narrower locked-screen gap`() {
+        val blocked = PresenceNotificationBuilder.contentTextFor(
+            AgentStatus.READY,
+            PresenceSyncState.Synced,
+            pushRegistrationFailure = null,
+            ringCapability = RingCapability(
+                notificationsEnabled = false,
+                channelAlerting = true,
+                fullScreenIntentAllowed = true,
+            ),
+        )
+        val lockedOnly = PresenceNotificationBuilder.contentTextFor(
+            AgentStatus.READY,
+            PresenceSyncState.Synced,
+            pushRegistrationFailure = null,
+            ringCapability = RingCapability(
+                notificationsEnabled = true,
+                channelAlerting = true,
+                fullScreenIntentAllowed = false,
+            ),
+        )
+        assertNotEquals(blocked, lockedOnly)
+    }
+
+    // syncState is still the most urgent fact even against a RingCapability problem —
+    // not being confirmed present at all outranks a device-configuration gap.
+    @Test
+    fun `syncState Failed takes priority over a RingCapability problem too`() {
+        val text = PresenceNotificationBuilder.contentTextFor(
+            AgentStatus.READY,
+            PresenceSyncState.Failed(AppFailure.NotSignedIn),
+            pushRegistrationFailure = null,
+            ringCapability = RingCapability(false, false, false),
+        )
+        assertEquals(AppFailure.NotSignedIn.toHebrewMessageForPresence(), text)
+    }
+
+    @Test
+    fun `a fully healthy RingCapability changes nothing`() {
+        val text = PresenceNotificationBuilder.contentTextFor(
+            AgentStatus.READY,
+            PresenceSyncState.Synced,
+            pushRegistrationFailure = null,
+            ringCapability = RingCapability(
+                notificationsEnabled = true,
+                channelAlerting = true,
+                fullScreenIntentAllowed = true,
+            ),
+        )
+        assertEquals("סטטוס: זמין", text)
     }
 
     private fun AppFailure.toHebrewMessageForPresence() = toHebrewMessage(FailureContext.PRESENCE)

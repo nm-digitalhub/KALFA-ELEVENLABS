@@ -4,6 +4,8 @@ import me.kalfa.agentconsole.data.toAppFailure
 import me.kalfa.agentconsole.di.DependencyContainer
 import me.kalfa.agentconsole.domain.error.AppResult
 import me.kalfa.agentconsole.domain.model.AgentStatus
+import me.kalfa.agentconsole.telephony.vox.RingCapability
+import me.kalfa.agentconsole.telephony.vox.RingCapabilityState
 import me.kalfa.agentconsole.ui.message.AppMessageCenter
 import me.kalfa.agentconsole.ui.message.FailureContext
 import me.kalfa.agentconsole.ui.message.MessageSeverity
@@ -26,6 +28,7 @@ import me.kalfa.agentconsole.ui.message.toHebrewMessage
 object PresenceActions {
     private const val PRESENCE_MESSAGE_ID = "presence_sync"
     private const val PUSH_REGISTRATION_MESSAGE_ID = "push_registration"
+    private const val RING_CAPABILITY_MESSAGE_ID = "ring_capability"
 
     /**
      * Sets the agent's status and, for READY specifically, declares shift and drives
@@ -61,6 +64,13 @@ object PresenceActions {
                     },
                     onFailure = { e -> reportPushRegistrationResult(Result.failure(e)) },
                 )
+            }
+
+            // A device-configuration check, not a request that failed — deliberately
+            // NOT run through AppFailure/FailureMapping (there is no operation here
+            // to map a status code from). See telephony/vox/RingCapability.kt's kdoc.
+            DependencyContainer.appContext?.let { context ->
+                reportRingCapability(RingCapabilityState.refresh(context))
             }
         }
     }
@@ -121,5 +131,36 @@ object PresenceActions {
                 )
             },
         )
+    }
+
+    // Two distinct messages because the consequences differ (RingCapability's kdoc):
+    // !canAlert means no call reaches this agent AT ALL; !canRingOnLockedScreen (with
+    // canAlert still true) means calls arrive but a locked/pocketed phone will miss
+    // them. Both clear via resolve() the instant a later check comes back clean —
+    // there is no "fix" step to await here, just a fresh read.
+    private fun reportRingCapability(capability: RingCapability) {
+        when {
+            !capability.canAlert -> AppMessageCenter.publish(
+                UiMessage(
+                    id = RING_CAPABILITY_MESSAGE_ID,
+                    severity = MessageSeverity.ERROR,
+                    title = "התראות למסוף חסומות",
+                    body = "שיחות נכנסות לא יוצגו כלל במכשיר זה. יש לאפשר התראות בהגדרות המכשיר.",
+                    dismissible = false,
+                    deduplicationKey = RING_CAPABILITY_MESSAGE_ID,
+                ),
+            )
+            !capability.canRingOnLockedScreen -> AppMessageCenter.publish(
+                UiMessage(
+                    id = RING_CAPABILITY_MESSAGE_ID,
+                    severity = MessageSeverity.WARNING,
+                    title = "מסך שיחה נכנסת לא ייפתח במכשיר נעול",
+                    body = "שיחות עלולות להתפספס כשהמכשיר נעול. ניתן לתקן דרך התראת הנוכחות הקבועה.",
+                    dismissible = false,
+                    deduplicationKey = RING_CAPABILITY_MESSAGE_ID,
+                ),
+            )
+            else -> AppMessageCenter.resolve(RING_CAPABILITY_MESSAGE_ID)
+        }
     }
 }

@@ -6,10 +6,13 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import me.kalfa.agentconsole.domain.error.AppFailure
 import me.kalfa.agentconsole.domain.model.AgentStatus
 import me.kalfa.agentconsole.domain.telephony.PresenceSyncState
+import me.kalfa.agentconsole.telephony.vox.RingCapability
+import me.kalfa.agentconsole.telephony.vox.RingCapabilityChecker
 import me.kalfa.agentconsole.ui.message.FailureContext
 import me.kalfa.agentconsole.ui.message.toHebrewMessage
 
@@ -26,6 +29,15 @@ object PresenceNotificationBuilder {
 
     const val ACTION_SET_STATUS = "me.kalfa.agentconsole.action.SET_STATUS"
     const val EXTRA_STATUS = "status"
+
+    // RingCapability (telephony/vox/RingCapability.kt) is a device-CONFIGURATION
+    // snapshot, not a failed request — deliberately NOT folded into AppFailure/
+    // FailureContext (which model an attempted operation's outcome). Two distinct
+    // texts because the consequences differ: canAlert==false means no call reaches
+    // this agent at all; canRingOnLockedScreen==false (canAlert still true) means
+    // calls DO arrive but a locked/pocketed phone will miss them.
+    private const val NOTIFICATIONS_BLOCKED_TEXT = "התראות למסוף חסומות — שיחות נכנסות לא יוצגו כלל."
+    private const val CANNOT_RING_LOCKED_TEXT = "מסך שיחה נכנסת לא ייפתח במכשיר נעול — שיחות עלולות להתפספס."
 
     // The only three states an agent can set themselves — mirrors AgentStatus
     // exactly, per the brief's "do not invent new states". IN_CALL is server-managed
@@ -46,20 +58,34 @@ object PresenceNotificationBuilder {
     }
 
     // syncState distinguishes "requested" from "confirmed-by-server" (PresenceSyncState's
-    // kdoc); pushRegistrationFailure is an ORTHOGONAL signal — presence can be fully
-    // Synced (the status write reached the server) while the device separately never
-    // registered for push (so a killed/backgrounded app can never be woken — see
-    // docs/android-presence-and-call-ux.md's "Update 2026-08-14 (later)", the live
-    // incident of Voximplant reporting "No push notifications has been sent"). This
-    // notification is the ONLY surface a backgrounded agent sees, so neither failure
-    // may be silently absent from it. syncState takes priority when both are wrong —
-    // it's the more urgent fact (the agent isn't even confirmed present at all).
-    fun contentTextFor(status: AgentStatus, syncState: PresenceSyncState, pushRegistrationFailure: AppFailure?): String =
+    // kdoc); pushRegistrationFailure and ringCapability are further ORTHOGONAL signals —
+    // presence can be fully Synced (the status write reached the server) while the
+    // device separately never registered for push (killed/backgrounded app can never be
+    // woken — docs' "Update 2026-08-14 (later)", Voximplant reporting "No push
+    // notifications has been sent") or while notifications/full-screen-intent are
+    // blocked at the OS level (a call arrives with nowhere to show itself —
+    // RingCapability's kdoc). This notification is the ONLY surface a backgrounded
+    // agent sees, so none of these may be silently absent from it.
+    //
+    // Priority when more than one is wrong: syncState first (not even confirmed present
+    // at all is the most urgent fact); then notifications being fully blocked
+    // (!canAlert defeats every other channel too, including this very notification's own
+    // future updates); then push-registration (defeats being WOKEN, but a live app can
+    // still show the SDK's own incoming-call notification); then the narrower
+    // locked-screen-only gap.
+    fun contentTextFor(
+        status: AgentStatus,
+        syncState: PresenceSyncState,
+        pushRegistrationFailure: AppFailure?,
+        ringCapability: RingCapability? = null,
+    ): String =
         when {
             syncState is PresenceSyncState.Failed -> syncState.failure.toHebrewMessage(FailureContext.PRESENCE)
             syncState == PresenceSyncState.Pending -> "סטטוס: ${status.labelHebrew} (מעדכן מול השרת...)"
+            ringCapability != null && !ringCapability.canAlert -> NOTIFICATIONS_BLOCKED_TEXT
             pushRegistrationFailure != null ->
                 "סטטוס: ${status.labelHebrew} — " + pushRegistrationFailure.toHebrewMessage(FailureContext.PUSH_REGISTRATION)
+            ringCapability != null && !ringCapability.canRingOnLockedScreen -> CANNOT_RING_LOCKED_TEXT
             else -> "סטטוס: ${status.labelHebrew}"
         }
 
@@ -68,9 +94,10 @@ object PresenceNotificationBuilder {
         status: AgentStatus,
         syncState: PresenceSyncState,
         pushRegistrationFailure: AppFailure? = null,
+        ringCapability: RingCapability? = null,
     ) = NotificationCompat.Builder(context, CHANNEL_ID)
             .setContentTitle("מסוף KALFA")
-            .setContentText(contentTextFor(status, syncState, pushRegistrationFailure))
+            .setContentText(contentTextFor(status, syncState, pushRegistrationFailure, ringCapability))
             .setSmallIcon(android.R.drawable.ic_menu_myplaces)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -82,6 +109,16 @@ object PresenceNotificationBuilder {
                 ACTIONABLE_STATUSES.forEach { candidate ->
                     if (candidate != status) {
                         addAction(0, candidate.labelHebrew, statusPendingIntent(context, candidate))
+                    }
+                }
+                // "Give the agent a way to fix it", one tap — mutually exclusive by
+                // construction (canRingOnLockedScreen implies canAlert), so at most one
+                // of these ever adds a third action.
+                if (ringCapability != null && !ringCapability.canAlert) {
+                    addAction(0, "פתח הגדרות התראות", appNotificationSettingsPendingIntent(context))
+                } else if (ringCapability != null && !ringCapability.canRingOnLockedScreen) {
+                    RingCapabilityChecker.fullScreenIntentSettingsIntent(context)?.let { settingsIntent ->
+                        addAction(0, "אפשר מסך שיחה נעולה", fullScreenIntentSettingsPendingIntent(context, settingsIntent))
                     }
                 }
             }
@@ -98,4 +135,28 @@ object PresenceNotificationBuilder {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
     }
+
+    private fun appNotificationSettingsPendingIntent(context: Context): PendingIntent {
+        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return PendingIntent.getActivity(
+            context,
+            REQUEST_CODE_NOTIFICATION_SETTINGS,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    private fun fullScreenIntentSettingsPendingIntent(context: Context, settingsIntent: Intent): PendingIntent =
+        PendingIntent.getActivity(
+            context,
+            REQUEST_CODE_FSI_SETTINGS,
+            settingsIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    // Distinct from ACTIONABLE_STATUSES' request codes (status.ordinal, 0-2).
+    private const val REQUEST_CODE_NOTIFICATION_SETTINGS = 100
+    private const val REQUEST_CODE_FSI_SETTINGS = 101
 }
