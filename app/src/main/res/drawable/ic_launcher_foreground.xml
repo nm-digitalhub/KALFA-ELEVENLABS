@@ -2,29 +2,73 @@
 <!--
   KALFA adaptive-icon foreground: the "K" mark.
 
-  The pathData below is copied VERBATIM from the web app's PWA icon
-  (KALFA beta repo: public/icons/icon.svg) and is therefore still expressed in
-  that file's 512x512 coordinate space. The <group> maps it onto Android's
-  108x108dp canvas instead of re-typing the coordinates, so the shape stays
-  provably identical to the source - diff the two strings to confirm.
+  Source is the web app's MASKABLE PWA icon, not the primary one:
+  KALFA beta repo: public/icons/maskable-icon.svg. That file was already
+  redrawn by the design source of truth specifically for masked contexts, and
+  only its K path is taken here - the decorative
+  <circle r=190 opacity=0.16> halo in that file is a soft-background effect
+  for the PWA's own maskable rendering and is deliberately NOT reproduced;
+  KALFA's flat #FF5A3C fill is a separate layer (ic_launcher_background.xml).
+  The pathData below is copied VERBATIM from maskable-icon.svg and is
+  expressed in that file's 512x512 coordinate space; the <group> maps it onto
+  Android's 108x108dp canvas instead of re-typing the coordinates, so the
+  shape stays provably identical to the source - diff the two strings to
+  confirm.
 
-  Geometry (all figures from the adaptive-icon spec):
-    glyph bounding box in 512-space is x[130,400] y[136,376] = 270 x 240,
-    centred on (265,256).
+  Why this glyph instead of the primary icon.svg one: the primary K is used
+  verbatim (with a small centring nudge) for the legacy mipmap-*dpi/ rasters,
+  where it is drawn full-bleed with no mask. The adaptive foreground is
+  clipped by an OEM mask instead, and the guaranteed-safe region is not a
+  square but a 66dp-DIAMETER CIRCLE centred on the 108dp canvas (the square in
+  Android's own diagrams is a simplification - OEM masks are only guaranteed
+  convex, and may reach as little as 33dp from centre along any radius,
+  including the diagonals). The maskable glyph's proportions (265x216, aspect
+  1.227) are flatter than the primary's (270x240, aspect 1.125), which suits a
+  circular clip better; rendered size at the same 33dp guarantee comes out
+  within ~1.5% of area either way, so this is a shape decision, not a size
+  one.
 
-    scaleX/Y = 60 / 270 = 0.2222222  -> renders 60 x 53.33dp, inside the
-                                        documented 48-66dp logo range.
-    translateX = 54 - 265 * 0.2222222 = -4.888889
-    translateY = 54 - 256 * 0.2222222 = -2.888889
+  Centring is done on the glyph's BOUNDING-BOX centre, not its area-weighted
+  centroid. The two disagree here: the centroid sits ~28 units left of the
+  bbox centre because the solid stem outweighs the open diagonal arms. But
+  centroid-centring was rendered and rejected - it leaves visible dead space
+  on the right inside the safe circle and forces an ~10% smaller scale for no
+  perceptual gain, because three of the K's four bounding-box corners are
+  real ink vertices, not empty box corners, so the bbox centre already
+  balances the actual silhouette.
 
-  A group's matrix applies scale before translate (pivot defaults to 0,0), so a
-  point maps to s*p + t. That puts the mark at x[24,84] y[27.33,80.67] - fully
-  inside the 66x66dp safe zone (x,y in [21,87]) that no OEM mask ever clips,
-  and centred on the canvas so circular and squircle masks both read straight.
+  Geometry (verified against the maskable-icon.svg path):
+    glyph vertices (512-space): (142,148) (214,148) (214,252) (318,148)
+      (402,148) (288,260) (407,364) (313,364) (214,269) (214,364) (142,364)
+    bounding box x[142,407] y[148,364] = 265 x 216, centred on (274.5,256).
+    Farthest vertex from that centre is (142,148) and (407,364), each at
+    distance sqrt(132.5^2+108^2) = 170.9393167dp (in source units) - real ink
+    corners, confirmed by rendered proof (see contact sheet), not a
+    worst-case empty-corner assumption.
 
-  ic_launcher.xml also references this drawable as the <monochrome> layer: the
-  system replaces the fill when theming icons on Android 13+, and the shape is
-  already sized for the safe zone, so a separate silhouette would be redundant.
+    Target: no ink beyond 33.00dp radius from the canvas centre (54,54).
+    scaleX/Y = floor7(33 / 170.9393167) = 0.1930509 (floored, not rounded, so
+                                                       the realized radius is
+                                                       guaranteed <= target)
+    translateX = 54 - 274.5 * 0.1930509 =  1.007528
+    translateY = 54 - 256   * 0.1930509 =  4.5789696
+
+  A group's matrix applies scale before translate (pivot defaults to 0,0), so
+  a point maps to s*p + t - identical to how the SVG source was proven via
+  <g transform="translate(t) scale(s)">, which SVG composes right-to-left
+  (scale first, then translate) - same s*p + t. That puts the mark's bbox at
+  x[28.4208,79.5792] y[33.1505,74.8495] (51.16 x 41.70dp), centred on the
+  canvas, and its single farthest ink point (source vertex 407,364, mapped to
+  79.5792,74.8495) at radius 32.99998897dp from centre - inside the 33dp
+  guarantee with a ~0.00001dp margin from floor-rounding, not from a deliberately
+  smaller design (a rendered comparison at R=33/32/31/30dp showed 33 reads as
+  confidently filled, not crowded - see contact sheet).
+
+  ic_launcher.xml also references this drawable as the <monochrome> layer.
+  Verified against Android's adaptive-icon docs: the monochrome layer uses
+  the identical 108x108dp canvas and 66dp safe zone as the foreground, with
+  no documented difference in weight or sizing, so reusing this drawable
+  as-is is correct and a separate silhouette would be redundant.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -32,12 +76,12 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
     <group
-        android:scaleX="0.2222222"
-        android:scaleY="0.2222222"
-        android:translateX="-4.888889"
-        android:translateY="-2.888889">
+        android:scaleX="0.1930509"
+        android:scaleY="0.1930509"
+        android:translateX="1.007528"
+        android:translateY="4.5789696">
         <path
             android:fillColor="#FFFDF8"
-            android:pathData="M130 136h74v103l100-103h91L281 250l119 126h-96l-100-111v111h-74V136Z" />
+            android:pathData="M142 148h72v104l104-104h84L288 260l119 104h-94l-99-95v95h-72V148Z" />
     </group>
 </vector>

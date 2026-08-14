@@ -6,10 +6,14 @@
   (KALFA beta repo: public/icons/icon.svg), whose field is #FF5A3C -
   the same value the PWA manifest publishes as theme_color.
 
-  The whole 108x108dp canvas is painted deliberately. Only the inner 66x66dp
-  is guaranteed to survive an OEM mask; the outer 18dp on each side exists to
-  be cropped and to drive parallax, so the background has to bleed to the edge
-  or a circular mask would expose bare corners.
+  The whole 108x108dp canvas is painted deliberately. Only a 66dp-diameter
+  circle centred on the canvas (33dp radius) is guaranteed to survive every
+  OEM mask - not a 66x66dp square, which is how Android's own diagrams
+  simplify it, but OEM masks are only guaranteed convex and may cut in as
+  close as 33dp from centre along any radius, including the diagonals. The
+  outer margin exists to be cropped and to drive parallax, so the background
+  has to bleed to the full 108x108 edge or a circular (or any non-square)
+  mask would expose bare corners.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
