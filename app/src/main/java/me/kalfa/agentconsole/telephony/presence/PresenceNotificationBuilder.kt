@@ -9,6 +9,7 @@ import android.os.Build
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import me.kalfa.agentconsole.domain.error.AppFailure
+import me.kalfa.agentconsole.MainActivity
 import me.kalfa.agentconsole.domain.model.AgentStatus
 import me.kalfa.agentconsole.domain.telephony.PresenceSyncState
 import me.kalfa.agentconsole.telephony.vox.RingCapability
@@ -28,6 +29,9 @@ object PresenceNotificationBuilder {
     const val NOTIFICATION_ID = 4712
 
     const val ACTION_SET_STATUS = "me.kalfa.agentconsole.action.SET_STATUS"
+    // Carried so MainActivity can tell "opened from the presence notification"
+    // apart from a launcher start, without changing what it shows today.
+    const val ACTION_OPEN_CONSOLE = "me.kalfa.agentconsole.action.OPEN_CONSOLE"
     const val EXTRA_STATUS = "status"
 
     // RingCapability (telephony/vox/RingCapability.kt) is a device-CONFIGURATION
@@ -99,6 +103,19 @@ object PresenceNotificationBuilder {
             .setContentTitle("מסוף KALFA")
             .setContentText(contentTextFor(status, syncState, pushRegistrationFailure, ringCapability))
             .setSmallIcon(android.R.drawable.ic_menu_myplaces)
+            // Tapping the notification opened NOTHING before this: the builder set a
+            // title, text, icon and actions but never a content intent, and a
+            // notification without one simply swallows the tap. Reported by the owner
+            // 2026-08-14 ("לחיצה על ההתראה לא פותחת דבר"). The incoming-call
+            // notification in telephony/vox already did this correctly; the presence
+            // one was the outlier.
+            //
+            // Deliberately NOT paired with setAutoCancel(true), which the docs
+            // recommend for ordinary notifications: this is the ongoing
+            // foreground-service notification, so dismissing it on tap would remove
+            // the agent's only always-visible status surface — and it would come
+            // straight back on the next heartbeat, which is worse than not moving.
+            .setContentIntent(openConsolePendingIntent(context))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             // No PII of any kind in this notification (agent's own status only) — see
@@ -136,6 +153,22 @@ object PresenceNotificationBuilder {
         )
     }
 
+    // FLAG_ACTIVITY_SINGLE_TOP alongside NEW_TASK so an already-open console is
+    // brought forward rather than stacked on itself — MainActivity is launchMode
+    // singleTask, and this matches what the incoming-call notification already does.
+    // FLAG_IMMUTABLE is mandatory from Android 12; omitting it throws at creation.
+    private fun openConsolePendingIntent(context: Context): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java)
+            .setAction(ACTION_OPEN_CONSOLE)
+            .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        return PendingIntent.getActivity(
+            context,
+            REQUEST_CODE_OPEN_CONSOLE,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
     private fun appNotificationSettingsPendingIntent(context: Context): PendingIntent {
         val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
             .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
@@ -157,6 +190,7 @@ object PresenceNotificationBuilder {
         )
 
     // Distinct from ACTIONABLE_STATUSES' request codes (status.ordinal, 0-2).
+    private const val REQUEST_CODE_OPEN_CONSOLE = 99
     private const val REQUEST_CODE_NOTIFICATION_SETTINGS = 100
     private const val REQUEST_CODE_FSI_SETTINGS = 101
 }
