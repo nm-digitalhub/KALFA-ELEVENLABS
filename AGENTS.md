@@ -329,11 +329,18 @@ This app posts the incoming-call notification through `NotificationManagerCompat
 
 #### A-2. The FGS declaration — sequencing matters
 
-**Do this item *after* deciding B-2, not before.** The declaration is per *declared* foreground-service type, and B-2 proposes changing one of them. Today the AAB declares two: `microphone` (`telephony/CallForegroundService`) and `specialUse` (`telephony/presence/PresenceForegroundService`). If B-2 is accepted the pair becomes `phoneCall` + `specialUse`, and both the preset use case and the demo video change. Filling this in first means redoing it.
+**Settled as of `82beccc` — the app now declares THREE foreground-service types, so this is three declarations and three videos, not two.** `CallForegroundService` declares `phoneCall|microphone`; `PresenceForegroundService` declares `specialUse`. This item used to say "do it after deciding B-2"; that decision is made, and the `phoneCall` addition is new since the original audit.
 
-Two videos are needed either way — one per type. Suggested content:
-- *Ongoing call*: agent on shift → a call arrives → answer → the ongoing call notification is visible for the duration → hang up → notification clears.
-- *Presence*: agent toggles on-shift → persistent presence notification appears with its status actions → app backgrounded → a call still reaches the device → agent goes off-shift → notification clears.
+Map each to Play's preset use-case list (13392821):
+- **`phoneCall`** → *"Calling: Cellular/VoiP/Telecom APIs"*. This is the incoming/ongoing agent call leg. **Keep this description consistent with the A-1 full-screen-intent declaration** — both describe the same incoming-call feature, and a reviewer comparing them will notice if they disagree.
+- **`microphone`** → *"Background Audio Access"*. Covers the answered leg's audio capture once the call is up.
+- **`specialUse`** → free-form; paste-ready text below.
+
+Three videos, one per type. Suggested content — the first two can be the same recording submitted twice, since one call exercises both types across its phases:
+- *Ongoing call (`phoneCall`, then `microphone`)*: agent on shift → a call arrives on a locked screen → answer → ongoing call notification visible for the duration, two-way audio → hang up → notification clears.
+- *Presence (`specialUse`)*: agent toggles on-shift → persistent presence notification appears with its status actions → app backgrounded → a call still reaches the device → agent goes off-shift → notification clears.
+
+⚠ **Do not record the `phoneCall` video until B-2's code half lands.** The manifest declares the type but `startForeground` still passes `microphone`, so a locked-screen incoming call currently throws before the notification appears — there is nothing to film.
 
 **Paste-ready `specialUse` justification** (the manifest `<property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE">` already carries a compatible one-liner; this is the longer Console text). It is written to survive the obvious reviewer objection — *"use FCM instead"*, made sharper by the fact that this app already ships FCM:
 
@@ -364,7 +371,27 @@ Consequence: the *offer* leg (line 65, before any notification exists) is unexem
 
 `MANAGE_OWN_CALLS` **is** declared as of `66ad7dc` — verified in the built AAB. The prerequisite is the *declared permission*, not `CallsManager.addCall`; the manifest comment saying `FOREGROUND_SERVICE_PHONE_CALL` "belongs with the `addCall` migration" is mistaken on this point. `phoneCall` has no while-in-use prerequisite, so it does not throw from the background.
 
-Change requested of `fgs-owner` / `telecom-owner`: `CallForegroundService` → `foregroundServiceType="phoneCall"`, declare `FOREGROUND_SERVICE_PHONE_CALL`. **`phoneCall` alone — not `phoneCall|microphone`.** The system checks the prerequisites of *every* declared type, so keeping `microphone` in the pair reinstates the `SecurityException` this change removes.
+**Correction, 2026-08-14 — an earlier version of this item got the mechanism wrong, and the wrong version was acted on.** It said: *"`phoneCall` alone — not `phoneCall|microphone`. The system checks the prerequisites of every declared type."* **That is false.** AOSP `ActiveServices` (`refs/heads/main`) treats the manifest attribute purely as a **subset gate** — L2207, *"Check the passed in foreground service type flags is a subset of manifest foreground service type flags"* — and then validates permissions by looping over **the types passed to `startForeground`**, not the manifest union:
+
+```java
+int fgsTypes = foregroundServiceType;          // the startForeground() argument
+for (int serviceType = Integer.highestOneBit(fgsTypes);
+        serviceType != 0;
+        serviceType = Integer.highestOneBit(fgsTypes)) {
+    fgsTypeResult = validateForegroundServiceType(r, serviceType, …);
+    fgsTypes &= ~serviceType;
+    if (fgsTypeResult.first != FGS_TYPE_POLICY_CHECK_OK) break;
+}
+```
+
+So declaring `phoneCall|microphone` in the manifest is **safe and correct** — it is what makes a per-phase design possible. What matters is the argument to `startForeground`.
+
+**The actual rule, and the state as of `82beccc`:**
+
+1. **Manifest:** `android:foregroundServiceType="phoneCall|microphone"` on `CallForegroundService`, plus `FOREGROUND_SERVICE_PHONE_CALL`. **Done in `82beccc`.**
+2. **Code — NOT done, and this is what actually fixes the crash.** `CallForegroundService.startForegroundCompat` still hardcodes `ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE` as the `startForeground` argument. That single value is what gets validated, `microphone` is while-in-use restricted, and the push-woken start has no visible activity — **so the `SecurityException` is unchanged.** The manifest declaration alone fixes nothing. The background start (the ring/offer at `VoxIncomingCallCoordinator` line 65) must pass `FOREGROUND_SERVICE_TYPE_PHONE_CALL` **alone**; `microphone` may be added only once the app is foreground or the start came through a notification interaction (an exempt path). Passing both together from the background still throws — the loop above `break`s on the first failing type.
+
+**Why the `phoneCall` prerequisite is satisfied by the dependency rather than by `TelecomRegistration.register()` running** (found by `telecom-owner` in `android.app.ForegroundServiceTypePolicy`, `FGS_TYPE_POLICY_PHONE_CALL`): `MANAGE_OWN_CALLS` is checked as a `RegularPermission`, i.e. a plain grant check satisfied by the manifest declaration at `protectionLevel="normal"`. The FGS policy never consults the runtime registration. This splits A-1's two reasons cleanly: the **`core-telecom` dependency** earns its place on a concrete platform mechanism, while the **runtime registration call** earns its place only as substantiation for a discretionary review. If the second ever fails to persuade a reviewer, the first still holds and the registration call — not the dependency — is the removable part.
 
 > **Required device verification, and do not skip it — the fix has a failure mode worse than the bug.** Switching the type stops `startForeground` throwing, but whether microphone *capture* actually works from a background start is a separate question that no static check answers. If it does not, the app trades a loud `SecurityException` for a **connected call with no audio** — silent, harder to diagnose, and invisible to `gplay preflight` either way. Verify on a physical Android 14+ device: lock the phone, let a real routed call arrive via push, answer it, and confirm **two-way** audio. The fully-correct end state per the AEP Telecom guideline is `CallsManager.addCall`, which hands Telecom audio focus outright rather than relying on the FGS type to imply it.
 
