@@ -77,13 +77,30 @@
       startForeground(). THAT is what the permission policy is evaluated against; this
       attribute is consulted only as the subset ceiling, never for permissions. If the
       ring-phase call passes FOREGROUND_SERVICE_TYPE_MICROPHONE, the push-woken locked-screen
-      ring throws SecurityException no matter what this line says.
+      ring is refused no matter what this line says.
 
-      Why this is worth a standing warning rather than a one-off note: a manifest-only
-      widening LOOKS complete and TESTS CLEAN on an unlocked device, because an unlocked
-      device satisfies while-in-use and never exercises the failing path. The bug lives
-      exactly where it cannot be seen from a desk. Do not read a green manual test as proof
-      unless the device was locked and the app was not running.
+      ⚠ DO NOT LOOK FOR A CRASH. Neither failure mode reaches the user as one, and an
+      earlier version of this very note claimed otherwise — corrected after reading the
+      service. CallForegroundService.startForegroundCompat wraps the call in
+      catch (t: Throwable), logs at ERROR, returns false, and the caller stopSelf()s. So
+      both a refused type (SecurityException, wrong phase) and a type outside this ceiling
+      (IllegalArgumentException, someone narrowed the attribute) are SWALLOWED BY DESIGN.
+      Anyone who greps logcat for a stack trace will find none and wrongly conclude the
+      wiring is fine.
+
+      What to look for instead, in order:
+        1. The ongoing "שיחה פעילה" notification and its hangup action are MISSING after
+           answering. That is the whole symptom. The call may still carry audio; what is
+           lost is the notification and the process protection that keeps the call alive
+           in the background.
+        2. logcat, which is self-diagnosing for the ceiling case — ActiveServices emits
+           "foregroundServiceType 0x… is not a subset of foregroundServiceType attribute
+           0x… in service element of manifest file", naming both values.
+
+      And the part that does not expire: a manifest-only widening LOOKS complete. The
+      ring-phase failure specifically TESTS CLEAN on an unlocked device, because an unlocked
+      device satisfies while-in-use and never exercises the failing path. Do not read a
+      green manual test as proof unless the device was LOCKED and the app was NOT running.
 
       Owner of the other half: fgs-owner (telephony/CallForegroundService.kt) — not this file.
     -->
@@ -223,15 +240,21 @@
           foregroundServiceType is the CEILING, not the choice — see the long note on the
           two FOREGROUND_SERVICE_* permissions at the top of this file for why both types
           are listed and which phase may pass which. Short version: `phoneCall` while
-          ringing (a background start of a `microphone` FGS throws SecurityException on
-          Android 14+), then `phoneCall|microphone` on answer (a `phoneCall`-only FGS is
-          granted no microphone capability at all).
+          ringing (a background start of a `microphone` FGS is refused on Android 14+),
+          then `phoneCall|microphone` on answer (a `phoneCall`-only FGS is granted no
+          microphone capability at all).
 
           Widening this attribute is safe on its own and in any merge order: ActiveServices
           only requires that the value passed to startForeground() be a SUBSET of what is
           declared here, so a service still passing FOREGROUND_SERVICE_TYPE_MICROPHONE keeps
-          working against this exactly as before. Narrowing it is what breaks — dropping a
-          type the service still passes throws IllegalArgumentException on every call.
+          working against this exactly as before.
+
+          NARROWING it is what breaks, and it breaks QUIETLY — this note used to say it
+          "throws IllegalArgumentException on every call", which was wrong. ActiveServices
+          does throw, but CallForegroundService catches Throwable, logs at ERROR and
+          stopSelf()s, so nothing propagates. The observable is a MISSING ongoing-call
+          notification, not a crash. See the "DO NOT LOOK FOR A CRASH" block at the top of
+          this file before diagnosing.
         -->
         <service
             android:name=".telephony.CallForegroundService"
