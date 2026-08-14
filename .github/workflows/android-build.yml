@@ -34,11 +34,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -89,11 +89,37 @@ jobs:
             -dname "CN=Android Debug,O=Android,C=US"
 
       - name: Run unit tests
-        continue-on-error: true
         run: gradle test --stacktrace
 
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
+
+      - name: Decode release signing key
+        shell: bash
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_STORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_STORE_PASSWORD }}
+          RELEASE_KEYSTORE_KEY_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_KEY_PASSWORD }}
+        run: |
+          # Google Play requires the SAME upload key across every release of an
+          # app. Without a real keystore, app/build.gradle.kts's
+          # signingConfigs.release silently falls back to a fresh debug.keystore
+          # generated a few steps above — a DIFFERENT throwaway key every run —
+          # which produces an AAB/APK that LOOKS signed but can never be
+          # uploaded to Play. Rather than let that happen quietly, fail here,
+          # before assembleRelease/bundleRelease ever run.
+          if [ -z "$RELEASE_KEYSTORE_BASE64" ] || [ -z "$RELEASE_KEYSTORE_STORE_PASSWORD" ] || [ -z "$RELEASE_KEYSTORE_KEY_PASSWORD" ]; then
+            echo "::error::RELEASE_KEYSTORE_BASE64 / RELEASE_KEYSTORE_STORE_PASSWORD / RELEASE_KEYSTORE_KEY_PASSWORD repo secrets are not set. Refusing to build a release AAB/APK that would silently fall back to a throwaway debug-signed key and could never be uploaded to Play. Add the three secrets (see AGENTS.md 'Build & CI') to enable release builds."
+            exit 1
+          fi
+          KEYSTORE_PATH="${RUNNER_TEMP}/release-upload-key.jks"
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          {
+            echo "KEYSTORE_PATH=$KEYSTORE_PATH"
+            echo "STORE_PASSWORD=$RELEASE_KEYSTORE_STORE_PASSWORD"
+            echo "KEY_PASSWORD=$RELEASE_KEYSTORE_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+          echo "Decoded release upload keystore — release build will be signed with the real upload key (alias 'upload')."
 
       - name: Build release APK
         run: gradle assembleRelease --stacktrace

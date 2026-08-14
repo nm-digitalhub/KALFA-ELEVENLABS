@@ -37,6 +37,12 @@ ktor = "3.1.2"
 kotlinxSerializationJson = "1.9.0"
 coil = "3.2.0"
 firebaseMessaging = "25.1.1"
+# Google Services Gradle plugin — reads app/google-services.json at build time
+# and generates the resources the Firebase SDKs read at runtime. Without it the
+# JSON is an inert file. Added 2026-08-14 (Phase 2 / FCM push wake-up); it had
+# been deliberately stripped from the AI Studio export in commit 337823b
+# because no JSON existed yet.
+googleServices = "4.5.0"
 
 
 [libraries]
@@ -105,3 +111,4 @@ google-devtools-ksp = { id = "com.google.devtools.ksp", version.ref = "googleDev
 roborazzi = { id = "io.github.takahirom.roborazzi", version.ref = "roborazzi" }
 secrets = { id = "com.google.android.libraries.mapsplatform.secrets-gradle-plugin", version.ref = "secretsGradlePlugin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }

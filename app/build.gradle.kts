@@ -5,6 +5,11 @@ plugins {
   alias(libs.plugins.roborazzi)
   alias(libs.plugins.secrets)
   alias(libs.plugins.kotlin.serialization)
+  // Consumes app/google-services.json (gitignored — each developer/CI supplies
+  // their own). This plugin FAILS THE BUILD if the file is missing, which is
+  // deliberate and useful: a silently-absent Firebase config would otherwise
+  // surface much later as pushes that never arrive.
+  alias(libs.plugins.google.services)
 }
 
 android {
@@ -31,6 +36,18 @@ android {
         keyAlias = "upload"
         keyPassword = System.getenv("KEY_PASSWORD")
       } else {
+        // No real upload key found. This is a debug-signed fallback for LOCAL,
+        // ad-hoc internal testing only (see AGENTS.md "Build & CI") — a build
+        // signed this way can never be uploaded to Play (Play requires the
+        // SAME key across every release; this generates/uses a throwaway one).
+        // CI (.github/workflows/android-build.yml) verifies the real secrets
+        // are present and fails before this branch is ever reached there — if
+        // this warning shows up in a CI log, that guard has regressed.
+        logger.warn(
+          "signingConfigs.release: no upload keystore found at '$keystorePath' " +
+            "(or KEYSTORE_PATH/STORE_PASSWORD/KEY_PASSWORD unset) — falling back " +
+            "to debug.keystore. This build CANNOT be uploaded to Google Play."
+        )
         storeFile = file("${rootDir}/debug.keystore")
         storePassword = "android"
         keyAlias = "androiddebugkey"
@@ -65,7 +82,26 @@ secrets {
   defaultPropertiesFileName = ".env.example"
 }
 
-// google-services plugin + google-services.json are added in Phase 2 (FCM push, real device)
+// google-services plugin + google-services.json: DONE 2026-08-14 (Phase 2, FCM
+// push wake-up). Plugin applied above; the JSON is gitignored and supplied per
+// checkout. Firebase project `kalfa-rsvp`, package `me.kalfa.agentconsole`.
+// Everything OUTSIDE this repo is now done (14.8):
+//   - ops: the Firebase service-account JSON is uploaded to the Voximplant
+//     control panel — verified live as credential #9108, provider GOOGLE, bound
+//     to kalfa-rsvp.kalfarsvp.voximplant.com (11107202). Note that is a
+//     DIFFERENT file from app/google-services.json and is a real secret; it must
+//     never enter this repo.
+//   - scenario: require(Modules.PushService) is deployed in ConsoleInbound,
+//     ConsoleDial and ConsoleCallMeNow.
+//   - server: route-inbound-retry's second audience now includes on-shift
+//     agents who are not heartbeat-fresh, so a sleeping app actually gets rung
+//     (which is what makes the platform send the push at all).
+// The ONLY remaining link is in this repo, and the plugin alone sends nothing:
+// a FirebaseMessagingService forwarding onMessageReceived into
+// Client.handlePushNotification, registerForPushNotifications after login,
+// persisted-token silent login, and a call to POST /api/agents/shift — without
+// that last one this agent is never in the retry audience and no push is ever
+// sent, however well the rest is wired. See AGENTS.md → "Push wake-up".
 
 // Some unused dependencies are commented out below instead of being removed.
 // This makes it easy to add them back in the future if needed.

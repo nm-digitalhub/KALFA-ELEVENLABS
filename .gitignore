@@ -17,3 +17,21 @@ local.properties
 .env
 debug.keystore
 .github/
+
+# Firebase client config (Phase 2 / FCM push wake-up). Not a hard secret — it
+# ships inside the APK — but it names the Firebase project and its API keys,
+# which is not something to publish in a repo. Each developer/CI drops their
+# own copy into app/. See app/build.gradle.kts:68 and AGENTS.md → "Push
+# wake-up". The Voximplant control-panel upload uses a DIFFERENT file (a
+# service-account JSON from the Firebase console); that one is a real secret
+# and must never be in this repo at all.
+app/google-services.json
+google-services.json
+
+# Release signing keystore. A build that finds no KEYSTORE_PATH silently falls
+# back to debug.keystore (verified empirically 14.8), so a committed upload key
+# would be both a leak and a source of confusion about which key signed what.
+# debug.keystore is already ignored by name above; these cover the release one
+# under any name.
+*.jks
+*.keystore

@@ -32,10 +32,28 @@ object VoxConfig {
     const val ACCOUNT = "kalfarsvp"
 
     // The account's Voximplant data-center node. v3 REQUIRES this explicitly in
-    // ConnectOptions (unlike v2, which auto-discovered it). CONFIRMED from the
-    // kalfarsvp account credentials (API endpoint api-node2.voximplant.com → "node 2"),
-    // 2026-07. Non-secret; single source of truth here.
-    val node: Node = Node.Node2
+    // ConnectOptions (unlike v2, which auto-discovered it).
+    //
+    // MEASURED 2026-08-12 (beta/src/lib/voximplant/core.ts, MEASURED_CONNECTION_NODE):
+    // a real browser login (one-time-key flow end-to-end, same account, same login
+    // protocol this class implements) succeeded on NODE_1 and on no other node
+    // tried. That is an actual successful SDK authentication against this account —
+    // the strongest evidence available.
+    //
+    // Corrected 2026-08-14: this constant previously said Node2, "confirmed" from
+    // the account's Management API endpoint (api-node2.voximplant.com). That
+    // reasoning was wrong, not just uncertain: the Management API host
+    // (beta/src/lib/voximplant/core.ts's MGMT_BASE, in fact the generic
+    // `https://api.voximplant.com/platform_api`, not even node-specific) is a
+    // DIFFERENT service from the SDK's realtime connection node — a hostname that
+    // happens to contain "node2" is not evidence about which node the Client SDK
+    // should connect to. Do not re-derive the node from a Management API URL again.
+    //
+    // If `Client.connect()` ever fails, re-verify the node FIRST, before assuming a
+    // network problem: a wrong node fails silently at connect(), not at login(), so
+    // it presents as connectivity trouble and can burn an afternoon before anyone
+    // thinks to check this constant.
+    val node: Node = Node.Node1
 
     // The exact full-username the SDK expects. Getting the "@app.account…" suffix
     // wrong is the #1 silent auth failure, so it is built in ONE place and tested.

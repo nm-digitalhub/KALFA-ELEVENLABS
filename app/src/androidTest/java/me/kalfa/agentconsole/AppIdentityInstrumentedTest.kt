@@ -7,12 +7,13 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Instrumented test, which will execute on an Android device.
- *
- * See [testing documentation](http://d.android.com/tools/testing).
+ * Renamed from the AI Studio scaffold's `ExampleInstrumentedTest`. Runs on a
+ * device/emulator and verifies the real applicationId — Google Play rejects
+ * `com.example`/AI-Studio-generated ids (see AGENTS.md hard rule 8), so this
+ * guards against that regressing.
  */
 @RunWith(AndroidJUnit4::class)
-class ExampleInstrumentedTest {
+class AppIdentityInstrumentedTest {
   @Test
   fun useAppContext() {
     // Context of the app under test.
