@@ -33,6 +33,13 @@ data class RingCapability(
      * alarms, Play revokes the default grant for everything else, and the user can turn
      * it off afterwards regardless — so a declared permission proves nothing here.
      * Below API 34 the permission is install-time and always held.
+     *
+     * Do not delete this check once the Play declaration is filed. Play policy 13392821
+     * requires apps not approved for the default grant to "prompt users to grant
+     * permission on new installs and gracefully degrade the experience if denied" —
+     * this path IS that degradation, so it is a compliance obligation rather than a
+     * defensive nicety, and it is the app's only safety net if approval never arrives.
+     * See AGENTS.md §"Play upload" A-1.
      */
     val fullScreenIntentAllowed: Boolean,
 ) {
