@@ -281,10 +281,10 @@ Where an item needs a code or manifest change it names the owning file, because 
 
 | # | Item | Where | Why (citation) |
 |---|---|---|---|
-| **A-1** | **Full-screen intent declaration.** Complete it and claim the **"receiving phone or video calls"** category. | Play Console → **App content** | See A-1 below — this is the single highest-consequence item on the page. |
+| **A-1** | **Full-screen intent declaration.** Complete it and claim the **"receiving phone or video calls"** category. | Play Console → **App content** | Detailed in **A-1** below — the single highest-consequence item on this page. Skipping it costs locked-screen ringing, silently. |
 | **A-2** | **Foreground service types declaration** — one entry per *declared* type, each with a description, deferred/interrupted user impact, a use case from the preset list, **and a link to a demo video**. | Play Console → **App content** | 13392821: "you'll need to declare any foreground service types that you use in a new declaration on the App content page… Include a link to a video demonstrating each foreground service feature." |
 | **A-3** | **Privacy policy URL**, live and app-specific. | Play Console → **App content** | Required for apps requesting sensitive permissions, and it gates A-4: "Ensure that you've added a privacy policy; this is required to complete the Data safety form" (10787469). |
-| **A-4** | **Data safety form.** | Play Console → **App content** | Mandatory for every app; see §C for what this app actually must disclose. |
+| **A-4** | **Data safety form.** | Play Console → **App content** | Mandatory for every app. **See B-4 for what this app must disclose — and for the one input that is still unresolved and must be settled before the audio question can be answered honestly.** |
 | **A-5** | **Upload keystore + release signing secrets.** CI refuses to emit a release artifact without them, by design. | Repo secrets | Already documented in §"Build & CI" above — not restated here. |
 | **A-6** | **Create the Play entry for `me.kalfa.agentconsole`.** The old entry uses a different, permanent package name (`com.aistudio.kalfaagent.bdfgtz`) and is unusable. | Play Console | Owner action, already recorded. A package name cannot be changed after publication. |
 
