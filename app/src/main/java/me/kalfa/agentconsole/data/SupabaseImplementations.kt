@@ -12,6 +12,7 @@ import me.kalfa.agentconsole.domain.error.AppResult
 import me.kalfa.agentconsole.domain.error.RepositoryHealth
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.auth.status.SessionStatus
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.realtime.realtime
 import io.github.jan.supabase.realtime.channel
@@ -749,6 +750,77 @@ class SupabaseCallEngineImpl(
         return client.auth.currentAccessTokenOrNull() ?: ""
     }
 
+    /**
+     * Why the presence writes no longer test `getJwt().isEmpty()`.
+     *
+     * `currentAccessTokenOrNull()` returns null in THREE unrelated situations, and
+     * the caller cannot tell them apart from the null alone. Verified against
+     * supabase-kt's own source and against the installed auth-kt 3.1.4 artifact,
+     * which ships all four `SessionStatus` subclasses and exposes
+     * `Auth.getSessionStatus(): StateFlow<SessionStatus>`:
+     *
+     *  - `NotAuthenticated` — genuinely signed out. Only here is "יש להתחבר" true.
+     *  - `Initializing`     — the session is still being loaded from storage. Normal
+     *                         for a second or so after process start, which is
+     *                         exactly when PresenceForegroundService takes its first
+     *                         heartbeat.
+     *  - `RefreshFailure`   — a session EXISTS but could not be refreshed (the
+     *                         library's own note: "for an expired session with a
+     *                         network error, sessionStatus becomes RefreshFailure,
+     *                         so these both return null").
+     *
+     * Treating all three as "not signed in" is what produced the message the owner
+     * photographed: "לא מחובר. שיחות לא יגיעו עד ההתחברות." one minute after the same
+     * notification read "סטטוס: זמין". Telling an agent who IS signed in to sign in
+     * sends them to fix the one thing that is not broken, and the real cause —
+     * a session still loading, or a refresh that failed — goes unnamed.
+     *
+     * `Initializing` is waited out rather than reported, because it resolves by
+     * itself; that is the whole difference between a transient and a fault.
+     */
+    // Long enough to cover a normal cold-start session load, short enough that a
+    // heartbeat never blocks meaningfully — the next one is 30s behind it anyway.
+    private val AUTH_SETTLE_TIMEOUT_MS = 3_000L
+
+    private suspend fun awaitAuthToken(): AuthToken {
+        val settled = withTimeoutOrNull(AUTH_SETTLE_TIMEOUT_MS) {
+            client.auth.sessionStatus.first { it !is SessionStatus.Initializing }
+        } ?: client.auth.sessionStatus.value
+
+        return when (settled) {
+            is SessionStatus.Authenticated -> {
+                val token = client.auth.currentAccessTokenOrNull()
+                if (token.isNullOrEmpty()) AuthToken.Unsettled else AuthToken.Ready(token)
+            }
+            is SessionStatus.NotAuthenticated -> AuthToken.SignedOut
+            is SessionStatus.RefreshFailure -> AuthToken.Expired
+            SessionStatus.Initializing -> AuthToken.Unsettled
+        }
+    }
+
+    private sealed interface AuthToken {
+        data class Ready(val jwt: String) : AuthToken
+
+        /** Genuinely signed out — the only state where asking the agent to sign in is honest. */
+        data object SignedOut : AuthToken
+
+        /** A session exists but could not be refreshed. Expired, not absent. */
+        data object Expired : AuthToken
+
+        /**
+         * Still initializing after the wait, or authenticated with no token yet.
+         * Retryable by nature: the next heartbeat is 30s away and will re-read it.
+         */
+        data object Unsettled : AuthToken
+    }
+
+    private fun AuthToken.toFailure(): me.kalfa.agentconsole.domain.error.AppFailure = when (this) {
+        is AuthToken.Ready -> me.kalfa.agentconsole.domain.error.AppFailure.Unknown // unreachable; callers branch on Ready first
+        AuthToken.SignedOut -> me.kalfa.agentconsole.domain.error.AppFailure.NotSignedIn
+        AuthToken.Expired -> me.kalfa.agentconsole.domain.error.AppFailure.Unauthorized
+        AuthToken.Unsettled -> me.kalfa.agentconsole.domain.error.AppFailure.Unknown
+    }
+
     // Was fire-and-forget (Unit, bare catch { printStackTrace() }) — converted to
     // suspend/AppResult after a measured live incident: an agent reinstalled the app
     // (clearing the Supabase session), tapped "זמין", and the app showed Ready while
@@ -762,10 +834,11 @@ class SupabaseCallEngineImpl(
         _syncState.value = PresenceSyncState.Pending
         return withContext(Dispatchers.IO) {
             try {
-                val jwt = getJwt()
-                if (jwt.isEmpty()) {
-                    return@withContext failStatus(me.kalfa.agentconsole.domain.error.AppFailure.NotSignedIn)
+                val auth = awaitAuthToken()
+                if (auth !is AuthToken.Ready) {
+                    return@withContext failStatus(auth.toFailure())
                 }
+                val jwt = auth.jwt
                 val statusStr = when (status) {
                     AgentStatus.READY -> "ready"
                     AgentStatus.DND -> "dnd"
@@ -807,10 +880,11 @@ class SupabaseCallEngineImpl(
         _syncState.value = PresenceSyncState.Pending
         return withContext(Dispatchers.IO) {
             try {
-                val jwt = getJwt()
-                if (jwt.isEmpty()) {
-                    return@withContext failStatus(me.kalfa.agentconsole.domain.error.AppFailure.NotSignedIn)
+                val auth = awaitAuthToken()
+                if (auth !is AuthToken.Ready) {
+                    return@withContext failStatus(auth.toFailure())
                 }
+                val jwt = auth.jwt
                 val resp = httpClient.post("https://beta.kalfa.me/api/agents/shift") {
                     header(HttpHeaders.Authorization, "Bearer $jwt")
                     contentType(ContentType.Application.Json)
