@@ -2,6 +2,7 @@ package me.kalfa.agentconsole.telemetry
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -142,6 +143,48 @@ class TelemetryFormatTest {
     fun `a malformed field key is replaced rather than emitted`() {
         val event = telemetryEvent(0L, "p1", 1, "call.state", listOf("Some Key" to "x"))
         assertEquals("k", event.fields.single().first)
+    }
+
+    @Test
+    fun `a line round-trips back into the event that produced it`() {
+        // The round trip is what lets "שלח יומן" ship the tail of the local FILE
+        // rather than only whatever survived in memory. On a push-woken cold start
+        // nothing reaches the server live, so without this the SSH view would be
+        // permanently empty for exactly the case it exists for.
+        val original = telemetryEvent(
+            atMs = 1_786_000_353_412L,
+            sessionId = "c7f3a91b",
+            seq = 42,
+            name = "fcm.wake_done",
+            fields = listOf("ms" to "3720", "timedout" to "false", "incoming" to "false"),
+        )
+        val parsed = parseTelemetryLine(formatTelemetryLine(original))
+        assertEquals(original, parsed)
+    }
+
+    @Test
+    fun `a line with no fields round-trips`() {
+        val original = telemetryEvent(0L, "p1a2b3c", 7, "fcm.service_created", emptyList())
+        assertEquals(original, parseTelemetryLine(formatTelemetryLine(original)))
+    }
+
+    @Test
+    fun `a malformed line is dropped rather than guessed at`() {
+        // A half-written line at a rotation boundary is the expected malformed
+        // input. Inventing a plausible event from it would be worse than losing it.
+        assertNull(parseTelemetryLine(""))
+        assertNull(parseTelemetryLine("not a telemetry line at all"))
+        assertNull(parseTelemetryLine("2026-08-15T04:12:33.412Z sid=c7 seq=notanumber x.y"))
+        assertNull(parseTelemetryLine("2026-08-15T04:12:33.412Z seq=1 sid=c7 x.y"))
+        assertNull(parseTelemetryLine("garbage sid=c7 seq=1 x.y"))
+    }
+
+    @Test
+    fun `parsing re-scrubs, so a hand-edited file cannot put PII back on the wire`() {
+        val parsed = parseTelemetryLine(
+            "2026-08-15T04:12:33.412Z sid=c7f3a91b seq=1 call.offer num=+972501234567",
+        )
+        assertEquals("<redacted:digits>", parsed?.fields?.single()?.second)
     }
 
     @Test

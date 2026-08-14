@@ -82,6 +82,39 @@ fun formatTelemetryLine(event: TelemetryEvent): String {
     return if (line.length <= TELEMETRY_MAX_LINE_CHARS) line else line.take(TELEMETRY_MAX_LINE_CHARS)
 }
 
+/**
+ * Read a line back into an event — the inverse of [formatTelemetryLine].
+ *
+ * Exists so "send the log" can ship the tail of the local FILE, not just
+ * whatever happens to be in the in-memory upload queue. That distinction is the
+ * whole deliverable on the scenario being diagnosed: a push-woken process has no
+ * Supabase JWT yet and is killed seconds later, so nothing reaches the server
+ * live. Without this, the SSH view would be permanently empty for exactly the
+ * case it was built for, and the owner would have to read the trace off the
+ * phone screen instead.
+ *
+ * Returns null for anything that does not round-trip, rather than guessing: a
+ * half-written line at a rotation boundary is the expected malformed input, and
+ * inventing a plausible event from it would be worse than dropping it.
+ */
+fun parseTelemetryLine(line: String): TelemetryEvent? {
+    val parts = line.trim().split(' ')
+    if (parts.size < 4) return null
+    val atMs = runCatching { ISO_UTC.get()!!.parse(parts[0])?.time }.getOrNull() ?: return null
+    val sid = parts[1].removePrefix("sid=").takeIf { it != parts[1] } ?: return null
+    val seq = parts[2].removePrefix("seq=").takeIf { it != parts[2] }?.toLongOrNull() ?: return null
+    val name = parts[3]
+    if (!EVENT_NAME_RE.matches(name)) return null
+    val fields = parts.drop(4).mapNotNull { pair ->
+        val i = pair.indexOf('=')
+        if (i <= 0 || i == pair.length - 1) null else pair.take(i) to pair.substring(i + 1)
+    }
+    // Re-scrubbed on the way back in. The file was written by this same scrub, so
+    // this should be a no-op — but a file is a thing a person can edit, and the
+    // uploader must not become a way to put an unscrubbed value on the wire.
+    return telemetryEvent(atMs, sid, seq, name, fields)
+}
+
 private val EVENT_NAME_RE = Regex("^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)*$")
 private val FIELD_KEY_RE = Regex("^[a-z][a-z0-9_]*$")
 

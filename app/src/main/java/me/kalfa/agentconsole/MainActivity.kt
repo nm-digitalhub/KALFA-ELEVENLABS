@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -237,35 +238,6 @@ class MainActivity : ComponentActivity() {
                                         onDismiss = viewModel::dismissMessage
                                     )
 
-                                    // Long-press hotspot for the live-diagnostic screen.
-                                    //
-                                    // A hotspot rather than a fifth navigation destination:
-                                    // this is a diagnostic, not a product surface, and it
-                                    // must nonetheless work in RELEASE — CI stopped
-                                    // publishing a debug APK in b5a11f4, so a
-                                    // BuildConfig.DEBUG gate would put it on the one variant
-                                    // the owner does not install.
-                                    //
-                                    // detectTapGestures, not `clickable`/`combinedClickable`:
-                                    // a plain tap must fall through to whatever is beneath,
-                                    // and only the long press navigates.
-                                    //
-                                    // It carries a real contentDescription rather than being
-                                    // an unlabelled target — the same accessibility concern
-                                    // the ring overlay below is written against. An
-                                    // unlabelled action a screen reader announces and cannot
-                                    // explain is worse than a named one.
-                                    Box(
-                                        modifier = Modifier
-                                            .size(28.dp)
-                                            .semantics { contentDescription = "אבחון חי — לחיצה ארוכה" }
-                                            .pointerInput(Unit) {
-                                                detectTapGestures(
-                                                    onLongPress = { navController.navigate(DebugLiveRoute) },
-                                                )
-                                            }
-                                    )
-
                                     val contentModifier = Modifier
                                         .fillMaxWidth()
                                         .weight(1f)
@@ -335,6 +307,54 @@ class MainActivity : ComponentActivity() {
                         onAnswer = { pendingOffer?.let { incomingCallCoordinator?.answer(it.callId) } },
                         onDecline = { pendingOffer?.let { incomingCallCoordinator?.decline(it.callId) } }
                     )
+                }
+
+                // "אבחון חי" — a long-press hotspot and a top-level overlay, NOT a
+                // navigation destination.
+                //
+                // An overlay in this Box rather than a fifth entry in
+                // consoleDestinations, for three reasons. It is a diagnostic, not a
+                // product surface. As a child of this Box it costs ZERO layout —
+                // placed inside the content Column it added 28dp of dead space to
+                // every authenticated screen, which is exactly the unrelated visual
+                // change AGENTS.md asks not to make. And it works OUTSIDE AuthGate,
+                // which matters more than it looks: AuthGate renders a spinner while
+                // the Supabase session is Initializing and a LOGIN FORM on
+                // RefreshFailure, and a just-woken device with poor network is in
+                // one of those states at precisely the moment someone wants to know
+                // what the phone just did.
+                //
+                // It must work in RELEASE — CI stopped publishing a debug APK in
+                // b5a11f4, so a BuildConfig.DEBUG gate would put it on the one
+                // variant the owner does not install.
+                //
+                // detectTapGestures, not clickable/combinedClickable: a plain tap
+                // must fall through to the dashboard beneath, and only a long press
+                // opens this. Drawn BEFORE nothing and AFTER the ring overlay would
+                // put it on top of a ringing call, so it is declared here, before
+                // the overlay itself but after the ring screen — the ring screen is
+                // a full-size Surface that already blocks touches.
+                //
+                // A real contentDescription rather than an unlabelled target, the
+                // same accessibility concern the ring overlay above is written
+                // against.
+                var showDebugLive by rememberSaveable { mutableStateOf(false) }
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .semantics { contentDescription = "אבחון חי — לחיצה ארוכה" }
+                        .pointerInput(Unit) {
+                            detectTapGestures(onLongPress = { showDebugLive = true })
+                        }
+                )
+                if (showDebugLive) {
+                    BackHandler { showDebugLive = false }
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background,
+                    ) {
+                        DebugLiveScreen(onClose = { showDebugLive = false })
+                    }
                 }
                 }
             }
@@ -663,11 +683,6 @@ private fun ConsoleNavHost(
                     modifier = contentModifier
                 )
             }
-        }
-        // Diagnostic surface, off the navigation suite on purpose — see
-        // DebugLiveScreen's header and DebugLiveRoute's comment in ui/NavRoutes.kt.
-        composable<DebugLiveRoute> {
-            DebugLiveScreen(modifier = contentModifier)
         }
     }
 }

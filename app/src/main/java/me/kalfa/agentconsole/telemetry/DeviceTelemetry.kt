@@ -82,15 +82,21 @@ class DeviceTelemetry internal constructor(
      */
     fun writeDrops(): Long = queueDrops.get()
 
+    // Both setters poke uploadSignal: the upload loop parks on it while either
+    // flag is false, so flipping one has to be what wakes it.
     var enabled: Boolean
         get() = settings.enabled
-        set(value) { settings.enabled = value }
+        set(value) {
+            settings.enabled = value
+            uploadSignal.trySend(Unit)
+        }
 
     var uploadEnabled: Boolean
         get() = settings.uploadEnabled
         set(value) {
             settings.uploadEnabled = value
             if (value) uploader.resetServerDisabled()
+            uploadSignal.trySend(Unit)
         }
 
     // ── lifecycle ─────────────────────────────────────────────────────────────
@@ -142,6 +148,15 @@ class DeviceTelemetry internal constructor(
 
     private suspend fun uploadLoop() {
         while (scope.isActive) {
+            // Off means OFF. Without this the loop woke every 1.5s forever on a
+            // device that had never enabled anything — a default-off diagnostic
+            // has no business costing a wakeup a second. Nothing can be enqueued
+            // while disabled, so parking on the signal with no timeout is safe:
+            // the flip that enables uploading is what wakes it.
+            if (!settings.enabled || !settings.uploadEnabled) {
+                uploadSignal.receive()
+                continue
+            }
             val waitMs = runCatching { uploader.pumpOnce() }.getOrDefault(RETRY_ON_ERROR_MS)
             // Report drops as their own event so a `seq` gap in the server log has a
             // stated cause. Emitted rather than logged: the owner reads the log, not
@@ -201,6 +216,18 @@ class DeviceTelemetry internal constructor(
                 emit(TelemetryEvents.CALL_NO_INCOMING_AFTER_PUSH, "ms" to (age ?: 0L).toString())
                 closeCallSession("watchdog")
             }
+        }
+        // A SECOND, unconditional close on age, because the one above can only
+        // fire when no call ever arrived. The coordinator documents a real gap: a
+        // second offer replaces a still-pending first one, whose SDK Call stays
+        // live and never reaches DISCONNECTED — so cleanUp never runs and nothing
+        // closes the trace. Without this the `c…` id leaks, and every later
+        // heartbeat and presence line is filed under a call attempt that ended
+        // long ago. That is the readability property this class exists for,
+        // failing in precisely the overlapping-calls case it was designed around.
+        scope.launch {
+            delay(CALL_SESSION_MAX_MS)
+            if (session.callInFlight && session.current == id) closeCallSession("stale")
         }
     }
 
@@ -268,10 +295,29 @@ class DeviceTelemetry internal constructor(
         }
     }
 
-    /** "Send now" — ship the backlog after the fact, when the phone is back on a good network. */
+    /**
+     * "Send the log" — read the tail of the local FILE and queue it for upload.
+     *
+     * Not merely a nudge to the in-memory queue, and the difference is the whole
+     * point. On the scenario being diagnosed — a push-woken cold start with no
+     * Supabase JWT yet, killed seconds later — nothing reaches the server live
+     * and the queue dies with the process. Only the file survives. Without this,
+     * the SSH view would be permanently empty for exactly the case it exists for.
+     *
+     * May re-send lines the server already has. That is deliberate: this app does
+     * not track a delivered watermark, and a duplicate is self-evident (identical
+     * `sid` and `seq`) and harmless in a log, whereas silently skipping a line
+     * that was never actually delivered would not be.
+     */
     fun requestUploadNow() {
         uploader.resetServerDisabled()
-        uploadSignal.trySend(Unit)
+        scope.launch {
+            runCatching {
+                val events = logFile.readTail(UPLOAD_BACKLOG_LINES).mapNotNull(::parseTelemetryLine)
+                if (events.isNotEmpty()) uploader.enqueue(events)
+            }
+            uploadSignal.trySend(Unit)
+        }
     }
 
     fun clear() {
@@ -285,6 +331,17 @@ class DeviceTelemetry internal constructor(
         private const val QUEUE_CAPACITY = 1024
         private const val RING_CAPACITY = 400
         private const val CALL_SESSION_WATCHDOG_MS = 45_000L
+
+        /**
+         * Longest any one call attempt may own the trace. Generous — a real
+         * answered RSVP leg runs minutes — because closing early would split one
+         * call across two ids, which is the failure this bound is guarding
+         * against in the first place.
+         */
+        private const val CALL_SESSION_MAX_MS = 20 * 60_000L
+
+        /** Lines "send the log" ships. Bounded by the uploader's own queue cap. */
+        private const val UPLOAD_BACKLOG_LINES = 200
         private const val RETRY_ON_ERROR_MS = 5_000L
         private const val POLL_MS = 5L
 

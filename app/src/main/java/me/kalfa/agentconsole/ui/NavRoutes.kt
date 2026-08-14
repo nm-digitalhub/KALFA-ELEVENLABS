@@ -10,7 +10,7 @@ import kotlinx.serialization.Serializable
 @Serializable data class EventDetailRoute(val eventId: String)
 @Serializable data class CallDetailRoute(val callId: String)
 
-// Diagnostic only — deliberately NOT in `consoleDestinations`, so it never
-// appears in the navigation suite. Reached by a long-press hotspot in
-// MainActivity; see DebugLiveScreen's header for why it must work in release.
-@Serializable object DebugLiveRoute
+// There is deliberately NO route for the "אבחון חי" diagnostic screen. It is a
+// top-level overlay in MainActivity, outside AuthGate and outside this NavHost —
+// see the comment at its declaration for why that placement is load-bearing
+// rather than incidental.

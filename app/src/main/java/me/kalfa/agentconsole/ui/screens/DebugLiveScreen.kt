@@ -56,17 +56,21 @@ import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
 // below are OFF until he turns them on.
 
 @Composable
-fun DebugLiveScreen(modifier: Modifier = Modifier) {
-    val telemetry = remember { Telemetry.instance }
-    if (telemetry == null) {
-        UnavailableState(modifier)
-        return
+fun DebugLiveScreen(onClose: () -> Unit, modifier: Modifier = Modifier) {
+    // RTL for the chrome. The log lines themselves are forced LTR further down —
+    // see the comment there.
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+        val telemetry = remember { Telemetry.instance }
+        if (telemetry == null) {
+            UnavailableState(onClose, modifier)
+        } else {
+            DebugLiveContent(telemetry, onClose, modifier)
+        }
     }
-    DebugLiveContent(telemetry, modifier)
 }
 
 @Composable
-private fun DebugLiveContent(telemetry: DeviceTelemetry, modifier: Modifier) {
+private fun DebugLiveContent(telemetry: DeviceTelemetry, onClose: () -> Unit, modifier: Modifier) {
     val lines by telemetry.lines.collectAsState()
 
     var enabled by remember { mutableStateOf(telemetry.enabled) }
@@ -93,11 +97,21 @@ private fun DebugLiveContent(telemetry: DeviceTelemetry, modifier: Modifier) {
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         ) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "אבחון חי",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "אבחון חי",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    // A visible way out as well as the system back gesture: this is
+                    // an overlay rather than a navigation destination, so there is
+                    // no toolbar back arrow to fall back on.
+                    OutlinedButton(onClick = onClose) { Text("סגור") }
+                }
                 SwitchRow(
                     label = "רישום אירועים במכשיר",
                     checked = enabled,
@@ -121,7 +135,12 @@ private fun DebugLiveContent(telemetry: DeviceTelemetry, modifier: Modifier) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { telemetry.requestUploadNow() }) { Text("שלח עכשיו") }
+                    // "שלח יומן", not "שלח עכשיו": it queues the tail of the LOCAL
+                    // FILE, which may include lines the server already has. That is
+                    // the point — on a push-woken cold start nothing reaches the
+                    // server live, so this is the only way those lines ever get
+                    // there. Duplicates are self-evident (same sid and seq).
+                    OutlinedButton(onClick = { telemetry.requestUploadNow() }) { Text("שלח יומן") }
                     OutlinedButton(onClick = { telemetry.refreshFromFile() }) { Text("רענן מהקובץ") }
                     OutlinedButton(onClick = { telemetry.clear() }) { Text("נקה") }
                 }
@@ -195,7 +214,7 @@ private fun SwitchRow(
 }
 
 @Composable
-private fun UnavailableState(modifier: Modifier) {
+private fun UnavailableState(onClose: () -> Unit, modifier: Modifier) {
     // Reachable in a fresh checkout with no Supabase configuration, where
     // DependencyContainer never builds the HTTP client telemetry is created
     // alongside. An honest empty state rather than a blank screen.
@@ -214,6 +233,7 @@ private fun UnavailableState(modifier: Modifier) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        OutlinedButton(onClick = onClose, modifier = Modifier.padding(top = 16.dp)) { Text("סגור") }
     }
 }
 
