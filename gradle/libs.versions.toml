@@ -1,6 +1,9 @@
 [versions]
 agp = "9.1.1"
-coreKtx = "1.19.0"
+# HELD at 1.18.0: core-ktx 1.19.0 declares minCompileSdk=37 (read from its own
+# aar-metadata.properties) and this app compiles against 36. Raising compileSdk is a
+# toolchain change, not a dependency bump.
+coreKtx = "1.18.0"
 # Self-managed Telecom. 1.0.1 is the newest STABLE (1.1.0-* are alpha, checked against
 # Google Maven maven-metadata.xml). minSdk 23 < this app's 24; the AAR merges in
 # MANAGE_OWN_CALLS and its own JetpackConnectionService.
@@ -8,9 +11,12 @@ coreTelecom = "1.0.1"
 junit = "4.13.2"
 junitVersion = "1.3.0"
 espressoCore = "3.7.0"
-lifecycleRuntimeKtx = "2.11.0"
-lifecycleViewmodelCompose = "2.11.0"
-lifecycleRuntimeCompose = "2.11.0"
+# 2.9.4, not 2.11.0: the 2.11.x line transitively pulls androidx.core:core:1.19.0,
+# which needs compileSdk 37. 2.9.4 is exactly what activity-compose 1.13.0 declares,
+# so it is proven compatible with this compileSdk rather than merely assumed.
+lifecycleRuntimeKtx = "2.9.4"
+lifecycleViewmodelCompose = "2.9.4"
+lifecycleRuntimeCompose = "2.9.4"
 activityCompose = "1.13.0"
 kotlin = "2.2.10"
 composeBom = "2026.06.01"
