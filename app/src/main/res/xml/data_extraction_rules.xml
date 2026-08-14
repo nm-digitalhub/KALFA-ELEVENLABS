@@ -1,19 +1,29 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample data extraction rules file; uncomment and customize as necessary.
-   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
-   for details.
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Referenced by android:dataExtractionRules, but INERT while the manifest sets
+  android:allowBackup="false" — which it does, deliberately.
+
+  Was the untouched Android Studio template: every rule commented out, excluding
+  nothing, while the app stores a Supabase session, Voximplant access/refresh
+  tokens (telephony/vox/VoxTokenStore) and presence state in app-private storage.
+  `gplay preflight` flagged the combination on the built AAB (2026-08-14) and it
+  was right to: with backup on and no exclusions, an adb backup or a device
+  transfer carried an agent's live credentials off the device.
+
+  Kept as an explicit deny rather than deleted, so that anyone who turns backup
+  back on inherits a safe default instead of the template's silent allow-all.
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
-        -->
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
     </device-transfer>
-    -->
 </data-extraction-rules>

@@ -43,13 +43,70 @@
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
+    <!--
+      Permissions the Voximplant SDK merges in that this app must NOT ship.
+      Traced to their source in the release manifest-merger report rather than
+      guessed, after `gplay preflight` flagged them on the built AAB (2026-08-14).
+
+      CAMERA comes from com.voximplant:android-sdk-calls, which supports video
+      calling. This console is voice-only — every callUser in the scenarios passes
+      video:false, and no screen offers video — so shipping CAMERA would ask users
+      for a capability the app never exercises AND force a photo/video disclosure
+      in the Play Data safety form for data that is never collected. Removed here
+      rather than left to be explained away.
+      IF VIDEO IS EVER ADDED, this removal must go first, or the camera will fail
+      to open with a permission error that points nowhere near this file.
+    -->
+    <uses-permission android:name="android.permission.CAMERA" tools:node="remove" />
+
+    <!--
+      WRITE_EXTERNAL_STORAGE also comes from android-sdk-calls, and
+      READ_EXTERNAL_STORAGE is IMPLIED from it by the merger, not requested by
+      anyone. Both are dead weight on a modern target: WRITE has done nothing
+      since Android 11, and READ was superseded by READ_MEDIA_* in Android 13.
+      Capped rather than removed, because minSdk here is 24 and the SDK may
+      genuinely use them on the old API levels where they still mean something —
+      the caps are exactly the versions at which the platform stops honouring
+      each one, so nothing that works today stops working.
+    -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28"
+        tools:replace="android:maxSdkVersion" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32"
+        tools:replace="android:maxSdkVersion" />
+
+    <!--
+      Advertising ID: explicitly NOT used. `gplay preflight` warns that an
+      ads/attribution SDK is present without AD_ID declared, and the honest
+      response is the opposite of what the hint suggests — declaring AD_ID would
+      add a sensitive permission and a Data safety disclosure for an identifier
+      this app never reads.
+
+      What the scanner detects is `com.google.firebase.analytics.connector.
+      AnalyticsConnector`, an interface stub that ships inside firebase-messaging.
+      Verified in the built bundle's dex, not inferred: AnalyticsConnector and its
+      R class are the ONLY com/google/firebase/analytics/* entries, the real
+      entry point `FirebaseAnalytics` appears zero times, and both
+      com/google/android/gms/measurement and com/google/android/gms/ads are
+      absent. The dependency tree agrees — no firebase-analytics,
+      play-services-measurement or ads-identifier artifact anywhere.
+
+      Declared as a removal rather than simply omitted so the position is
+      enforced: if a future dependency merges AD_ID in, the build strips it here
+      instead of silently shipping it.
+    -->
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove" />
+
     <!-- Microphone is required for the console to function; not an optional feature. -->
     <uses-feature
         android:name="android.hardware.microphone"
         android:required="true" />
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
