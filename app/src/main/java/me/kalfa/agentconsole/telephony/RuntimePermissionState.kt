@@ -27,6 +27,19 @@ package me.kalfa.agentconsole.telephony
  * exactly what this app did — its only guard was a `rememberSaveable` scoped to a
  * screen's lifetime, so after a cold start it could not tell the two rows apart and
  * re-launched a request that could never appear.
+ *
+ * Scope, because "granted" is narrower than it sounds: this enum answers whether a
+ * REQUEST is still worth making — not whether the capability is usable right now.
+ * RECORD_AUDIO is while-in-use, and per
+ * developer.android.com/develop/background-work/services/fgs/restrictions-bg-start,
+ * "If your app has a while-in-use permission, it only has that permission while it's
+ * in the foreground... if your app is in the background, and it tries to create a
+ * foreground service of type camera, location, or microphone, the system sees that
+ * your app doesn't currently have the required permissions, and it throws a
+ * SecurityException". So [Granted] can be true at the same moment a push-woken
+ * microphone FGS fails. Nothing here is wrong when that happens and nothing here can
+ * see it — a `checkSelfPermission` guard upstream of such a start cannot catch it
+ * either, for the same reason. That check belongs at the point of use.
  */
 enum class RuntimePermissionState {
     /** Held. Nothing to do. */
