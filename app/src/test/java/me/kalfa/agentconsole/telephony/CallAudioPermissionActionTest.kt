@@ -1,6 +1,8 @@
 package me.kalfa.agentconsole.telephony
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 // decideCallAudioPermissionAction replaces logic that classified an entire group of
@@ -50,6 +52,83 @@ class CallAudioPermissionActionTest {
         val action = decideCallAudioPermissionAction(
             revoked = listOf(MIC to false, NOTIFS to false),
             everRequested = { true },
+        )
+
+        assertEquals(CallAudioPermissionAction.ShowPermanentDenial(listOf(MIC, NOTIFS)), action)
+    }
+
+    // --- the second defect: asking AGAIN on top of the user's answer ---------------
+    //
+    // A "Deny" flips that permission's own shouldShowRationale false -> true, and
+    // accompanist refreshes the status straight from the request's result callback
+    // (MutableMultiplePermissionsState.updatePermissionsStatus, installed 0.37.3
+    // source). So the denial itself re-keys EnsureCallAudioPermission's effect, the
+    // permission re-reads as DeniedOnce — still requestable — and the pre-change rule
+    // ("request whenever anything is requestable") launched again immediately. Two
+    // reflex taps then reach permanent denial, after which no dialog can ever appear.
+
+    @Test
+    fun `a denial does not re-request in the same process, and is not silent either`() {
+        // Exactly the reading the system gives the instant both dialogs are declined.
+        // It must name both permissions: this is the app's only in-app signal for a
+        // postponed RECORD_AUDIO denial, which no other surface reports at all.
+        val action = decideCallAudioPermissionAction(
+            revoked = listOf(MIC to true, NOTIFS to true),
+            everRequested = { true },
+            requestedThisProcess = { true },
+        )
+
+        assertEquals(CallAudioPermissionAction.AwaitNextLaunch(listOf(MIC, NOTIFS)), action)
+    }
+
+    @Test
+    fun `the postponed message says the denial is reversible, the permanent one does not`() {
+        // The two states differ by exactly one fact — whether asking again can still
+        // work — and the wording is the only place an agent learns which one they are
+        // in. Getting these the same way round is what makes a "Deny" feel accepted
+        // rather than final.
+        val postponed = postponedDenialBody(listOf(MIC))
+        val permanent = permanentDenialBody(listOf(MIC))
+
+        assertTrue(postponed, postponed.contains("אפשר לאשר בכל שלב בהגדרות המכשיר"))
+        assertFalse(postponed, postponed.contains("לא ניתן לבקש"))
+        assertTrue(permanent, permanent.contains("לא ניתן לבקש"))
+    }
+
+    @Test
+    fun `the next process launch asks again, once`() {
+        // Identical system state, fresh process: the durable log still says "asked
+        // before", the in-memory record does not. Denied-once still shows a dialog, so
+        // waiting forever would be the opposite mistake.
+        val action = decideCallAudioPermissionAction(
+            revoked = listOf(MIC to true, NOTIFS to true),
+            everRequested = { true },
+            requestedThisProcess = { false },
+        )
+
+        assertEquals(CallAudioPermissionAction.Request(listOf(MIC, NOTIFS)), action)
+    }
+
+    @Test
+    fun `a permission this process has not asked about is still requested next to one it has`() {
+        val action = decideCallAudioPermissionAction(
+            revoked = listOf(MIC to false, NOTIFS to true),
+            everRequested = { false },
+            requestedThisProcess = { it == NOTIFS },
+        )
+
+        assertEquals(CallAudioPermissionAction.Request(listOf(MIC)), action)
+    }
+
+    @Test
+    fun `having asked this process never suppresses the permanent-denial banner`() {
+        // The in-memory record must not be able to turn a permanent denial into
+        // silence: that state has no dialog left to wait for, so staying quiet would
+        // leave an agent believing they can be heard.
+        val action = decideCallAudioPermissionAction(
+            revoked = listOf(MIC to false, NOTIFS to false),
+            everRequested = { true },
+            requestedThisProcess = { true },
         )
 
         assertEquals(CallAudioPermissionAction.ShowPermanentDenial(listOf(MIC, NOTIFS)), action)
