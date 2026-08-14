@@ -751,8 +751,8 @@ Whether `canUseFullScreenIntent()` reports correctly, whether the settings deep 
 actually land on the right screen, and whether the fix is durable after the user
 grants it, are all open per "What could not be verified" above.
 
-## Update 2026-08-14 (latest): the confirmed root cause of the empty `push_results` —
-## a mis-signed installed APK, not the swallowed-`Result` bug
+## Update 2026-08-14 (latest): the probable root cause of the empty `push_results` —
+## a mis-signed installed APK, not the swallowed-`Result` bug — pending one device check
 
 **Correction to the "even later" section above.** That section ruled out root cause
 (b) — "no working Firebase config" — by extracting `google_app_id` from the installed
