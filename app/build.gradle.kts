@@ -151,6 +151,10 @@ dependencies {
   implementation(libs.androidx.compose.ui.graphics)
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.core.ktx)
+  // Registers this app as a self-managed calling app (telephony/TelecomRegistration).
+  // Required before a Play upload: Play revokes USE_FULL_SCREEN_INTENT from apps that
+  // are not calling apps, which would kill locked-screen ringing — see AGENTS.md.
+  implementation(libs.androidx.core.telecom)
   implementation(libs.androidx.lifecycle.runtime.compose)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.lifecycle.viewmodel.compose)

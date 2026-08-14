@@ -33,6 +33,7 @@ import androidx.navigation.toRoute
 import kotlinx.coroutines.flow.collect
 import me.kalfa.agentconsole.di.DependencyContainer
 import me.kalfa.agentconsole.telephony.EnsureCallAudioPermission
+import me.kalfa.agentconsole.telephony.TelecomRegistration
 import me.kalfa.agentconsole.telephony.presence.PresenceForegroundService
 import me.kalfa.agentconsole.telephony.vox.IncomingCallNotificationBuilder
 import me.kalfa.agentconsole.telephony.vox.VoxIncomingCallCoordinator
@@ -61,6 +62,12 @@ class MainActivity : ComponentActivity() {
         // VoxFirebaseMessagingService.onCreate for the cold-start-via-push case
         // (AGENTS.md "Push wake-up"); attach() is idempotent either order.
         DependencyContainer.attach(applicationContext)
+        // Declares this app a self-managed calling app to the platform. Idempotent and
+        // never throws — see TelecomRegistration's kdoc for why it must be in place
+        // BEFORE the first Play upload rather than with the later Telecom phase: Play
+        // revokes USE_FULL_SCREEN_INTENT from apps that aren't calling apps, and losing
+        // it kills locked-screen ringing with no symptom except missed calls.
+        TelecomRegistration.register(applicationContext)
         applyIncomingCallWindowFlagsIfNeeded(intent)
         enableEdgeToEdge()
         setContent {

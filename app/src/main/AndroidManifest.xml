@@ -19,11 +19,23 @@
       Foreground service: v1 keeps an active call alive with a `microphone`-typed FGS
       (telephony/CallForegroundService) — deliberately NOT a `phoneCall` FGS.
       `phoneCall` on Android 14+ additionally requires self-managed Telecom
-      (MANAGE_OWN_CALLS + a ConnectionService) OR the default-dialer role; that
-      option-(a) path is deferred to the telephony-wiring step. So MANAGE_OWN_CALLS and
-      FOREGROUND_SERVICE_PHONE_CALL are intentionally NOT declared yet — declaring
-      sensitive permissions with no matching phoneCall service is a Play-review risk.
-      They return together with the ConnectionService below when Telecom is adopted.
+      (MANAGE_OWN_CALLS + a ConnectionService) OR the default-dialer role.
+
+      MANAGE_OWN_CALLS is no longer absent, and is no longer declared by hand: the
+      androidx.core:core-telecom AAR declares it in its own manifest and merges it in
+      (verified by unpacking core-telecom-1.0.1.aar, not read from docs), together with
+      androidx.core.telecom.internal.JetpackConnectionService. This note used to say the
+      permission was withheld because declaring it with no matching service is a
+      Play-review risk — correct at the time, and that dependency is precisely what
+      removes the premise. AOSP gives MANAGE_OWN_CALLS protectionLevel="normal", so it
+      needs no runtime request. See telephony/TelecomRegistration.kt for WHY this had to
+      land before the first Play upload rather than with the later Telecom phase: Play
+      revokes USE_FULL_SCREEN_INTENT from apps that are not calling apps, and losing it
+      kills locked-screen ringing with no symptom other than missed calls.
+
+      FOREGROUND_SERVICE_PHONE_CALL stays undeclared: the FGS is still microphone-typed,
+      and that permission belongs with the CallsManager.addCall migration (which hands
+      Telecom the call lifecycle) rather than with registration.
     -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -185,21 +197,23 @@
         <receiver android:name=".telephony.CallHangupActionReceiver" android:exported="false" />
 
         <!--
-          Self-managed ConnectionService (AGENTS.md §3). Register the PhoneAccount
-          with CAPABILITY_SELF_MANAGED at runtime; Telecom owns audio focus and
-          routing during a call, so this must exist before real audio is wired.
-          TODO(voximplant-phase): implement me.kalfa.agentconsole.telephony.ConsoleConnectionService
-          and remove tools:ignore once the class lands.
-        -->
-        <!--
-        <service
-            android:name=".telephony.ConsoleConnectionService"
-            android:exported="true"
-            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
-            <intent-filter>
-                <action android:name="android.telecom.ConnectionService" />
-            </intent-filter>
-        </service>
+          No ConnectionService is declared here on purpose, and the hand-written
+          ConsoleConnectionService stub that used to sit commented out in this spot has
+          been deleted rather than left as a TODO.
+
+          androidx.core:core-telecom supplies androidx.core.telecom.internal.JetpackConnectionService
+          — same BIND_TELECOM_CONNECTION_SERVICE guard, same android.telecom.ConnectionService
+          intent filter — and the manifest merger pulls it in. The stub named a class
+          (.telephony.ConsoleConnectionService) that was never written, so nothing is
+          lost by deleting it, and AGENTS.md's own recommendation was to prefer the
+          Jetpack library over hand-writing one. Registration now happens in
+          telephony/TelecomRegistration.kt via CallsManager. Whether a second,
+          hand-written ConnectionService could coexist with the Jetpack one is untested
+          and deliberately not relied on here.
+
+          Still open, and separate: routing calls through CallsManager.addCall, which
+          hands Telecom the call's audio focus and lifecycle and carries a 5s
+          CallControlScope deadline that needs a physical device to verify.
         -->
     </application>
 
