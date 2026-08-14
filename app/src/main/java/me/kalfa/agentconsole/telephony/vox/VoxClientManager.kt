@@ -28,7 +28,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import me.kalfa.agentconsole.BuildConfig
 
 // Single owner of the Voximplant v3 `Client` (a process-wide object) for the
 // human-agent leg. Wraps the callback-based SDK auth in suspend functions, exposes
@@ -315,10 +314,50 @@ class VoxClientManager(
             })
         }
 
+    /**
+     * `bundleId` is deliberately NULL, and that is the fix for the empty `push_results`.
+     *
+     * This used to pass `BuildConfig.APPLICATION_ID` unconditionally, which reads like
+     * harmless extra precision and is not. Voximplant's own SDK v3 reference for
+     * `PushConfig` (fetched live via `voximplant.com/api/v2/getDoc`,
+     * `references.androidsdk3.android.sdk.core.pushconfig`) documents the parameter as
+     * nullable and says, verbatim:
+     *
+     *   "Set **only** if push notifications are going to be sent across several Android
+     *    apps via a single Voximplant application or if you add several push certificates."
+     *
+     * Neither condition holds here: one Voximplant application (`kalfa-rsvp`, 11107202),
+     * one Android app, and exactly one push certificate — `npm run voximplant --
+     * push-credentials` returns a single GOOGLE entry (#9108) whose `content` carries a
+     * `sender_id` and **no bundle id at all**.
+     *
+     * The platform uses the bundle id to pick which certificate to send with. Registering
+     * a token under a bundle that no certificate declares leaves the platform holding
+     * nothing it can use — which is exactly the observed signature: `push_results: []`
+     * with `"No push notifications has been sent"`, and Voximplant's own push
+     * troubleshooting guide listing "no tokens found — push token was not registered for
+     * this user/device" as the first cause of that shape. A rejected send would have
+     * produced a POPULATED array carrying an error instead.
+     *
+     * If a second Android app or a second certificate is ever added to this Voximplant
+     * application, this becomes required rather than harmful — and the certificate must
+     * be uploaded WITH the matching package name at the same time. The two settings are
+     * one decision, not two, and changing either alone silently breaks push.
+     */
+    internal companion object {
+        /**
+         * The bundle id sent with every push-token registration. NULL on purpose — the
+         * reasoning, and the live-doc quote it rests on, are in registerPushTokenSuspend's
+         * kdoc below. In a companion so VoxPushConfigTest can pin it without constructing
+         * a manager (and therefore without a mocking library this project does not use).
+         */
+        internal val PUSH_BUNDLE_ID: String? = null
+    }
+
     private suspend fun registerPushTokenSuspend(token: String): Unit =
         suspendCancellableCoroutine { cont ->
             Client.registerForPushNotifications(
-                PushConfig(token, BuildConfig.APPLICATION_ID),
+                PushConfig(token, PUSH_BUNDLE_ID),
                 object : RegisterPushTokenCallback {
                     override fun onSuccess() { if (cont.isActive) cont.resume(Unit) }
                     override fun onFailure(error: PushTokenError) {
@@ -332,8 +371,12 @@ class VoxClientManager(
 
     private suspend fun unregisterPushTokenSuspend(token: String): Unit =
         suspendCancellableCoroutine { cont ->
+            // Must mirror registerPushTokenSuspend exactly — see its kdoc. An unregister
+            // that names a different bundle than the register did would not match the
+            // token it is trying to remove, leaving a stale token registered for an agent
+            // who has signed out.
             Client.unregisterFromPushNotifications(
-                PushConfig(token, BuildConfig.APPLICATION_ID),
+                PushConfig(token, PUSH_BUNDLE_ID),
                 object : RegisterPushTokenCallback {
                     override fun onSuccess() { if (cont.isActive) cont.resume(Unit) }
                     override fun onFailure(error: PushTokenError) {
