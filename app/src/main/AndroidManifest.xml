@@ -68,6 +68,17 @@
       NEVER pass the pair during the ring phase: that re-validates microphone and brings the
       SecurityException straight back. The manifest may hold both; the ring-phase
       startForeground() call may not.
+
+      ⚠ STATUS AS OF THIS COMMIT: THE CRASH IS STILL LIVE. The paragraph above describes
+      what the service MUST do, not what it does. CallForegroundService.startForegroundCompat
+      still hardcodes ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE as its startForeground
+      argument, and that single passed value is the ONLY thing the permission policy is
+      evaluated against — the declaration below is never consulted for permissions, only as
+      the subset ceiling. So the push-woken ring still throws until the service side lands.
+      Widening this manifest is half a fix, and it is the half that LOOKS complete: it also
+      tests clean on an unlocked device, because an unlocked device satisfies while-in-use
+      and never exercises the failing path. Do not read a green manual test as proof.
+      Owner of the other half: fgs-owner (telephony/CallForegroundService.kt) — not this file.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
