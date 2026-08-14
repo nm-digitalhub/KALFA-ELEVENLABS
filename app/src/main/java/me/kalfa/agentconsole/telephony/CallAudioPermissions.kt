@@ -22,8 +22,25 @@ import me.kalfa.agentconsole.ui.message.UiMessage
 // Runtime permissions the live-agent audio path needs before a real Voximplant leg
 // can carry two-way voice:
 //   • RECORD_AUDIO       — the microphone for a takeover leg (and the SDK audio unit).
-//   • POST_NOTIFICATIONS — API 33+, so the ongoing-call foreground-service notification
-//                          (CallForegroundService) is actually shown.
+//   • POST_NOTIFICATIONS — API 33+. Denied, "all notification channels are blocked"
+//                          (developer.android.com notification-permission), which costs
+//                          BOTH the ongoing-call foreground-service notification
+//                          (CallForegroundService) AND the incoming-call notification an
+//                          agent answers from (IncomingCallNotificationBuilder).
+//
+// On that second one, do not trust the self-managed-calling-app exemption. The
+// developer.android.com summary conditions it on MANAGE_OWN_CALLS + ConnectionService +
+// registerPhoneAccount() — all three of which this app now satisfies since the telecom
+// registration landed — but that page is an incomplete account of the real gate.
+// NotificationManagerService bypasses the blocked-app check via `isCallNotification`,
+// which asks TelecomManager whether the package has a self-managed call IN PROGRESS;
+// Telecom only learns of one from `CallsManager.addCall`, which this app never calls.
+// So the exemption is inactive here and POST_NOTIFICATIONS is load-bearing for ringing
+// at all, not merely for the FGS notification. Established from AOSP by the Play-policy
+// and notification reviews, not by this author — retraction recorded in 7628efe, which
+// also explains why the wrong version was actively harmful: it predicted a working
+// notification under a denied permission, so anyone watching that notification vanish
+// would have ruled out the permission for a reason that was never true.
 //
 // The receive-only MONITOR leg also needs the audio unit; its send-isolation is
 // enforced SERVER-SIDE (VoxEngine conference topology), never by withholding the mic
@@ -240,13 +257,24 @@ internal fun decideCallAudioPermissionAction(
  * and where to change it, and the next process launch asks once more.
  *
  * What re-triggers a legitimate request, stated because it is easy to assume more
- * happens than does: only a new composition — a process start, or a sign-in. Returning
- * to a backgrounded app does NOT re-ask, and did not before this change either: the
- * effect is keyed on `granted`/`revoked`, accompanist's ON_RESUME check writes the
+ * happens than does: only a NEW PROCESS.
+ *
+ * Not a remount. A remount DOES re-run this effect against a fresh
+ * `MultiplePermissionsState` — but [CallAudioRequestSession] outlives the composition,
+ * so anything this process already asked for still resolves to
+ * [CallAudioPermissionAction.AwaitNextLaunch]. Sign-out/sign-in and Activity
+ * recreation are therefore not re-ask points either. An earlier version of this note
+ * claimed they were; that was wrong, and wrong in the direction that flatters the
+ * code, which is the direction to distrust.
+ *
+ * Not a return from the background either, and that was true before this change too:
+ * the effect is keyed on `granted`/`revoked`, accompanist's ON_RESUME check writes
  * status through `mutableStateOf` (`MutablePermissionState.status`), and re-writing an
  * equal `PermissionStatus.Denied` under Compose's default structural-equality policy
- * recomposes nothing. So the in-app warning above, plus the device's own settings, are
- * the routes back for an agent who only meant to postpone — not a later prompt.
+ * recomposes nothing.
+ *
+ * So the in-app warning above, plus the device's own settings, are the routes back for
+ * an agent who only meant to postpone — not a later prompt.
  */
 @OptIn(ExperimentalPermissionsApi::class)
 @Composable
