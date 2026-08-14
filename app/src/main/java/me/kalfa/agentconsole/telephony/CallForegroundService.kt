@@ -22,6 +22,20 @@ import androidx.core.content.ContextCompat
 // answered via VoxIncomingCallCoordinator — and shows the mandatory ongoing
 // notification so Android does not kill an active call in the background.
 //
+// HOW TO RE-CHECK EVERY AOSP LINE NUMBER BELOW. They index `refs/heads/main`, which
+// moves, so the numbers rot while the claims stay true — and a drifted number fails
+// silently: land in unrelated code and this file looks sloppy, land in plausible-looking
+// wrong code and it looks authoritative. Each citation is quoted next to its distinctive
+// source text, so resolve by phrase, not by number:
+//
+//   curl -s "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main\
+//   /<path>?format=TEXT" | base64 -d | grep -n "<quoted phrase>"
+//
+// If a phrase no longer resolves, treat the claim as UNVERIFIED rather than assuming the
+// line merely moved. AOSP changing this code is exactly the event these findings would
+// need re-deriving for, and "anchor moved" and "behaviour changed" look identical from a
+// stale line number. (Convention adopted from play-policy-owner's AGENTS.md §E.)
+//
 // FOREGROUND-SERVICE TYPE — phased, and the phase is the whole point. Settled against
 // AOSP source on 2026-08-14 (`core/java/android/app/ForegroundServiceTypePolicy.java`),
 // after a first answer that was confidently wrong in both directions:
