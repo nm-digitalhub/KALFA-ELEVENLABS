@@ -132,10 +132,39 @@ class MainActivity : ComponentActivity() {
                     // since starting a Service needs a Context ConsoleViewModel
                     // deliberately doesn't have. See
                     // docs/android-presence-and-call-ux.md §1.
+                    //
+                    // The `shiftWasActive` latch is this file's copy of the defect
+                    // PresenceForegroundService already fixed on its own side, and the
+                    // reasoning in `shiftEndedAfterBeingActive`'s kdoc applies here
+                    // verbatim: AgentPresence.shiftActive is a StateFlow initialised to
+                    // false and never restored from storage, so the FIRST value this
+                    // effect sees on any launch is the process-start default, not a
+                    // shift ending — and the else-branch turned that into
+                    // `PresenceForegroundService.stop()`.
+                    //
+                    // That is not harmless when the service is already running. The
+                    // service and this Activity share a process, so a START_STICKY
+                    // restart after a system kill has the service resuming from its
+                    // persisted record — `resumeFromPersistedStateOrStop()` ->
+                    // `PresenceActions.applyStatus()` -> `setStatus` (an awaitAuthToken
+                    // of up to 3s, then an HTTPS POST) and only THEN `setShiftActive
+                    // (true)`, which is what would set this flag. An agent opening the
+                    // app during those seconds made this effect stop the service, whose
+                    // onDestroy cancels the scope the resume was running in. The resume
+                    // never reached setShiftActive, so shiftActive stayed false, this
+                    // effect never re-fired, and presence stayed dead until the agent
+                    // happened to tap "זמין" again.
+                    //
+                    // Withholding the stop costs nothing: the service already stops
+                    // itself when a shift that really was active ends (its shiftWatcher
+                    // job), and a service running with no on-shift record stops itself
+                    // via resumeFromPersistedStateOrStop's fail-closed branch.
+                    var shiftWasActive by remember { mutableStateOf(false) }
                     LaunchedEffect(state.shiftActive) {
                         if (state.shiftActive) {
+                            shiftWasActive = true
                             PresenceForegroundService.start(applicationContext)
-                        } else {
+                        } else if (shiftWasActive) {
                             PresenceForegroundService.stop(applicationContext)
                         }
                     }
