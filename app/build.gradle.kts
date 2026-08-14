@@ -60,6 +60,12 @@ android {
     // providers.environmentVariable (not System.getenv) so the configuration cache
     // tracks it as an input; this build runs with the configuration cache enabled and
     // a raw getenv would be read once and then silently reused across runs.
+    // ⚠ versionCode must NEVER go backwards. Google Play refuses a versionCode it has
+    // already seen, and that refusal is permanent — there is no way to reclaim a number.
+    // GITHUB_RUN_NUMBER is monotonic for a given workflow file but RESETS TO 1 if that
+    // workflow is renamed, deleted or recreated. If that ever happens, raise the base
+    // below past the highest versionCode already uploaded; do not simply let it restart.
+    // (Ceiling, for reference: Play's maximum versionCode is 2100000000.)
     versionCode = 10 + (providers.environmentVariable("GITHUB_RUN_NUMBER").orNull?.toIntOrNull() ?: 0)
     versionName = providers.environmentVariable("GITHUB_SHA").orNull
         ?.take(7)
