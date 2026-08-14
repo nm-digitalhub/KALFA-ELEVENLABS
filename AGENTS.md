@@ -478,4 +478,12 @@ gplay preflight --file /tmp/aab-fresh/app-release.aab      # confirm the printed
 
 `gplay preflight` fully decodes the AAB's protobuf manifest, so its findings read real typed attribute values. It does **not** know about App content declarations, Data safety, or the while-in-use restriction in B-2 — a clean preflight is not a clean upload. Baseline for `ff50269` / versionCode 79: **0 errors, 6 warnings, 4 info**, every one of them accounted for in §B or §C above.
 
+**The AOSP line numbers in §A-1 and §B-2 will rot — re-find by string, not by line.** Every one of them indexes `refs/heads/main`, which moves under us, so a stale number is the one kind of citation here that fails *silently* rather than loudly. Each is quoted alongside its distinctive source text; grep for that instead:
+
+```
+curl -sL "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/<path>?format=TEXT" | base64 -d | grep -n "<quoted phrase>"
+```
+
+Anchors used above, with their files: `checkUseFullScreenIntentPermission` and `"CallStyle notifications must be for a foreground service"` (`services/…/notification/NotificationManagerService.java`); `"is not a subset of foregroundServiceType attribute"`, `"The second or later time startForeground() is called"` (`services/…/am/ActiveServices.java`); `PROCESS_CAPABILITY_FOREGROUND_MICROPHONE`, `getDefaultCapability` (`services/…/am/OomAdjuster.java`); `MICROPHONE_MUTE_CHANGED` in the `<protected-broadcast>` list (`core/res/AndroidManifest.xml`). **If a phrase no longer resolves, treat the claim as unverified rather than assuming the number drifted** — AOSP changing that code is exactly the event these findings would need re-deriving for. (Discipline owed to `fgs-owner`: a note that names a condition and carries the command to test it stays honest; one that asserts a state rots without a signal.)
+
 **Still valid as of `90841dc`.** That commit ("get registration off the UI thread, and correct the reason it exists") touches `AndroidManifest.xml`, `TelecomRegistration.kt`, `build.gradle.kts` and `libs.versions.toml`, so it looks like it should move this audit — it does not. Its manifest changes are **comment-only**: no permission added or removed, no `foregroundServiceType` changed, `core-telecom` still 1.0.1. `FOREGROUND_SERVICE_PHONE_CALL` is still undeclared and `CallForegroundService` is still `microphone`-typed, so **B-2 stands unfixed**. Re-run §E for real only when a commit changes a `uses-permission`, a `foregroundServiceType`, or a dependency that merges manifest entries.
