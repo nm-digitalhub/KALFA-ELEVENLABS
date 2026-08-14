@@ -101,6 +101,25 @@ interface CallEngine {
     fun clearAttachedSession() {}
 }
 
+/**
+ * Whether the LAST setStatus/setShiftActive attempt actually reached and was
+ * accepted by the server — distinct from AgentPresence.currentStatus/shiftActive,
+ * which reflect what was last REQUESTED (updated optimistically, for immediate UI
+ * responsiveness). Measured live incident that made this necessary: an agent
+ * reinstalled the app (clearing the Supabase session), tapped "זמין", and the app
+ * showed Ready — but setStatus's old fire-and-forget implementation sent an empty
+ * JWT, got a 401, and silently discarded it in a bare `catch { printStackTrace() }`.
+ * Nothing on screen contradicted the false "Ready" claim; three DB samples a minute
+ * apart confirmed no write ever reached the server. A UI (in particular the
+ * persistent presence notification, which is the ONLY surface a backgrounded agent
+ * sees) must be able to tell "confirmed" from "requested" apart.
+ */
+sealed interface PresenceSyncState {
+    data object Synced : PresenceSyncState
+    data object Pending : PresenceSyncState
+    data class Failed(val failure: me.kalfa.agentconsole.domain.error.AppFailure) : PresenceSyncState
+}
+
 interface AgentPresence {
     val currentStatus: StateFlow<AgentStatus>
 
@@ -114,7 +133,24 @@ interface AgentPresence {
     val shiftActive: StateFlow<Boolean>
         get() = kotlinx.coroutines.flow.MutableStateFlow(false)
 
-    fun setStatus(status: AgentStatus)
+    /**
+     * See PresenceSyncState's kdoc. Covers the outcome of the most recent
+     * setStatus/setShiftActive call (both write through the same field — see
+     * SupabaseImplementations.kt for why one shared signal is the deliberate v1
+     * scope, not an oversight). Default (always Synced) keeps mock mode working.
+     */
+    val syncState: StateFlow<PresenceSyncState>
+        get() = kotlinx.coroutines.flow.MutableStateFlow(PresenceSyncState.Synced)
+
+    /**
+     * Sets the agent's status, via POST beta.kalfa.me/api/agents/status + a direct
+     * postgrest upsert. Returns AppResult like every other network-backed operation
+     * on CallEngine (sendAgentCommand/endCall/enqueueOutboundCall) — this used to be
+     * a fire-and-forget `Unit` that swallowed every failure; see PresenceSyncState's
+     * kdoc for the measured incident that made that untenable. currentStatus still
+     * updates optimistically for immediate UI responsiveness; syncState is the truth.
+     */
+    suspend fun setStatus(status: AgentStatus): AppResult<Unit>
 
     /**
      * Declares (or withdraws) a standing "on shift" intent, via POST
@@ -122,7 +158,7 @@ interface AgentPresence {
      * setStatus/agent_status (its own table, its own 12h freshness window,
      * server-side): route-inbound-retry reads it to decide who gets woken by an
      * inbound-call push even while nobody is currently connected (AGENTS.md "Push
-     * wake-up"). Default no-op keeps mock mode working.
+     * wake-up"). Default no-op (success) keeps mock mode working.
      */
-    fun setShiftActive(active: Boolean) {}
+    suspend fun setShiftActive(active: Boolean): AppResult<Unit> = AppResult.Success(Unit)
 }

@@ -2,7 +2,18 @@ package me.kalfa.agentconsole.domain.error
 
 sealed interface AppFailure {
     data object NetworkUnavailable : AppFailure
+
+    /** A session that WAS valid has since expired or been rejected server-side. */
     data object Unauthorized : AppFailure
+
+    /**
+     * Distinct from Unauthorized: there was never a session to expire in the first
+     * place (e.g. the app was reinstalled and the Supabase session cleared, or the
+     * agent signed out). Measured live: conflating the two told an agent who had
+     * simply never signed in on a fresh install that their session had "expired" —
+     * factually wrong and confusing about what to do next.
+     */
+    data object NotSignedIn : AppFailure
     data object Forbidden : AppFailure
     data object NotFound : AppFailure
     data object Conflict : AppFailure

@@ -1,7 +1,14 @@
 package me.kalfa.agentconsole.telephony.presence
 
+import me.kalfa.agentconsole.data.toAppFailure
 import me.kalfa.agentconsole.di.DependencyContainer
+import me.kalfa.agentconsole.domain.error.AppResult
 import me.kalfa.agentconsole.domain.model.AgentStatus
+import me.kalfa.agentconsole.ui.message.AppMessageCenter
+import me.kalfa.agentconsole.ui.message.FailureContext
+import me.kalfa.agentconsole.ui.message.MessageSeverity
+import me.kalfa.agentconsole.ui.message.UiMessage
+import me.kalfa.agentconsole.ui.message.toHebrewMessage
 
 // Single source of truth for "what happens when the agent's status changes" — shared by
 // ConsoleViewModel.setAgentStatus (foreground, user-initiated, has a voxUsername from
@@ -10,7 +17,15 @@ import me.kalfa.agentconsole.domain.model.AgentStatus
 // docs/android-presence-and-call-ux.md §1). Extracted so the READY-path Voximplant
 // login dance (AGENTS.md "Push wake-up") lives in exactly one place instead of being
 // duplicated between the two callers, one of which has no ViewModel to put it in.
+//
+// Publishes failures through AppMessageCenter directly (a plain global object, not
+// tied to any ViewModel — see MessageCenter.kt) rather than returning them to the
+// caller: this is what lets a BroadcastReceiver with no UI of its own still surface a
+// specific, actionable failure (owner requirement, see the two AppFailure/
+// FailureContext members this uses: PRESENCE and PUSH_REGISTRATION).
 object PresenceActions {
+    private const val PRESENCE_MESSAGE_ID = "presence_sync"
+    private const val PUSH_REGISTRATION_MESSAGE_ID = "push_registration"
 
     /**
      * Sets the agent's status and, for READY specifically, declares shift and drives
@@ -23,18 +38,88 @@ object PresenceActions {
      * system-restarted PresenceForegroundService re-applying the last known status
      * (docs/android-presence-and-call-ux.md §1, "System kill under memory pressure")
      * costs nothing extra beyond the one real login it needs after process death.
+     *
+     * Every step's outcome is surfaced via AppMessageCenter — see this class's kdoc.
+     * A push-registration failure is reported even though it doesn't block the
+     * status/shift writes above it: the agent IS available in the sense the server
+     * now believes, but a device that never registered for push cannot be woken once
+     * the app is backgrounded or killed (AGENTS.md "Push wake-up") — a materially
+     * different, and equally actionable, fact.
      */
     suspend fun applyStatus(status: AgentStatus, voxUsername: String?) {
         val presence = DependencyContainer.agentPresence
-        presence.setStatus(status)
+        reportPresenceResult(presence.setStatus(status))
+
         if (status == AgentStatus.READY) {
-            presence.setShiftActive(true)
+            reportPresenceResult(presence.setShiftActive(true))
+
             val vcm = DependencyContainer.voxClientManager
             if (voxUsername != null && vcm != null) {
-                vcm.ensureLoggedIn(voxUsername).onSuccess {
-                    vcm.registerCurrentPushToken()
-                }
+                vcm.ensureLoggedIn(voxUsername).fold(
+                    onSuccess = {
+                        reportPushRegistrationResult(vcm.registerCurrentPushToken())
+                    },
+                    onFailure = { e -> reportPushRegistrationResult(Result.failure(e)) },
+                )
             }
         }
+    }
+
+    private fun reportPresenceResult(result: AppResult<Unit>) {
+        when (result) {
+            is AppResult.Success -> AppMessageCenter.resolve(PRESENCE_MESSAGE_ID)
+            is AppResult.Failure -> AppMessageCenter.publish(
+                UiMessage(
+                    id = PRESENCE_MESSAGE_ID,
+                    severity = MessageSeverity.ERROR,
+                    title = "הזמינות לא אושרה מול השרת",
+                    body = result.reason.toHebrewMessage(FailureContext.PRESENCE),
+                    // Persistent condition, persistent surface (not a snackbar the
+                    // agent can dismiss while the underlying problem remains) — it
+                    // clears itself via resolve() the moment a write actually
+                    // succeeds, not before.
+                    dismissible = false,
+                    deduplicationKey = PRESENCE_MESSAGE_ID,
+                ),
+            )
+        }
+    }
+
+    // Persists the outcome (PresenceStateStore) before touching anything in-memory:
+    // PresenceForegroundService runs with no Activity/ViewModel alive, and
+    // AppMessageCenter is an in-memory-only StateFlow — a process death between a
+    // failed registration and the agent next opening the app would otherwise lose
+    // the record entirely (the live incident this exists to close — see
+    // docs/android-presence-and-call-ux.md's "Update 2026-08-14 (later)").
+    private suspend fun reportPushRegistrationResult(result: Result<Unit>) {
+        val nowMs = System.currentTimeMillis()
+        result.fold(
+            onSuccess = {
+                DependencyContainer.presenceStateStore?.recordPushRegistrationOutcome(null, nowMs)
+                PushRegistrationState.recordSuccess()
+                AppMessageCenter.resolve(PUSH_REGISTRATION_MESSAGE_ID)
+            },
+            onFailure = { e ->
+                val failure = e.toAppFailure()
+                // WHICH step failed — VoxClientManager.registerCurrentPushToken tags
+                // its two failure domains distinctly ("fcm_token: ..." vs
+                // "registerForPushNotifications: ..."); AppFailure itself stays the
+                // coarse, reused-everywhere taxonomy (see PersistedPushRegistrationFailure's
+                // kdoc for why this travels as a separate raw string).
+                val detail = e.message
+                DependencyContainer.presenceStateStore?.recordPushRegistrationOutcome(failure, nowMs, detail)
+                PushRegistrationState.recordFailure(failure, detail)
+                AppMessageCenter.publish(
+                    UiMessage(
+                        id = PUSH_REGISTRATION_MESSAGE_ID,
+                        severity = MessageSeverity.WARNING,
+                        title = "המכשיר לא נרשם לקבלת שיחות",
+                        body = failure.toHebrewMessage(FailureContext.PUSH_REGISTRATION),
+                        dismissible = false,
+                        deduplicationKey = PUSH_REGISTRATION_MESSAGE_ID,
+                    ),
+                )
+            },
+        )
     }
 }

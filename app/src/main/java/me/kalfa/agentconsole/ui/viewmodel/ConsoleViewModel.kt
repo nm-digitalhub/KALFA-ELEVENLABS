@@ -384,11 +384,15 @@ class ConsoleViewModel : ViewModel() {
 
     fun logout() {
         val client = DependencyContainer.supabaseClient ?: return
-        // Withdraw shift + the Voximplant session together: a signed-out device
-        // must not remain in the push-wake audience (route-inbound-retry) or stay
-        // silently loggable-in to Voximplant via a leftover persisted token.
-        agentPresence.setShiftActive(false)
         viewModelScope.launch {
+            // Withdraw shift + the Voximplant session together: a signed-out device
+            // must not remain in the push-wake audience (route-inbound-retry) or stay
+            // silently loggable-in to Voximplant via a leftover persisted token.
+            // BEFORE signOut() — after it, getJwt() returns "" and this write would
+            // just fail with NotSignedIn instead of actually reaching the server.
+            // Best-effort: an intentional logout proceeds regardless of the result
+            // (the 90s freshness gate self-heals once the heartbeat also stops).
+            agentPresence.setShiftActive(false)
             DependencyContainer.voxClientManager?.let { vcm ->
                 runCatching { vcm.unregisterCurrentPushToken() }
                 runCatching { vcm.forgetPersistedSession() }

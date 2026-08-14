@@ -208,9 +208,29 @@ class VoxClientManager(
     // now would risk silently breaking delivery to a third party (Voximplant) with
     // no way to verify from this repo. Re-evaluate if Voximplant ever documents FID
     // support, or if Google sets a removal date for the token.
+    // Two SEPARATE try/catch blocks, not one blanket runCatching — a live incident
+    // (docs/android-presence-and-call-ux.md's "Update 2026-08-14 (later)": Voximplant
+    // itself reported `push_results: []`/"No push notifications has been sent" for a
+    // device this app never got a token registered for) needed to know WHICH of two
+    // very different failure domains it was — a local Google Play Services/FCM
+    // problem fetching the token, or Voximplant's own registerForPushNotifications
+    // call failing — and a single try/catch around both steps cannot distinguish
+    // them. Both branches throw the SAME VoxAuthException.Sdk type (already used for
+    // every other SDK-boundary failure in this class) so callers don't need a new
+    // exception type, but the message tags which step it was.
     suspend fun registerCurrentPushToken(): Result<Unit> = runCatching {
-        val token = FirebaseMessaging.getInstance().token.awaitTask()
-        registerPushTokenSuspend(token)
+        val token = try {
+            FirebaseMessaging.getInstance().token.awaitTask()
+        } catch (e: Exception) {
+            throw VoxAuthException.Sdk("fcm_token: ${e.message ?: e::class.simpleName}")
+        }
+        try {
+            registerPushTokenSuspend(token)
+        } catch (e: VoxAuthException) {
+            throw e // already tagged "registerForPushNotifications: ..." at the source
+        } catch (e: Exception) {
+            throw VoxAuthException.Sdk("vox_register: ${e.message ?: e::class.simpleName}")
+        }
     }
 
     // Best-effort, called on explicit sign-out alongside forgetPersistedSession.

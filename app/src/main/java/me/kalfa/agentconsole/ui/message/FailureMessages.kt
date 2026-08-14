@@ -4,8 +4,21 @@ import me.kalfa.agentconsole.domain.error.AppFailure
 
 fun AppFailure.toHebrewMessage(context: FailureContext): String =
     when (this) {
-        AppFailure.NetworkUnavailable -> "לא ניתן להתחבר כרגע. בדוק את החיבור ונסה שוב."
-        AppFailure.Unauthorized -> "פג תוקף ההתחברות. יש להתחבר מחדש."
+        AppFailure.NetworkUnavailable -> when (context) {
+            FailureContext.PRESENCE -> "אין חיבור לרשת. הסטטוס לא התעדכן בשרת — ייתכן ששיחות לא יגיעו."
+            FailureContext.PUSH_REGISTRATION -> "המכשיר לא נרשם לקבלת שיחות כשהאפליקציה סגורה. בדוק את החיבור ונסה שוב."
+            else -> "לא ניתן להתחבר כרגע. בדוק את החיבור ונסה שוב."
+        }
+        AppFailure.Unauthorized -> when (context) {
+            FailureContext.PRESENCE -> "ההתחברות פגה. הסטטוס לא התעדכן ושיחות לא יגיעו עד התחברות מחדש."
+            FailureContext.PUSH_REGISTRATION -> "ההתחברות פגה. המכשיר לא ירשם לקבלת שיחות עד התחברות מחדש."
+            else -> "פג תוקף ההתחברות. יש להתחבר מחדש."
+        }
+        AppFailure.NotSignedIn -> when (context) {
+            FailureContext.PRESENCE -> "לא מחובר. שיחות לא יגיעו עד ההתחברות."
+            FailureContext.PUSH_REGISTRATION -> "לא מחובר. המכשיר לא ירשם לקבלת שיחות עד ההתחברות."
+            else -> "לא מחובר. יש להתחבר כדי להמשיך."
+        }
         AppFailure.Forbidden -> "אין לך הרשאה לבצע את הפעולה."
         AppFailure.NotFound -> when (context) {
             FailureContext.GUEST_CALL -> "האורח לא נמצא."
@@ -28,7 +41,11 @@ fun AppFailure.toHebrewMessage(context: FailureContext): String =
         AppFailure.NoActiveCampaign -> "אין לאירוע קמפיין פעיל."
         AppFailure.GuestMissingPhone -> "לאורח אין מספר טלפון תקין לחיוג."
         AppFailure.AlreadyReached -> "כבר נוצר קשר באירוע זה."
-        AppFailure.Unknown -> "הפעולה לא הושלמה. נסה שוב."
+        AppFailure.Unknown -> when (context) {
+            FailureContext.PRESENCE -> "הסטטוס לא התעדכן בשרת. ייתכן ששיחות לא יגיעו."
+            FailureContext.PUSH_REGISTRATION -> "המכשיר לא נרשם לקבלת שיחות כשהאפליקציה סגורה."
+            else -> "הפעולה לא הושלמה. נסה שוב."
+        }
     }
 
 enum class FailureContext {
@@ -36,5 +53,11 @@ enum class FailureContext {
     ANALYSIS,
     LIVE_CALL,
     GUEST_CALL,
-    CAMPAIGN
+    CAMPAIGN,
+
+    /** AgentPresence.setStatus/setShiftActive — see PresenceSyncState's kdoc. */
+    PRESENCE,
+
+    /** VoxClientManager.registerCurrentPushToken (and the ensureLoggedIn it needs). */
+    PUSH_REGISTRATION
 }

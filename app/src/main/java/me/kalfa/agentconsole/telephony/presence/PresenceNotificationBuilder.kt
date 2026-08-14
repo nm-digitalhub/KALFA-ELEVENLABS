@@ -7,7 +7,11 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import me.kalfa.agentconsole.domain.error.AppFailure
 import me.kalfa.agentconsole.domain.model.AgentStatus
+import me.kalfa.agentconsole.domain.telephony.PresenceSyncState
+import me.kalfa.agentconsole.ui.message.FailureContext
+import me.kalfa.agentconsole.ui.message.toHebrewMessage
 
 // Builds the persistent presence notification (docs/android-presence-and-call-ux.md
 // §1 "Notification (Part 2)"). Split out from PresenceForegroundService so the
@@ -41,13 +45,32 @@ object PresenceNotificationBuilder {
         }
     }
 
-    fun build(context: Context, status: AgentStatus, connected: Boolean = true) =
-        NotificationCompat.Builder(context, CHANNEL_ID)
+    // syncState distinguishes "requested" from "confirmed-by-server" (PresenceSyncState's
+    // kdoc); pushRegistrationFailure is an ORTHOGONAL signal — presence can be fully
+    // Synced (the status write reached the server) while the device separately never
+    // registered for push (so a killed/backgrounded app can never be woken — see
+    // docs/android-presence-and-call-ux.md's "Update 2026-08-14 (later)", the live
+    // incident of Voximplant reporting "No push notifications has been sent"). This
+    // notification is the ONLY surface a backgrounded agent sees, so neither failure
+    // may be silently absent from it. syncState takes priority when both are wrong —
+    // it's the more urgent fact (the agent isn't even confirmed present at all).
+    fun contentTextFor(status: AgentStatus, syncState: PresenceSyncState, pushRegistrationFailure: AppFailure?): String =
+        when {
+            syncState is PresenceSyncState.Failed -> syncState.failure.toHebrewMessage(FailureContext.PRESENCE)
+            syncState == PresenceSyncState.Pending -> "סטטוס: ${status.labelHebrew} (מעדכן מול השרת...)"
+            pushRegistrationFailure != null ->
+                "סטטוס: ${status.labelHebrew} — " + pushRegistrationFailure.toHebrewMessage(FailureContext.PUSH_REGISTRATION)
+            else -> "סטטוס: ${status.labelHebrew}"
+        }
+
+    fun build(
+        context: Context,
+        status: AgentStatus,
+        syncState: PresenceSyncState,
+        pushRegistrationFailure: AppFailure? = null,
+    ) = NotificationCompat.Builder(context, CHANNEL_ID)
             .setContentTitle("מסוף KALFA")
-            .setContentText(
-                if (connected) "סטטוס: ${status.labelHebrew}"
-                else "סטטוס: ${status.labelHebrew} — לא מחובר, מנסה שוב",
-            )
+            .setContentText(contentTextFor(status, syncState, pushRegistrationFailure))
             .setSmallIcon(android.R.drawable.ic_menu_myplaces)
             .setOngoing(true)
             .setOnlyAlertOnce(true)

@@ -7,6 +7,7 @@ import me.kalfa.agentconsole.data.*
 import me.kalfa.agentconsole.data.mock.*
 import me.kalfa.agentconsole.domain.repository.*
 import me.kalfa.agentconsole.domain.telephony.*
+import me.kalfa.agentconsole.telephony.presence.PresenceStateStore
 import me.kalfa.agentconsole.telephony.vox.VoxClientManager
 import me.kalfa.agentconsole.telephony.vox.VoxIncomingCallCoordinator
 import me.kalfa.agentconsole.telephony.vox.VoxSdkAuthClient
@@ -161,6 +162,20 @@ object DependencyContainer {
                 }
             }
             return _voxClientManager
+        }
+
+    // Durable "was this agent on shift" + "did push registration last succeed"
+    // record — see PresenceStateStore's kdoc. Shared instance (not one per
+    // constructor call) so PresenceForegroundService and PresenceActions read/write
+    // the exact same underlying DataStore file through one canonical handle, same
+    // non-sticky-null reasoning as voxTokenStore above.
+    private var _presenceStateStore: PresenceStateStore? = null
+    val presenceStateStore: PresenceStateStore?
+        get() {
+            if (_presenceStateStore == null) {
+                _presenceStateStore = applicationContext?.let { PresenceStateStore(it) }
+            }
+            return _presenceStateStore
         }
 
     // Coordinates a delivered incoming SDK call end to end (notification, FSI,

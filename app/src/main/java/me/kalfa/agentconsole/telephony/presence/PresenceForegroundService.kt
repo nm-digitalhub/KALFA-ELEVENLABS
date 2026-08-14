@@ -14,11 +14,14 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import me.kalfa.agentconsole.di.DependencyContainer
+import me.kalfa.agentconsole.domain.error.AppFailure
 import me.kalfa.agentconsole.domain.model.AgentStatus
+import me.kalfa.agentconsole.domain.telephony.PresenceSyncState
 
 // Makes "I am on shift" a technical fact rather than a ViewModel-scoped claim that
 // dies with the Activity — see docs/android-presence-and-call-ux.md §1 for the full
@@ -32,15 +35,30 @@ class PresenceForegroundService : Service() {
     private var heartbeatJob: Job? = null
     private var observerJob: Job? = null
     private var shiftWatcherJob: Job? = null
-    private lateinit var stateStore: PresenceStateStore
+
+    // Shared, canonical DataStore handle (DependencyContainer.presenceStateStore) —
+    // NOT a locally-constructed instance. See DependencyContainer's kdoc: this keeps
+    // this service and PresenceActions reading/writing the exact same file rather
+    // than two separate wrapper instances that merely happen to agree.
+    private val stateStore: PresenceStateStore?
+        get() = DependencyContainer.presenceStateStore
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         DependencyContainer.attach(applicationContext)
-        stateStore = PresenceStateStore(applicationContext)
         PresenceNotificationBuilder.ensureChannel(applicationContext)
+        // Seed the in-process push-registration signal from the durable record
+        // BEFORE the first notification is built below — a process that was just
+        // restarted (kill, then START_STICKY) must show the truth immediately, not
+        // wait for a fresh registration attempt that may not happen for a while.
+        scope.launch {
+            val persisted = stateStore?.loadPushRegistrationFailure()
+            PushRegistrationState.seed(
+                persisted?.let { PushRegistrationFailureInfo(it.failure, it.detail) },
+            )
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -48,8 +66,15 @@ class PresenceForegroundService : Service() {
         // it synchronously first, with a best-effort notification, before any branch
         // below that needs a suspend read (persisted-state resume) or write (a
         // notification-action status change) gets a chance to run.
-        val bestEffort = DependencyContainer.agentPresence.currentStatus.value
-        startForegroundCompat(PresenceNotificationBuilder.build(this, bestEffort))
+        val presenceNow = DependencyContainer.agentPresence
+        startForegroundCompat(
+            PresenceNotificationBuilder.build(
+                this,
+                presenceNow.currentStatus.value,
+                presenceNow.syncState.value,
+                PushRegistrationState.lastFailure.value?.failure,
+            ),
+        )
 
         when {
             intent == null -> {
@@ -78,7 +103,7 @@ class PresenceForegroundService : Service() {
     }
 
     private suspend fun resumeFromPersistedStateOrStop() {
-        val persisted = stateStore.load()
+        val persisted = stateStore?.load()
         if (shouldResumeFromPersistedState(persisted)) {
             runCatching { PresenceActions.applyStatus(persisted!!.status, persisted.voxUsername) }
         } else {
@@ -91,12 +116,17 @@ class PresenceForegroundService : Service() {
 
         if (observerJob?.isActive != true) {
             observerJob = scope.launch {
-                presence.currentStatus.collect { status ->
-                    if (presence.shiftActive.value) {
-                        updateNotification(status)
-                        stateStore.save(status, true, currentVoxUsername())
+                combine(
+                    presence.currentStatus,
+                    presence.syncState,
+                    PushRegistrationState.lastFailure,
+                ) { status, sync, pushFailure -> Triple(status, sync, pushFailure) }
+                    .collect { (status, sync, pushFailure) ->
+                        if (presence.shiftActive.value) {
+                            updateNotification(status, sync, pushFailure?.failure)
+                            stateStore?.save(status, true, currentVoxUsername())
+                        }
                     }
-                }
             }
         }
 
@@ -122,9 +152,12 @@ class PresenceForegroundService : Service() {
         }
     }
 
-    private fun updateNotification(status: AgentStatus) {
+    private fun updateNotification(status: AgentStatus, sync: PresenceSyncState, pushRegistrationFailure: AppFailure?) {
         val mgr = ContextCompat.getSystemService(this, android.app.NotificationManager::class.java)
-        mgr?.notify(PresenceNotificationBuilder.NOTIFICATION_ID, PresenceNotificationBuilder.build(this, status))
+        mgr?.notify(
+            PresenceNotificationBuilder.NOTIFICATION_ID,
+            PresenceNotificationBuilder.build(this, status, sync, pushRegistrationFailure),
+        )
     }
 
     private suspend fun currentVoxUsername(): String? =
@@ -133,7 +166,7 @@ class PresenceForegroundService : Service() {
     private fun stopSelfCleanly() {
         heartbeatJob?.cancel()
         observerJob?.cancel()
-        scope.launch { stateStore.clear() }
+        scope.launch { stateStore?.clear() }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }

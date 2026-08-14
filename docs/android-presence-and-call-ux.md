@@ -482,3 +482,211 @@ the Telecom decision above.
    feature isn't verified until live-call audio is checked.
 4. Everything already listed as owner-side in `AGENTS.md` "Push wake-up" (the cold-start
    timing test) is unchanged and still outstanding — this change does not resolve it.
+
+## Update 2026-08-14 (later the same day): sync-state tracking and error surfacing
+
+Live platform evidence gathered after the work above landed, from Voximplant's own
+call history and session logs (`agent_1bbe74dc-...`):
+
+- **[measured]** `push_results: []` on every `Call.PushSent` event for this agent today
+  — the platform had zero devices registered to push to. `registerCurrentPushToken()`'s
+  failure was completely invisible: called as
+  `vcm.ensureLoggedIn(...).onSuccess { vcm.registerCurrentPushToken() }` with the
+  returned `Result` discarded, wrapping a `runCatching` that swallowed everything.
+- **[measured]** When the app IS connected, the ring genuinely reaches it — the SDK leg
+  reached `Ringing`, ran for ~14s (the scenario's own ring window), then the scenario
+  hung up with `603` because nothing answered. Direct confirmation that the
+  `onIncomingCall` wiring above (§3) is the right fix and the transport already works.
+- **[measured]** A separate incident, same day: an agent reinstalled the app (clearing
+  the Supabase session), tapped "זמין", and the app showed Ready. Three DB samples a
+  minute apart confirmed the write never reached the server — `AgentPresence.setStatus`
+  was `fun setStatus(status) { _currentStatus.value = status; scope.launch { ... catch
+  { printStackTrace() } } }`: it flipped the UI to Ready BEFORE attempting the network
+  call, and swallowed the resulting 401 (empty JWT, no session) with no trace anywhere
+  the agent could see.
+
+**Not addressed by this update, and out of this repo's boundary (owner is handling):**
+the scenario's ring window (~14–15s) is tighter than the platform's own
+`pushNotificationTimeout` (clamped to a default 20000ms) — a server/scenario-side
+mismatch, reported, not changed here.
+
+**Root cause for the missing push token has two candidates, and this update only fixes
+one of them:** (a) the swallowed-failure bug above — now fixed; (b) the specific APK
+installed on the device may have been built by a CI run that finished *before*
+`GOOGLE_SERVICES_JSON_BASE64` was set (10:01:15Z vs. 10:09:47Z the same day) and
+therefore has no working Firebase config regardless of app-side logic — which build is
+actually on the device could not be determined from here. (a) is fixed unconditionally
+below; (b), if it is the actual cause, needs a fresh install from a run after
+10:09:47Z, which is an owner/ops step, not a code change.
+
+### `PresenceSyncState`: requested vs. confirmed-by-server
+
+New sealed type (`domain/telephony/Telephony.kt`): `Synced` / `Pending` /
+`Failed(AppFailure)`. `AgentPresence.currentStatus`/`.shiftActive` still update
+**optimistically** (immediate UI responsiveness — e.g. the Dashboard's status
+buttons highlight instantly); `AgentPresence.syncState` is the truth about whether the
+last write actually reached and was accepted by the server. One shared `syncState`
+covers both `setStatus` and `setShiftActive` deliberately (not an oversight): they are
+always fired together for the case that matters most (declaring READY, via
+`PresenceActions`), and a UI showing one combined "is presence in a known-good state"
+signal is simpler and more honest than reconciling two that could disagree.
+
+`AgentPresence.setStatus`/`.setShiftActive` are now `suspend fun ... : AppResult<Unit>`
+— matching the existing convention already used by `CallEngine.sendAgentCommand`/
+`.endCall`/`.enqueueOutboundCall`, not a new parallel pattern. Both check for an empty
+JWT (`getJwt().isEmpty()`) **before** attempting the network call and return the new
+`AppFailure.NotSignedIn` directly, rather than sending an unauthenticated request and
+generically mapping its 401 to `Unauthorized` — see next section for why that
+distinction matters. On any failure, `syncState` becomes `Failed(failure)` immediately
+(not after some threshold of repeated failures) — the conservative, simpler choice: a
+UI showing degraded state on the FIRST failure is strictly more honest than waiting to
+see if it happens again.
+
+**The presence notification (§1) now renders `syncState`, not just `currentStatus`:**
+`Synced` → `"סטטוס: <status>"`; `Pending` → `"...(מעדכן מול השרת...)"`; `Failed` → the
+specific `AppFailure.toHebrewMessage(FailureContext.PRESENCE)` text, replacing the
+status line entirely. This is the fix for the reinstall incident specifically: the
+ONE surface a backgrounded agent sees can no longer show a bare "זמין" the server never
+confirmed.
+
+### Wired into the EXISTING error-surfacing infrastructure, not a new one
+
+`domain/error/AppFailure.kt`, `data/FailureMapping.kt`,
+`ui/message/FailureMessages.kt`/`toHebrewMessage(FailureContext)`, and
+`ui/message/MessageComponents.kt`/`AppMessageBanner` already existed and are
+already used by the rest of the app (`ConsoleViewModel`'s repository-health messages).
+Presence/push-registration simply weren't wired into them. This change:
+
+- Adds `AppFailure.NotSignedIn`, distinct from `AppFailure.Unauthorized` — a session
+  that never existed (fresh install, signed out) is a different, differently-actionable
+  fact from one that expired. Conflating them told an agent who had never signed in
+  that their session had "expired," which was measured as simply false.
+- Adds `FailureContext.PRESENCE` and `FailureContext.PUSH_REGISTRATION`, with Hebrew
+  text that names the **consequence** ("שיחות לא יגיעו" / "המכשיר לא נרשם לקבלת
+  שיחות") rather than the mechanism ("הפעולה נכשלה") — the owner's specific,
+  verbatim objection to generic failure text.
+- `telephony/presence/PresenceActions.applyStatus` — already the single place the
+  READY-path logic lives (shared by `ConsoleViewModel` and the notification's
+  `BroadcastReceiver`, neither of which can hand results back to a caller UI directly)
+  — now publishes every step's outcome via `AppMessageCenter.publish`/`.resolve`
+  directly. This is a plain global object (`ui/message/MessageCenter.kt`), not tied to
+  any ViewModel, so it works from a `BroadcastReceiver` with no Activity alive exactly
+  as well as from `ConsoleViewModel`. Messages are `dismissible = false` — a persistent
+  condition ("you may not be reachable") gets a persistent surface
+  (`AppMessageBanner`, already rendered by `MainActivity` via
+  `ConsoleUiState.globalMessages`), not a snackbar the agent can swipe away while the
+  underlying problem remains; each clears itself via `resolve()` the moment a write
+  actually succeeds.
+- Push-token registration failures (`VoxClientManager.registerCurrentPushToken`,
+  `Result<Unit>`) are mapped through the same `Throwable.toAppFailure()`
+  (`data/FailureMapping.kt`) already used everywhere else, and reported through
+  `FailureContext.PUSH_REGISTRATION` — this is the app-side fix for Finding 1's
+  candidate cause (a).
+
+**Superseded by the next section, below — kept here rather than silently deleted, so
+the reversal is visible:** this paragraph originally said the push-registration
+failure should surface via `AppMessageBanner` only, not the persistent notification,
+reasoning that it only fires on the interactive READY tap while the agent has the app
+open. Reversed within hours: a process death between a failed registration and the
+agent's next app-open loses an `AppMessageBanner`-only record entirely (it's
+in-memory only), and the persistent notification must not read as a plain working
+"זמין" while push registration is broken — see the next section.
+
+### Files touched by this update
+
+`domain/error/AppFailure.kt` (`NotSignedIn`), `domain/telephony/Telephony.kt`
+(`PresenceSyncState`, suspend/`AppResult` signatures), `ui/message/FailureMessages.kt`
+(`FailureContext.PRESENCE`/`.PUSH_REGISTRATION` + their text), `data/SupabaseImplementations.kt`
+(`SupabaseCallEngineImpl.setStatus`/`.setShiftActive` rewritten), `data/mock/MockImplementations.kt`
+(signature match), `telephony/presence/PresenceActions.kt` (result surfacing),
+`telephony/presence/PresenceNotificationBuilder.kt` (renders `syncState`),
+`telephony/presence/PresenceForegroundService.kt` (observes `syncState` too),
+`ui/viewmodel/ConsoleViewModel.kt` (`logout()` moved into its coroutine — `setShiftActive`
+is suspend now). New tests: `ui/message/FailureMessagesTest.kt` gained cases asserting
+`NotSignedIn` reads differently from an expired session and that PRESENCE/
+PUSH_REGISTRATION text diverges from the generic fallback.
+
+## Update 2026-08-14 (even later): durable push-registration failure, and the platform said it outright
+
+Two more live calls after the section above, from the SAME agent
+(`agent_1bbe74dc-5721-48e9-9092-fd9e3c6e6b21`) — narrowing from inference to the
+platform's own words:
+
+- **[measured, session 7665916994]** `Call.Failed reason = "No push notifications has
+  been sent" code = 480`, alongside `Call.PushSent result = {"push_results": []}`.
+  Voximplant is stating directly that it holds **no registered push token** for this
+  user — four ring attempts in ten minutes, all identical.
+- **[measured, by elimination]** Every other candidate cause was ruled out live:
+  `ensureLoggedIn` works (a separate session reached `Call.Ringing` over a connected,
+  logged-in client); Supabase writes work (`agent_status` was 39s fresh);
+  `console_me` genuinely exposes `vox_username` (checked against the live view); the
+  installed APK genuinely carries a valid `google-services.json` (`google_app_id`
+  extracted directly from the APK) — ruling out root cause (b) from the previous
+  section for the specific build tested. That leaves
+  `VoxClientManager.registerCurrentPushToken()` as the step that never completes —
+  confirmed, not merely suspected.
+- **[measured]** The installed APK is from CI run `31791889800` (`ccb7bc5` + the icon
+  commits) — **not** `354d531` or anything from this doc's own work, which had not
+  reached a device build at the time these three sessions were captured. The next
+  build the owner installs is the first chance to see this app-side fix run for real.
+
+**Not this repo's to change, restated because it's easy to mis-size around:** the
+scenario's ~15s ring window vs. the platform's ~20s `pushNotificationTimeout` is
+server-side and is being widened to accommodate a pushed device — do not tune
+anything here to fit 15s; assume 30s once that lands, and it remains unverified
+end-to-end either way.
+
+### What changed here, on top of `PresenceSyncState`
+
+**`VoxClientManager.registerCurrentPushToken()` now tags WHICH of two failure domains
+occurred**, instead of one `runCatching` around both steps: a local Google Play
+Services/FCM problem fetching the token (`"fcm_token: ..."`) vs. Voximplant's own
+`registerForPushNotifications` SDK call failing (`"registerForPushNotifications:
+..."`, already tagged at its source). Both throw the existing `VoxAuthException.Sdk`
+type — no new exception type — so every other caller is unaffected; only the message
+distinguishes the two, because the two point an investigation in different
+directions and conflating them was exactly what made the last two hours of remote
+diagnosis (reading Voximplant's platform logs instead of this app's own state) take
+as long as it did.
+
+**The outcome is now durable, not just in-memory.** `AppMessageCenter` is a plain
+`MutableStateFlow` — it survives backgrounding but not process death, and
+`PresenceForegroundService` runs with no Activity/ViewModel alive, so a failure that
+happens there and is never seen before the process dies was being lost entirely.
+`PresenceStateStore` gained `recordPushRegistrationOutcome`/
+`loadPushRegistrationFailure` (failure category + the WHICH-step detail string +
+timestamp; `null` failure = last known attempt succeeded). A new plain global object,
+`PushRegistrationState` (mirrors `AppMessageCenter`/`AppVisibility`'s pattern), holds
+the in-process reactive mirror so the notification doesn't need to poll DataStore on
+every tick; `PresenceForegroundService.onCreate` seeds it from the persisted record
+**before** the first notification is built, so a freshly restarted process shows the
+truth immediately rather than waiting for a new registration attempt that might not
+happen for a while.
+
+**The persistent presence notification now ALSO reflects push-registration failure —
+reversing the previous section's "deliberately not done".** `syncState` still takes
+priority when both are wrong (not being confirmed present at all is the more urgent
+fact), but a `Synced` status with a failed push registration no longer reads as a
+plain working "זמין": `PresenceNotificationBuilder.contentTextFor` (pulled out as a
+pure, directly-testable function) now takes both signals. `PresenceActions` persists
+and updates `PushRegistrationState` **before** touching `AppMessageCenter`, so the
+durable record is written first regardless of whether anything is currently
+collecting the in-memory one.
+
+### Files touched by this update
+
+`telephony/vox/VoxClientManager.kt` (`registerCurrentPushToken` — two tagged steps),
+`telephony/presence/PresenceStateStore.kt` (`PersistedPushRegistrationFailure`,
+`recordPushRegistrationOutcome`/`loadPushRegistrationFailure`,
+`appFailureToPersistName`/`appFailureFromPersistName`), new
+`telephony/presence/PushRegistrationState.kt`, `telephony/presence/PresenceActions.kt`
+(persists before publishing), `telephony/presence/PresenceNotificationBuilder.kt`
+(`contentTextFor` extracted, third parameter), `telephony/presence/PresenceForegroundService.kt`
+(shared `DependencyContainer.presenceStateStore` instead of its own instance, seeds
+`PushRegistrationState` in `onCreate`, three-way `combine`), `di/DependencyContainer.kt`
+(`presenceStateStore` property, same non-sticky-null pattern as `voxTokenStore`). New
+tests: `telephony/presence/PresenceNotificationBuilderTest.kt` (the priority rules
+between `syncState` and `pushRegistrationFailure`, pure function, no Robolectric),
+`telephony/presence/PresenceStateStoreTest.kt` gained an `AppFailure` persist-name
+round-trip case plus an unrecognized-name-falls-back-to-Unknown case.
+`./gradlew testDebugUnitTest assembleDebug` — BUILD SUCCESSFUL, 55/55 tests pass.

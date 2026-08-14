@@ -623,9 +623,10 @@ class MockCallEngineImpl(
         return session
     }
 
-    override fun setStatus(status: AgentStatus) {
+    override suspend fun setStatus(status: AgentStatus): AppResult<Unit> {
         if (_currentStatus.value != AgentStatus.IN_CALL) {
             _currentStatus.value = status
         }
+        return AppResult.Success(Unit)
     }
 }

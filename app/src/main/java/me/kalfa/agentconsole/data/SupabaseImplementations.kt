@@ -7,6 +7,7 @@ import me.kalfa.agentconsole.domain.repository.RsvpRepository
 import me.kalfa.agentconsole.domain.telephony.AgentPresence
 import me.kalfa.agentconsole.domain.telephony.CallEngine
 import me.kalfa.agentconsole.domain.telephony.CallSession
+import me.kalfa.agentconsole.domain.telephony.PresenceSyncState
 import me.kalfa.agentconsole.domain.error.AppResult
 import me.kalfa.agentconsole.domain.error.RepositoryHealth
 import io.github.jan.supabase.SupabaseClient
@@ -636,6 +637,16 @@ class SupabaseCallEngineImpl(
     private val _shiftActive = MutableStateFlow(false)
     override val shiftActive: StateFlow<Boolean> = _shiftActive.asStateFlow()
 
+    // See PresenceSyncState's kdoc (domain/telephony/Telephony.kt) for the measured
+    // incident this exists to prevent. Shared by setStatus AND setShiftActive
+    // deliberately (v1 scope, not an oversight): the two calls are always fired
+    // together for the case that matters most (declaring READY — PresenceActions),
+    // and tracking "is presence in a known-good, server-confirmed state" as one
+    // signal is simpler and more honest for a UI to show than reconciling two
+    // independent ones that could disagree.
+    private val _syncState = MutableStateFlow<PresenceSyncState>(PresenceSyncState.Synced)
+    override val syncState: StateFlow<PresenceSyncState> = _syncState.asStateFlow()
+
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     init {
@@ -738,49 +749,81 @@ class SupabaseCallEngineImpl(
         return client.auth.currentAccessTokenOrNull() ?: ""
     }
 
-    override fun setStatus(status: AgentStatus) {
+    // Was fire-and-forget (Unit, bare catch { printStackTrace() }) — converted to
+    // suspend/AppResult after a measured live incident: an agent reinstalled the app
+    // (clearing the Supabase session), tapped "זמין", and the app showed Ready while
+    // an empty-JWT POST 401'd and was silently discarded — nothing on screen
+    // contradicted the false claim, and the server never saw the write. currentStatus
+    // still updates optimistically FIRST (immediate UI responsiveness, e.g. the
+    // Dashboard's status buttons), but syncState is what a caller — in particular the
+    // persistent presence notification — must consult before claiming this is real.
+    override suspend fun setStatus(status: AgentStatus): AppResult<Unit> {
         _currentStatus.value = status
-        scope.launch(Dispatchers.IO) {
+        _syncState.value = PresenceSyncState.Pending
+        return withContext(Dispatchers.IO) {
             try {
                 val jwt = getJwt()
+                if (jwt.isEmpty()) {
+                    return@withContext failStatus(me.kalfa.agentconsole.domain.error.AppFailure.NotSignedIn)
+                }
                 val statusStr = when (status) {
                     AgentStatus.READY -> "ready"
                     AgentStatus.DND -> "dnd"
                     AgentStatus.IN_CALL -> "in_call"
                     AgentStatus.NOT_READY -> "not_ready"
                 }
-                httpClient.post("https://beta.kalfa.me/api/agents/status") {
+                val resp = httpClient.post("https://beta.kalfa.me/api/agents/status") {
                     header(HttpHeaders.Authorization, "Bearer $jwt")
                     contentType(ContentType.Application.Json)
                     setBody("{\"status\":\"$statusStr\"}")
                 }
-                
+                if (resp.status.value !in 200..299) {
+                    return@withContext failStatus(failureForStatus(resp.status.value))
+                }
+
                 val agentId = client.auth.currentSessionOrNull()?.user?.id
                 if (agentId != null) {
                     client.postgrest["agent_status"].upsert(DbAgentStatus(agent_id = agentId, status = statusStr))
                 }
+                _syncState.value = PresenceSyncState.Synced
+                AppResult.Success(Unit)
             } catch (e: Exception) {
                 e.printStackTrace()
+                failStatus(e.toAppFailure())
             }
         }
     }
 
+    private fun failStatus(failure: me.kalfa.agentconsole.domain.error.AppFailure): AppResult<Unit> {
+        _syncState.value = PresenceSyncState.Failed(failure)
+        return AppResult.Failure(failure)
+    }
+
     // Standing "on shift" intent, POSTed to /api/agents/shift — separate write from
-    // setStatus/agent_status above (see AgentPresence.setShiftActive kdoc). Fire and
-    // forget like setStatus: a lost write here is not user-visible, and the caller
-    // (ConsoleViewModel) doesn't block UI on it.
-    override fun setShiftActive(active: Boolean) {
+    // setStatus/agent_status above (see AgentPresence.setShiftActive kdoc). Same
+    // suspend/AppResult conversion and same reason as setStatus above.
+    override suspend fun setShiftActive(active: Boolean): AppResult<Unit> {
         _shiftActive.value = active
-        scope.launch(Dispatchers.IO) {
+        _syncState.value = PresenceSyncState.Pending
+        return withContext(Dispatchers.IO) {
             try {
                 val jwt = getJwt()
-                httpClient.post("https://beta.kalfa.me/api/agents/shift") {
+                if (jwt.isEmpty()) {
+                    return@withContext failStatus(me.kalfa.agentconsole.domain.error.AppFailure.NotSignedIn)
+                }
+                val resp = httpClient.post("https://beta.kalfa.me/api/agents/shift") {
                     header(HttpHeaders.Authorization, "Bearer $jwt")
                     contentType(ContentType.Application.Json)
                     setBody("{\"active\":$active}")
                 }
+                if (resp.status.value !in 200..299) {
+                    return@withContext failStatus(failureForStatus(resp.status.value))
+                }
+                _syncState.value = PresenceSyncState.Synced
+                AppResult.Success(Unit)
             } catch (e: Exception) {
                 e.printStackTrace()
+                failStatus(e.toAppFailure())
             }
         }
     }
