@@ -966,10 +966,37 @@ class SupabaseCallEngineImpl(
                     return@withContext failStatus(failureForStatus(resp.status.value))
                 }
 
-                val agentId = client.auth.currentSessionOrNull()?.user?.id
-                if (agentId != null) {
-                    client.postgrest["agent_status"].upsert(DbAgentStatus(agent_id = agentId, status = statusStr))
-                }
+                // A direct `agent_status` upsert used to run HERE, after the 2xx. It is
+                // gone rather than fixed, because it could only ever subtract.
+                //
+                // It was pure duplication: POST /api/agents/status already upserts the
+                // caller's own agent_status row, RLS-scoped, as the caller — beta
+                // src/app/api/agents/status/route.ts, `ctx.supabase.from('agent_status')
+                // .upsert({ agent_id: ctx.userId, status, updated_at: new Date()
+                // .toISOString() }, { onConflict: 'agent_id' })` — and answers 500 if
+                // that write fails. So by the time control reaches this line the row is
+                // already written, and a 2xx is the proof.
+                //
+                // What it added was a way to lie. It sat inside the same try as
+                // everything above it, so ANY throw from postgrest — and a
+                // PostgrestRestException is a plain Exception, which
+                // Throwable.toAppFailure maps to AppFailure.Unknown — turned a presence
+                // update the server had already accepted into
+                // failStatus(Unknown), i.e. the notification reading
+                // "הסטטוס לא התעדכן בשרת. ייתכן ששיחות לא יגיעו." about a status that
+                // did reach the server. That banner is dismissible = false and clears
+                // only on a later success, so it persists.
+                //
+                // It was also a latent freshness bug. `agent_status.updated_at` is
+                // `timestamptz NOT NULL DEFAULT now()` with NO trigger (checked against
+                // the live schema), and supabase-kt serializes with
+                // encodeDefaults = false, so this upsert never sent updated_at — it only
+                // worked because the route had already set it a moment earlier. Reorder
+                // the two writes and the server's 90s freshness gate stops advancing
+                // with nothing to show for it.
+                //
+                // NOT claimed: that this is what fired on the owner's device on
+                // 2026-08-14. It is a failure mode removed on its own merits.
                 _syncState.value = PresenceSyncState.Synced
                 AppResult.Success(Unit)
             } catch (e: Exception) {
