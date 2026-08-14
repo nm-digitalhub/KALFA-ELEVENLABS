@@ -1,5 +1,6 @@
 package me.kalfa.agentconsole.telephony.vox
 
+import android.content.Context
 import android.util.Log
 import com.google.android.gms.tasks.Task
 import com.google.firebase.messaging.FirebaseMessaging
@@ -21,6 +22,7 @@ import com.voximplant.android.sdk.core.PushConfig
 import com.voximplant.android.sdk.core.PushTokenError
 import com.voximplant.android.sdk.core.RefreshTokenCallback
 import com.voximplant.android.sdk.core.RegisterPushTokenCallback
+import com.voximplant.android.sdk.core.VICore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -60,6 +62,13 @@ import kotlin.coroutines.resumeWithException
 class VoxClientManager(
     private val authClient: VoxSdkAuthClient,
     private val tokenStore: VoxTokenStore,
+    // Required, not nullable, and injected rather than read from DependencyContainer at
+    // call time: VICore.initialize needs a Context, and a null one here would make the
+    // fix below silently do nothing -- the exact shape of the bug it repairs. The only
+    // construction site already proves non-null (voxTokenStore is itself built from the
+    // same applicationContext and is null-checked there), so the impossible case is
+    // impossible by construction rather than by a check that could be forgotten.
+    private val appContext: Context,
 ) {
 
     private val _loginState = MutableStateFlow(VoxLoginState.LOGGED_OUT)
@@ -84,6 +93,43 @@ class VoxClientManager(
     // backend has authorised the leg).
     private fun ensureInitialized() {
         if (initialized) return
+        // THE ROOT CAUSE OF EVERY FAILED LOGIN ON THIS DEVICE, and it was one missing
+        // line. The Voximplant SDK core has to be handed an application Context before
+        // anything else in the SDK is touched; this app never did it, anywhere
+        // (`grep -rn VICore app/src` returned nothing).
+        //
+        // Traced through the shipped AARs with javap rather than inferred:
+        //   VICalls.initialize()            first real action is
+        //   CallsShared.createPeerConnectionFactory()   which reads
+        //   VICore.getApplicationContext()  whose bytecode is
+        //       getstatic applicationContext ; ifnull -> throwUninitializedPropertyAccessException
+        //
+        // So `ensureLoggedIn`'s FIRST statement threw UninitializedPropertyAccessException
+        // on every attempt, forever: VICalls.initialize sets its own `isInitialized` flag
+        // only at the END of its body, and this class sets `initialized` only after all
+        // three calls below, so nothing latched and every retry failed identically. The
+        // exception carries an untagged message, which is why both surfaces rendered a
+        // bare banner.
+        //
+        // It accounts for every measurement without remainder: no Android client in 2724
+        // Voximplant sessions, push_results: [] on all 76 ring attempts, identical
+        // behaviour foreground and background (which is what ruled out the session-race
+        // theory), and a bundle-id fix that changed nothing because registration was
+        // never reached.
+        //
+        // Neither AAR ships a <provider>, so there is no androidx.startup initializer to
+        // do this for us -- unlike supabase-kt, which does. The app must make the call.
+        //
+        // Guarded by the SDK's own predicate rather than a local flag. Verified from
+        // bytecode that this is belt-and-braces rather than required: initialize() is a
+        // pure setter -- `applicationContext = context.getApplicationContext() ?: context`
+        // and nothing else -- so calling it twice is harmless. isInitialized is literally
+        // `applicationContext != null`, the same condition getApplicationContext throws
+        // on, so it cannot disagree with reality. (It reads as a PROPERTY from Kotlin,
+        // not a function: the AAR carries `isInitialized$annotations()`, so javap's
+        // `boolean isInitialized()` is the JVM accessor behind a Kotlin val. The
+        // compiler catches this; the bytecode signature alone would mislead.)
+        if (!VICore.isInitialized) VICore.initialize(appContext)
         VICalls.initialize()
         VICalls.setIncomingCallListener(object : IncomingCallListener {
             override fun onIncomingCall(

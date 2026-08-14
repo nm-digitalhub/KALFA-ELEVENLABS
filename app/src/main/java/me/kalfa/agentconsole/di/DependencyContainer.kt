@@ -231,10 +231,20 @@ object DependencyContainer {
             _voxClientManager ?: run {
                 val client = supabaseClient
                 val store = voxTokenStore
-                if (client != null && store != null) {
+                // ctx is bound and null-checked HERE rather than read inside
+                // VoxClientManager, so a missing Context cannot make VICore.initialize
+                // silently do nothing — which would be the same bug it repairs, wearing
+                // a different face. In practice it is never null on this path (store is
+                // built from the same applicationContext), but "in practice" is what the
+                // whole night has been about.
+                val ctx = applicationContext
+                if (client != null && store != null && ctx != null) {
                     val http = HttpClient(OkHttp)
                     val authClient = VoxSdkAuthClient(http, getJwt = { client.auth.currentAccessTokenOrNull() })
-                    val manager = VoxClientManager(authClient, store)
+                    // ctx is the same applicationContext that built `store` above, so
+                    // it is non-null on every path that reaches here. VoxClientManager
+                    // needs it to call VICore.initialize before touching the SDK.
+                    val manager = VoxClientManager(authClient, store, ctx)
                     // THE missing link (AGENTS.md "Push wake-up" / "Known state" #1):
                     // wire onIncomingCall the moment a real VoxClientManager exists, so
                     // a delivered call always has somewhere to go — see
