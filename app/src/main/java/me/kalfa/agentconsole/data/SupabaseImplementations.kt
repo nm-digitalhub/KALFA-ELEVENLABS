@@ -783,9 +783,15 @@ class SupabaseCallEngineImpl(
     private val AUTH_SETTLE_TIMEOUT_MS = 3_000L
 
     private suspend fun awaitAuthToken(): AuthToken {
-        val settled = withTimeoutOrNull(AUTH_SETTLE_TIMEOUT_MS) {
-            client.auth.sessionStatus.first { it !is SessionStatus.Initializing }
-        } ?: client.auth.sessionStatus.value
+        // awaitInitialization() is the library's OWN wait, and preferable to the
+        // hand-rolled `first { it !is Initializing }` this replaces. Per supabase-kt's
+        // AuthImpl, it returns once the status has settled — including when
+        // auto-loading an expired session fails on a network error and the status
+        // becomes RefreshFailure. A filter on Initializing alone gets that case right
+        // by accident; using the library's own signal means it stays right if the
+        // status set ever grows.
+        withTimeoutOrNull(AUTH_SETTLE_TIMEOUT_MS) { client.auth.awaitInitialization() }
+        val settled = client.auth.sessionStatus.value
 
         return when (settled) {
             is SessionStatus.Authenticated -> {
