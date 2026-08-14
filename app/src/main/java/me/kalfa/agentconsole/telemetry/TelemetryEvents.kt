@@ -31,6 +31,35 @@ package me.kalfa.agentconsole.telemetry
  * Nothing here may carry PII. Field values documented alongside each constant
  * are non-identifying by construction, and [scrubTelemetryValue] enforces it
  * again at emit time.
+ *
+ * ## READ THIS BEFORE CONCLUDING ANYTHING FROM AN EMPTY TRACE
+ *
+ * Silence has **three** readings and they have nothing in common. Treating them
+ * as one is the single most likely way to misuse this channel, because the
+ * obvious reading — "the app dropped the call" — is the least likely of the
+ * three today.
+ *
+ * 1. **Nothing was routed.** An agent whose `agent_status` is `not_ready` is
+ *    excluded from `ring_order` server-side, so no `callUser` is issued and no
+ *    push is attempted. **The trace disambiguates this one by itself:**
+ *    [PRESENCE_STATUS_SET] carries `s=`, so a log reading
+ *    `presence.status_set s=not_ready` followed by silence IS this case, stated
+ *    outright. Observed 2026-08-15: a call at 22:12 went straight to
+ *    `no_agent` against a healthy 7-second heartbeat.
+ * 2. **No call arrived.** The inbound circuit breaker refuses the caller
+ *    pre-answer (`gate_refused_code_200`), kept tripped by a flood of fax
+ *    retries — machines redialling a number that used to be a fax line, on a
+ *    ~914s interval, which never give up and therefore defeat every limit built
+ *    against a caller who does. Expires when tone-detection lands.
+ * 3. **The app dropped it.** The case this channel was built for — and the only
+ *    one where these events are the evidence.
+ *
+ * Readings 1 and 3 are separable from the device. **Readings 2 and 3 are not**:
+ * both look like silence here, and only the platform side can say whether a
+ * `callUser` was ever attempted. Pair an empty trace with Voximplant's own call
+ * history before concluding anything — see [VOX_PUSH_REGISTER_OK] for the same
+ * problem in its sharpest form, where the platform gives up 287ms after
+ * `CallUser` without ever contacting the device.
  */
 object TelemetryEvents {
 
