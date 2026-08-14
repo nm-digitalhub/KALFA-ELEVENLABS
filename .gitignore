@@ -41,3 +41,13 @@ google-services.json
 # under any name.
 *.jks
 *.keystore
+
+# Voximplant session logs. `npm run voximplant -- log --session <id>` is run
+# from whichever repo happens to be the working directory, and it drops
+# `session-<id>.log` at that root. Two of them landed here untracked and were
+# one `git add -A` away from being committed.
+#
+# They carry guest PII: the called number in full, and the scenario's own log
+# lines for what was said on the call. beta's .gitignore has covered this since
+# 15.8; this repo's did not, which is the whole reason they showed up here.
+/session-*.log
