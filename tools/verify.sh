@@ -89,16 +89,16 @@ pin() { # <group/artifact> <preferred-version>
 }
 co_v=$(sed -n 's/^kotlinxCoroutinesCore *= *"\(.*\)"/\1/p' "$REPO/gradle/libs.versions.toml")
 sj_v=$(sed -n 's/^kotlinxSerializationJson *= *"\(.*\)"/\1/p' "$REPO/gradle/libs.versions.toml")
+# Resolved ONCE and reused — calling pin() twice for the same artifact printed its
+# fallback WARN twice a run, which reads like two different problems.
+CO_JAR=$(pin "org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm" "$co_v")
+CO_ACTUAL=$(basename "$(dirname "$(dirname "$CO_JAR")")" 2>/dev/null)
 HEAD_CP=""
-for spec in "org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm|$co_v" \
-            "org.jetbrains.kotlinx/kotlinx-serialization-core-jvm|$sj_v" \
+[ -n "$CO_JAR" ] && HEAD_CP="$CO_JAR:"
+for spec in "org.jetbrains.kotlinx/kotlinx-serialization-core-jvm|$sj_v" \
             "org.jetbrains.kotlinx/kotlinx-serialization-json-jvm|$sj_v"; do
   j=$(pin "${spec%|*}" "${spec#*|}"); [ -n "$j" ] && HEAD_CP="$HEAD_CP$j:"
 done
-# The test runtime must match the coroutines-core actually pinned above, or
-# kotlinx-coroutines-test fails inside TestScopeKt.withDelaySkipping.
-CO_JAR=$(pin "org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm" "$co_v")
-CO_ACTUAL=$(basename "$(dirname "$(dirname "$CO_JAR")")" 2>/dev/null)
 
 # ── TRAP 2 · core-telecom IS NOT IN THE GRADLE CACHE AT ALL ───────────────────
 # androidx.core:core-telecom ships only as an AAR, and unlike every other
@@ -184,5 +184,19 @@ while read -r c; do
 done < <(cd "$OUT/test" && find . -name '*Test.class' ! -name '*$*' \
          | sed 's|^\./||;s|\.class$||;s|/|.|g' | sort)
 printf -- "-cp\n%s\n" "$OUT/main:$OUT/test:$TL:$CP" > "$WORK/run.args"
+# Captured rather than piped straight to `tail`, so a FAILING run can show every
+# failure. Truncating to the last few lines hid all but the final stack — two
+# failures surfaced as one, and the other had to be re-derived by reading source,
+# which is precisely the "a check that looks like it is checking" this script
+# exists to stop.
 # shellcheck disable=SC2086
-"$JAVA" "@$WORK/run.args" org.junit.runner.JUnitCore $RUNNABLE 2>&1 | tail -6
+"$JAVA" "@$WORK/run.args" org.junit.runner.JUnitCore $RUNNABLE > "$WORK/junit.out" 2>&1
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  tail -4 "$WORK/junit.out"
+else
+  cat "$WORK/junit.out"
+  echo
+  echo "FAILED — full output above, also at $WORK/junit.out"
+fi
+exit "$rc"
