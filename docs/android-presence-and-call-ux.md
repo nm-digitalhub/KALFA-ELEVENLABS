@@ -831,6 +831,77 @@ either). This has not been established either way — which surface produced the
 the owner reported is unknown from this environment and needs to be asked, not
 assumed.
 
+**It is worse than "coarse" on the notification — it can be absent entirely.**
+`contentTextFor`'s full `when` chain, top to bottom
+(`PresenceNotificationBuilder.kt:80-94`): `syncState is Failed` → `syncState ==
+Pending` → `ringCapability != null && !canAlert` (`NOTIFICATIONS_BLOCKED_TEXT`) →
+`pushRegistrationFailure != null` → `!canRingOnLockedScreen`
+(`CANNOT_RING_LOCKED_TEXT`) → the plain status line. Kotlin `when` branches are
+evaluated top to bottom and the first match wins, so **three different conditions
+each fully mask push-registration on the notification, not merely omit its detail**:
+a presence-sync failure or a still-pending sync (either one), or the device's
+notifications being blocked outright. Only when none of those three apply does the
+notification even reach the `pushRegistrationFailure != null` branch. (This ordering
+was already stated in prose in the "Update 2026-08-14 (even later)" section above,
+under "Priority when more than one signal is wrong" — this note makes explicit what
+that priority chain implies for reading the notification as *evidence*, which the
+retracted section did not do.) A device with a currently-failing presence sync, or
+blocked notifications, could have a perfectly successful push registration and the
+notification would never say so — and the reverse: a device that never registered
+for push could show a notification that says nothing about it at all, if one of the
+three higher-priority conditions is also true. The notification is not a reliable
+push-status readout on its own; only the in-app banner or the persisted `detail`
+string (below) is.
+
+**Whether `ensureLoggedIn` is even the right branch to chase — a hypothesis on the
+owner's own words, not code, and the code does not contradict it.** Alongside the
+push-registration screenshot, the owner reportedly said *"אין לי בכלל אפשרות או בקשה
+לאפשר את ההרשאות האלו"* ("I don't even have an option or request to allow these
+permissions"). That sentence does not describe push-registration text at all — no
+`AppFailure` variant under `FailureContext.PUSH_REGISTRATION` says anything about a
+missing permission *request*. It matches `RingCapability`'s locked-screen /
+full-screen-intent gap far better: `USE_FULL_SCREEN_INTENT` on Android 14+ genuinely
+has no runtime request dialog (Settings-only, `RingCapability.kt`'s own kdoc), so "no
+option or request to allow it" is a precise description of that specific permission's
+behavior, not a vague complaint. **Before `b134ac4`** (this same day), neither the
+in-app ring-capability banner nor the notification offered a button for this at all —
+purely descriptive text, exactly matching "I don't have a way to allow it" as a
+complaint about the *app*, not the OS. `b134ac4` added the fix-it buttons on both
+surfaces (`PresenceActions.reportRingCapability`'s `primaryAction`,
+`PresenceNotificationBuilder.build`'s `addAction` calls) — both already present in
+the code as of this doc, i.e. this complaint is consistent with a device on a build
+that predates `b134ac4`, same as everything else this thread keeps finding on that
+device. If this reading is right, that specific quote is evidence about the
+ring-capability thread (already fixed, pending reinstall) and **not** evidence about
+why push registration itself has been failing — it should not be used to infer
+anything about `ensureLoggedIn` or `registerCurrentPushToken`. Unconfirmed: still
+requires knowing which screenshot/moment produced which quote, which is not
+recoverable from this environment.
+
+**The `ensureLoggedIn` message trace, done exhaustively against the source (not
+bytecode — this is this app's own unobfuscated Kotlin, fully enumerable) rather than
+asserted:** every throw site reachable from `VoxClientManager.ensureLoggedIn` is one
+of: `VoxAuthException.NoSession` / `.NoIdentity` / `.NotAgent` / `.Http(code)`
+(`VoxSdkAuthClient.fetchHash`, `VoxTelephony.kt`), or `VoxAuthException.Sdk(...)` from
+exactly five call sites (`VoxClientManager.kt`): `"connect: $error"`,
+`"requestOneTimeKey: $error"`, `"loginWithOneTimeKey: $error"`,
+`"loginWithAccessToken: $error"`, `"refreshToken: $error"`. None of these nine
+messages start with `fcm_token:`, `vox_register:`, or `registerForPushNotifications:`
+— confirmed by reading every throw in the call graph, not by pattern-matching a
+sample. One path this list does not cover: `VoxSdkAuthClient.fetchHash`'s own
+`httpClient.post(...)` call (reaching `beta.kalfa.me`) can throw a raw,
+un-wrapped `IOException` (DNS failure, timeout, connection refused) if the network
+call itself never completes — that propagates as `AppFailure.NetworkUnavailable`
+(`data/FailureMapping.kt:6-10` maps `IOException` there specifically), which carries
+its OWN distinct trailing sentence ("בדוק את החיבור ונסה שוב") and is therefore
+distinguishable from the bare `AppFailure.Unknown` text discussed above — it does not
+weaken the trace, it is simply the one case already excluded by the "no trailing
+sentence" detail. Net: **if** the owner's bare, unsuffixed text came from the in-app
+banner specifically, `ensureLoggedIn` failing via one of the nine messages above is
+the only explanation left standing; `registerCurrentPushToken` failing and a raw
+network failure are both ruled out by the missing suffixes. This conclusion is fully
+conditional on the surface question above, which remains open.
+
 **The ground truth that settles it without needing the UI at all:**
 `PresenceStateStore.recordPushRegistrationOutcome` persists the tagged `detail` string
 durably (`telephony/presence/PresenceStateStore.kt:104-116`, DataStore Preferences,
