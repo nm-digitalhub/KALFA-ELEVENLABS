@@ -1,5 +1,6 @@
 package me.kalfa.agentconsole.telephony.vox
 
+import android.util.Log
 import com.google.android.gms.tasks.Task
 import com.google.firebase.messaging.FirebaseMessaging
 import com.voximplant.android.sdk.calls.Call
@@ -20,6 +21,7 @@ import com.voximplant.android.sdk.core.PushConfig
 import com.voximplant.android.sdk.core.PushTokenError
 import com.voximplant.android.sdk.core.RefreshTokenCallback
 import com.voximplant.android.sdk.core.RegisterPushTokenCallback
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -170,7 +172,39 @@ class VoxClientManager(
         val oneTimeKey = requestOneTimeKeySuspend(fullUsername)
         val hash = authClient.fetchHash(oneTimeKey) // server-computed; may throw VoxAuthException
         val authParams = loginWithOneTimeKeySuspend(fullUsername, hash)
-        if (authParams != null) tokenStore.save(voxUsername, authParams)
+        // THE SDK IS LOGGED IN FROM HERE. Everything below is caching, and a caching
+        // failure must not be reported as a failed login.
+        //
+        // This line used to be a bare `tokenStore.save(...)` inside ensureLoggedIn's
+        // runCatching, so a DataStore write failure — a full disk, an IOException — made
+        // ensureLoggedIn return failure AFTER loginWithOneTimeKey had already succeeded.
+        // PresenceActions then skipped registerCurrentPushToken and published
+        // "המכשיר לא נרשם לקבלת שיחות" on a device that was genuinely logged in. The
+        // login was fine; only the cache was not.
+        //
+        // What is actually lost is the NEXT login's silent path: with no stored tokens,
+        // planSilentLogin returns FallBackToInteractive and the following login pays the
+        // one-time-key round trip again. That is a degradation, not a failure, and it is
+        // the honest thing to report as such.
+        //
+        // CancellationException is re-thrown rather than logged: it is an Exception in
+        // Kotlin, so a bare `catch (e: Exception)` here would swallow the cancellation
+        // from ensurePushRegistration's withTimeoutOrNull and let a timed-out attempt
+        // look like a successful login with a bad cache write. Same discipline as
+        // PresenceActions.persistPushRegistrationOutcome.
+        if (authParams != null) {
+            try {
+                tokenStore.save(voxUsername, authParams)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(
+                    TAG,
+                    "logged in, but caching the Voximplant tokens failed — the next login " +
+                        "will use the interactive path: ${e.message ?: e::class.simpleName}",
+                )
+            }
+        }
     }
 
     fun logout() {
@@ -345,6 +379,8 @@ class VoxClientManager(
      * one decision, not two, and changing either alone silently breaks push.
      */
     internal companion object {
+        private const val TAG = "VoxClientManager"
+
         /**
          * The bundle id sent with every push-token registration. NULL on purpose — the
          * reasoning, and the live-doc quote it rests on, are in registerPushTokenSuspend's
