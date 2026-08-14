@@ -68,6 +68,24 @@
       NEVER pass the pair during the ring phase: that re-validates microphone and brings the
       SecurityException straight back. The manifest may hold both; the ring-phase
       startForeground() call may not.
+
+      ⚠ THIS DECLARATION ALONE FIXES NOTHING, WHENEVER YOU ARE READING IT. Stated as a
+      standing check rather than a status, because a status line goes stale the moment the
+      other half merges and then misleads in the opposite direction.
+
+      The check: open telephony/CallForegroundService.kt and read the value passed to
+      startForeground(). THAT is what the permission policy is evaluated against; this
+      attribute is consulted only as the subset ceiling, never for permissions. If the
+      ring-phase call passes FOREGROUND_SERVICE_TYPE_MICROPHONE, the push-woken locked-screen
+      ring throws SecurityException no matter what this line says.
+
+      Why this is worth a standing warning rather than a one-off note: a manifest-only
+      widening LOOKS complete and TESTS CLEAN on an unlocked device, because an unlocked
+      device satisfies while-in-use and never exercises the failing path. The bug lives
+      exactly where it cannot be seen from a desk. Do not read a green manual test as proof
+      unless the device was locked and the app was not running.
+
+      Owner of the other half: fgs-owner (telephony/CallForegroundService.kt) — not this file.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
