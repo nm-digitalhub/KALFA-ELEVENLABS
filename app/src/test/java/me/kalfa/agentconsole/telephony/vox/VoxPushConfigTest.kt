@@ -37,10 +37,17 @@ class VoxPushConfigTest {
 
     @Test
     fun `push registrations carry no bundle id`() {
+        // Asserts on the PushConfig that is actually handed to the SDK, NOT on the
+        // constant beside it. Pinning the constant looked equivalent and was not: a call
+        // site restored to PushConfig(token, BuildConfig.APPLICATION_ID) would leave the
+        // constant dead-but-referenced, raising no warning, and this test would have gone
+        // on passing with the bug fully back.
+        val config = VoxClientManager.buildPushConfig("fcm-token-under-test")
+
         assertNull(
             "PushConfig.bundleId must stay null while this Voximplant application has a " +
                 "single push certificate — see this class's kdoc before changing it",
-            VoxClientManager.PUSH_BUNDLE_ID,
+            config.bundleId,
         )
     }
 }

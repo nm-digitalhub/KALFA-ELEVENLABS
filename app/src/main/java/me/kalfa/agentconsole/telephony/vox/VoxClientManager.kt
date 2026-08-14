@@ -352,12 +352,31 @@ class VoxClientManager(
          * a manager (and therefore without a mocking library this project does not use).
          */
         internal val PUSH_BUNDLE_ID: String? = null
+
+        /**
+         * The ONE place a [PushConfig] is built, so a test can assert on the object that
+         * actually reaches the SDK rather than on a constant sitting near it.
+         *
+         * The first version of this guard pinned [PUSH_BUNDLE_ID] directly, which sounds
+         * equivalent and is not. The regression to fear is someone restoring
+         * `PushConfig(token, BuildConfig.APPLICATION_ID)` at a call site in good faith —
+         * and they have no reason to also touch a constant three lines away, which would
+         * simply become dead. It is `internal` and still referenced by the test, so it
+         * would not even raise an unused-declaration warning. The test would have kept
+         * passing with the bug fully restored.
+         *
+         * Routing both call sites through here means reintroducing it requires either
+         * editing this function — which the test exercises directly — or visibly deleting
+         * a call to it and inlining `PushConfig` raw again, which is a far louder change
+         * to read in review than swapping one argument.
+         */
+        internal fun buildPushConfig(token: String): PushConfig = PushConfig(token, PUSH_BUNDLE_ID)
     }
 
     private suspend fun registerPushTokenSuspend(token: String): Unit =
         suspendCancellableCoroutine { cont ->
             Client.registerForPushNotifications(
-                PushConfig(token, PUSH_BUNDLE_ID),
+                buildPushConfig(token),
                 object : RegisterPushTokenCallback {
                     override fun onSuccess() { if (cont.isActive) cont.resume(Unit) }
                     override fun onFailure(error: PushTokenError) {
@@ -376,7 +395,7 @@ class VoxClientManager(
             // token it is trying to remove, leaving a stale token registered for an agent
             // who has signed out.
             Client.unregisterFromPushNotifications(
-                PushConfig(token, PUSH_BUNDLE_ID),
+                buildPushConfig(token),
                 object : RegisterPushTokenCallback {
                     override fun onSuccess() { if (cont.isActive) cont.resume(Unit) }
                     override fun onFailure(error: PushTokenError) {
