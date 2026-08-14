@@ -43,11 +43,18 @@ object PresenceNotificationBuilder {
     private const val NOTIFICATIONS_BLOCKED_TEXT = "התראות למסוף חסומות — שיחות נכנסות לא יוצגו כלל."
     private const val CANNOT_RING_LOCKED_TEXT = "מסך שיחה נכנסת לא ייפתח במכשיר נעול — שיחות עלולות להתפספס."
 
-    // The only three states an agent can set themselves — mirrors AgentStatus
-    // exactly, per the brief's "do not invent new states". IN_CALL is server-managed
-    // (AgentPresence.setStatus's own kdoc: "the app must never write it") and is
-    // deliberately never offered as an action here.
-    private val ACTIONABLE_STATUSES = listOf(AgentStatus.READY, AgentStatus.NOT_READY, AgentStatus.DND)
+    // The only states an agent can set themselves. This was a private list that
+    // happened to be right; it is now the shared AgentStatus.agentSettable, because
+    // DashboardScreen kept its own version of the same decision by iterating
+    // AgentStatus.values() and got it wrong — it offered "בשיחה" as a button whose
+    // only possible outcome was a 400 that wedged presence for the rest of the shift.
+    //
+    // The old comment cited "AgentPresence.setStatus's own kdoc: the app must never
+    // write it". That kdoc does not say so, and anyone checking would have found
+    // nothing. The rule is the server's: POST /api/agents/status validates against
+    // z.enum(['ready','not_ready','dnd']) and its own test asserts the 400 for
+    // in_call. That citation resolves.
+    private val ACTIONABLE_STATUSES = AgentStatus.agentSettable
 
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return

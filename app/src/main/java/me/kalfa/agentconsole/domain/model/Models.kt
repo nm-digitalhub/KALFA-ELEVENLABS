@@ -6,7 +6,39 @@ enum class AgentStatus(val labelHebrew: String) {
     READY("זמין"),
     NOT_READY("לא זמין"),
     DND("נא לא להפריע"),
-    IN_CALL("בשיחה")
+    IN_CALL("בשיחה");
+
+    /**
+     * Whether an agent may DECLARE this status. IN_CALL cannot be declared — it is
+     * observed.
+     *
+     * This is a server contract, not a preference. POST /api/agents/status validates
+     * against `z.enum(['ready', 'not_ready', 'dnd'])`
+     * (beta `src/lib/validation/agent-console.ts`), the route's own comment states
+     * "`in_call` is system-managed and is deliberately NOT accepted here — the server
+     * infers 'busy' from an active human_agent_call_legs row, it is never a client
+     * declaration", and the route's test asserts the 400 by name. So sending it is not
+     * a request that might work; it is a request that is defined to fail.
+     *
+     * The property lives on the enum because the rule had already been written down
+     * twice and applied once: PresenceNotificationBuilder kept a private
+     * ACTIONABLE_STATUSES list and correctly withheld the action, while DashboardScreen
+     * rendered a button per `AgentStatus.values()` and offered "בשיחה" to be tapped. One
+     * list that both surfaces read is the only version of this that cannot drift again.
+     */
+    val isAgentSettable: Boolean get() = this != IN_CALL
+
+    companion object {
+        /**
+         * [entries] filtered to what an agent may declare — see [isAgentSettable].
+         *
+         * A getter, not an initialized field: a companion property initializer runs
+         * inside the enum's own class initializer, and reading `entries` from there
+         * depends on an ordering that is a compiler detail rather than a guarantee. A
+         * getter is evaluated at the call site, where every constant certainly exists.
+         */
+        val agentSettable: List<AgentStatus> get() = entries.filter { it.isAgentSettable }
+    }
 }
 
 enum class CallKind {

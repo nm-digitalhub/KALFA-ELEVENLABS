@@ -105,7 +105,25 @@ object PresenceActions {
      */
     suspend fun resendCurrentStatus() {
         val presence = DependencyContainer.agentPresence
-        reportPresenceResult(presence.setStatus(presence.currentStatus.value))
+        val current = presence.currentStatus.value
+        // A heartbeat re-DECLARES the agent's own status. IN_CALL is not the agent's
+        // to declare — the server sets it from a live human_agent_call_legs row and
+        // POST /api/agents/status answers 400 for it by design — and currentStatus
+        // holds it because fetchAgentStatus read it back from the database. Re-sending
+        // it would fail every 30 seconds and raise a permanent
+        // "הזמינות לא אושרה מול השרת" over a state that is not wrong.
+        //
+        // Deliberately NOT substituted with something sendable: this app does not track
+        // what the agent declared separately from what the server observed, so any
+        // substitute would be a guess. The consequence is stated rather than hidden —
+        // while the server holds this agent at in_call, agent_status.updated_at stops
+        // advancing and the server's 90s freshness gate stops routing to them. That is
+        // the correct outcome for an agent already on a call, and it self-heals the
+        // moment the server clears in_call and the next heartbeat has something honest
+        // to send. If that ever needs to change, the fix is a separately-tracked
+        // declared status, not a status the server rejects.
+        if (!current.isAgentSettable) return
+        reportPresenceResult(presence.setStatus(current))
     }
 
     /**

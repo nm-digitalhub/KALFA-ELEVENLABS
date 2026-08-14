@@ -124,7 +124,22 @@ fun DashboardScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            AgentStatus.values().forEach { status ->
+                            // agentSettable, NOT values(): "בשיחה" is observed, never
+                            // declared. POST /api/agents/status validates against
+                            // z.enum(['ready','not_ready','dnd']) and answers 400 for
+                            // in_call by design, so this loop was rendering a button
+                            // whose only possible outcome was a rejected write — and
+                            // setStatus applies the new status optimistically before it
+                            // asks, so one tap left currentStatus stuck on IN_CALL and
+                            // every 30s heartbeat re-sent it and was rejected again.
+                            // The server-set status is still SHOWN when it is one the
+                            // agent cannot declare — an agent marked "בשיחה" must be able
+                            // to see it. It just is not a button.
+                            val statusOptions =
+                                if (agentStatus.isAgentSettable) AgentStatus.agentSettable
+                                else AgentStatus.agentSettable + agentStatus
+
+                            statusOptions.forEach { status ->
                                 val isSelected = agentStatus == status
                                 val (bg, textCol, icon) = when (status) {
                                     AgentStatus.READY -> Triple(ColorSuccess, Color.White, Icons.Default.CheckCircle)
@@ -141,7 +156,17 @@ fun DashboardScreen(
                                         .weight(1f)
                                         .clip(RoundedCornerShape(16.dp))
                                         .background(resolvedBg)
-                                        .clickable { onStatusChange(status) }
+                                        // No clickable at all rather than a disabled one:
+                                        // an unsettable status is a read-out, and a
+                                        // disabled button would still announce itself to
+                                        // TalkBack as something to press.
+                                        .then(
+                                            if (status.isAgentSettable) {
+                                                Modifier.clickable { onStatusChange(status) }
+                                            } else {
+                                                Modifier
+                                            }
+                                        )
                                         .padding(vertical = 12.dp, horizontal = 4.dp),
                                     contentAlignment = Alignment.Center
                                 ) {

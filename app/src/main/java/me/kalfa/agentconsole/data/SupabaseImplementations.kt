@@ -924,6 +924,24 @@ class SupabaseCallEngineImpl(
     // Dashboard's status buttons), but syncState is what a caller — in particular the
     // persistent presence notification — must consult before claiming this is real.
     override suspend fun setStatus(status: AgentStatus): AppResult<Unit> {
+        // Refused BEFORE the optimistic write, which is the part that made this
+        // wedge rather than merely fail. POST /api/agents/status validates against
+        // z.enum(['ready','not_ready','dnd']) and answers 400 for in_call by design
+        // (the server infers "busy" from a live human_agent_call_legs row), so this
+        // request cannot succeed — but the old code applied `status` to
+        // _currentStatus first, so a single rejected attempt left currentStatus
+        // pinned to IN_CALL and PresenceForegroundService's 30s heartbeat re-sent it,
+        // and was rejected, for the rest of the shift. agent_status.updated_at then
+        // never advanced again and the server's 90s freshness gate quietly stopped
+        // routing to a device still showing itself as present.
+        //
+        // No caller should reach this now that both surfaces read
+        // AgentStatus.agentSettable. It is kept as the boundary guard because the
+        // rule is the server's, so this is where it belongs — the UI-side filter is
+        // a convenience, not the enforcement.
+        if (!status.isAgentSettable) {
+            return AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.Validation)
+        }
         _currentStatus.value = status
         _syncState.value = PresenceSyncState.Pending
         return withContext(Dispatchers.IO) {
