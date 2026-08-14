@@ -2,6 +2,7 @@ package me.kalfa.agentconsole.telemetry
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -185,6 +186,34 @@ class TelemetryFormatTest {
             "2026-08-15T04:12:33.412Z sid=c7f3a91b seq=1 call.offer num=+972501234567",
         )
         assertEquals("<redacted:digits>", parsed?.fields?.single()?.second)
+    }
+
+    @Test
+    fun `the fingerprint is stable, short, and discloses nothing`() {
+        // It exists to make a CREDENTIAL joinable across two systems without
+        // disclosing it — the device says "I registered token a1b2c3d4", the
+        // platform says "I had nothing to send to". Stability is what makes the
+        // join work; brevity is what keeps the line readable.
+        val token = "fZ3kQ:APA91bH-not-a-real-token-9182736455"
+        assertEquals(telemetryFingerprint(token), telemetryFingerprint(token))
+        assertEquals(8, telemetryFingerprint(token).length)
+        assertTrue(telemetryFingerprint(token).matches(Regex("^[0-9a-f]{8}$")))
+    }
+
+    @Test
+    fun `different tokens fingerprint differently, or the join would be meaningless`() {
+        assertNotEquals(telemetryFingerprint("token-a"), telemetryFingerprint("token-b"))
+    }
+
+    @Test
+    fun `the fingerprint never leaks any part of its input`() {
+        // A PREFIX of a credential would be a piece of the credential, in a file
+        // whose premise is that someone who should not see secrets reads it. This
+        // pins the choice of a hash over the cheaper option.
+        val token = "APA91bHsecretsecretsecret"
+        val fp = telemetryFingerprint(token)
+        assertFalse(token.contains(fp))
+        assertFalse(fp.contains("APA"))
     }
 
     @Test

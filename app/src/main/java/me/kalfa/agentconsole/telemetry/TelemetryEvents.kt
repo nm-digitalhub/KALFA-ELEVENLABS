@@ -98,12 +98,58 @@ object TelemetryEvents {
     const val VOX_CONNECT_OK = "vox.connect_ok"
     const val VOX_CONNECT_FAIL = "vox.connect_fail"
 
-    /** `plan=access|refresh|interactive|already` — which of the three login paths was chosen. */
+    /**
+     * `plan=access|refresh|interactive|already` — which of the three login paths
+     * was chosen, and the highest-value TIMING signal on the channel.
+     *
+     * The budget it is measured against is now a measurement rather than an
+     * estimate. `analyst` timed the scenario's ring window across two sessions:
+     * `Call.PushSent` → `HangupCall code=603` is **~14.84s** (session
+     * `7665866994`: 10:52:04.486 → 10:52:19.326). `app/build.gradle.kts` still
+     * records that as "unmeasured against the server's 15s RING_RETRY_WINDOW_MS";
+     * it is measured now.
+     *
+     * Against that ~15s, `VoxFirebaseMessagingService` spends up to
+     * `WAKE_PUSH_TIMEOUT_MS` = 9s on login alone, and the three plans have very
+     * different costs: `access` is one round trip, `refresh` adds a second, and
+     * `interactive` adds a round trip to beta.kalfa.me on top — reached precisely
+     * when a device has been idle long enough for both tokens to lapse, i.e. the
+     * pocket case. Whether `interactive` fits inside the window has never been
+     * observed. **This field is what will answer that**, so it is worth reading
+     * even on a wake that succeeds.
+     */
     const val VOX_LOGIN_START = "vox.login_start"
     const val VOX_LOGIN_OK = "vox.login_ok"
     const val VOX_LOGIN_FAIL = "vox.login_fail"
 
     const val VOX_PUSH_REGISTER_START = "vox.push_register_start"
+
+    /**
+     * **NOT proof that the device is reachable — read this before concluding push
+     * works.** `tok=<sha256 prefix>` `bundle=<id|null>`.
+     *
+     * The platform can accept a registration and still hold nothing it can send
+     * to. That is the recorded bundle-id story: registration succeeded, the token
+     * was filed under a bundle no certificate matched, and all 76 ring attempts
+     * reported `push_results: []` while looking, from the device, exactly like a
+     * registered device.
+     *
+     * **That state is unobservable from inside this process, by construction.**
+     * Measured platform-side by `analyst` on session `7666179052`: `CallUser` at
+     * T+0, `Call.Failed code=480 "User offline"` at T+96ms, `Call.PushSent
+     * result={"push_results":[]}` at T+109ms, and the whole attempt abandoned by
+     * T+287ms — **the device is never contacted at all.** No FCM message, no
+     * callback, no throw. A trace on a device in this state shows `vox.login_ok`,
+     * this event, and then nothing, which is byte-identical to a device that
+     * simply had no calls. That is precisely the false negative this whole channel
+     * exists to kill, and no device-side event can close it.
+     *
+     * So the two fields are a JOIN, not a detection. Given a platform log showing
+     * `push_results: []` at time T, the device log can now state: *"I registered
+     * token `a1b2c3d4` under bundle `null` at T−n."* Neither system can say that
+     * alone. `tok` is a truncated SHA-256 rather than a prefix — a prefix of a
+     * credential is a piece of the credential.
+     */
     const val VOX_PUSH_REGISTER_OK = "vox.push_register_ok"
 
     /**
@@ -137,6 +183,15 @@ object TelemetryEvents {
      * An offer reached the coordinator. `id=` a truncated call id (an opaque
      * platform identifier, not PII), `named=true|false` and `numlen=<n>` — whether a
      * display name and number were present, never what they were.
+     *
+     * **Known blind spot, by construction rather than by omission.** The ring
+     * phase deliberately starts no foreground service (see
+     * `VoxIncomingCallCoordinator.handleIncomingCall`'s comment on why a
+     * `microphone`-typed FGS cannot legally start from a push-woken background
+     * process). So a low-memory kill between this event and [CALL_ANSWER] produces
+     * NO event at all — the process is gone before anything can record its going.
+     * That silence is not a defect in this channel and cannot be fixed from inside
+     * the process; it is written down so nobody later reads it as one.
      */
     const val CALL_OFFER = "call.offer"
 

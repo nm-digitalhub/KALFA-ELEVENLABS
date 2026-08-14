@@ -32,6 +32,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import me.kalfa.agentconsole.telemetry.Telemetry
 import me.kalfa.agentconsole.telemetry.TelemetryEvents
+import me.kalfa.agentconsole.telemetry.telemetryFingerprint
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -413,8 +414,31 @@ class VoxClientManager(
         } catch (e: Exception) {
             throw VoxAuthException.Sdk("vox_register: ${e.message ?: e::class.simpleName}")
         }
-    }.onSuccess {
-        Telemetry.emit(TelemetryEvents.VOX_PUSH_REGISTER_OK)
+        // Emitted HERE, inside the block, because `token` is in scope here and the
+        // two fields below are the entire point of this event.
+        //
+        // A success on this line is NOT proof the device is reachable, and that is
+        // the trap this records against. The platform can accept a registration and
+        // still hold nothing it can send to — which is exactly the bundle-id story
+        // AGENTS.md recorded, where registration succeeded, the token was filed
+        // under a bundle no certificate matched, and all 76 ring attempts reported
+        // `push_results: []` while looking like a registered device. From inside
+        // this process that state is UNOBSERVABLE: platform-side, `CallUser` gives
+        // up 287ms later having never contacted the device at all (measured by
+        // `analyst` on session 7666179052), so there is no callback, no throw and
+        // no FCM message to notice the absence of.
+        //
+        // What these two fields buy is not detection but a JOIN. When a
+        // `Call.PushSent` shows `push_results: []` at time T, the device log can
+        // now say "I registered token a1b2c3d4 under bundle null at T−n" — a fact
+        // neither system can state alone. `tok` is a truncated SHA-256, never a
+        // prefix: a prefix of a credential is a piece of the credential, in a file
+        // whose premise is that someone who should not see secrets will read it.
+        Telemetry.emit(
+            TelemetryEvents.VOX_PUSH_REGISTER_OK,
+            "tok" to telemetryFingerprint(token),
+            "bundle" to (PUSH_BUNDLE_ID ?: "null"),
+        )
     }.onFailure { e ->
         // `stage` splits the two failure domains this method already separates in
         // its message — a local Google Play services / FCM problem fetching the

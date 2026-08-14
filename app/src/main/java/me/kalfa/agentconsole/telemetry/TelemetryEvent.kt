@@ -1,5 +1,6 @@
 package me.kalfa.agentconsole.telemetry
 
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -195,6 +196,34 @@ fun scrubTelemetryValue(raw: String): String {
     } else {
         flattened.take(TELEMETRY_MAX_VALUE_CHARS)
     }
+}
+
+/**
+ * A short, non-reversible fingerprint of a value that must never itself be logged.
+ *
+ * Exists for one job: making a credential JOINABLE without disclosing it. The
+ * platform can report `push_results: []` — it holds no usable token — while the
+ * device believes registration succeeded, and no device-side event can detect
+ * that, because nothing device-side happens. Logging a fingerprint of the FCM
+ * token turns that unobservable into a fact two systems can be joined on: *the
+ * device registered token `a1b2c3d4` at time T; the platform had nothing to send
+ * to at time T+n.* Neither log can say that alone.
+ *
+ * **A hash, deliberately, not a prefix.** A prefix of a credential is a piece of
+ * the credential, and it lands in a file whose whole premise is that someone who
+ * should not see secrets will read it. SHA-256 truncated to 8 hex characters is
+ * ample to correlate one device's registrations over one evening and discloses
+ * nothing: it is not reversible, and 32 bits of a cryptographic digest cannot be
+ * walked back to a token.
+ *
+ * Returns `"-"` rather than throwing if the digest is unavailable — a fingerprint
+ * is diagnostic garnish, and nothing here may fail into the call path.
+ */
+fun telemetryFingerprint(value: String): String = try {
+    val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+    digest.take(4).joinToString("") { "%02x".format(it) }
+} catch (t: Throwable) {
+    "-"
 }
 
 /**
