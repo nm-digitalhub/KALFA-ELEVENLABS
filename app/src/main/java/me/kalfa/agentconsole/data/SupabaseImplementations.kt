@@ -348,6 +348,12 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
                 subscribeToCallFeed()
             }
         }
+        // Gating the reads keeps the NEXT agent's requests honest; it does nothing about
+        // the PREVIOUS agent's rows, which outlive the session that was entitled to them
+        // because these repositories are singletons on DependencyContainer. See
+        // signedOutSessions in SessionGate.kt for why the event list in particular
+        // survives a sign-in that should have replaced it.
+        scope.launch { client.signedOutSessions().collect { clearCaches() } }
         // console_events is a VIEW (no realtime, §4) — poll lightly in the foreground
         // so a deleted/renamed event disappears without restarting the app (spec §8.4).
         scope.launch {
@@ -356,6 +362,25 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
                 delay(60_000)
             }
         }
+    }
+
+    /**
+     * Drops every row read under the session that just ended.
+     *
+     * `_eventNames` matters as much as the visible lists: `refreshEventNames` returns
+     * early while it is populated, so leaving it behind means the sign-in fetch skips
+     * `console_events` entirely and the previous agent's event list stays on screen until
+     * the 60s poll. Clearing it makes the next sign-in re-read names as well as calls.
+     *
+     * Health returns to Loading rather than Stale — nothing failed, there is simply
+     * nothing to show until the next sign-in fetch lands.
+     */
+    private fun clearCaches() {
+        _liveCalls.value = emptyList()
+        _callHistory.value = emptyList()
+        _events.value = emptyList()
+        _eventNames.value = emptyMap()
+        _health.value = RepositoryHealth.Loading
     }
 
     /**
@@ -503,6 +528,7 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
         // here so the invariant holds for every repository rather than for the two that
         // are provably raced today.
         scope.launch { client.signedInSessions().collect { fetchCampaigns() } }
+        scope.launch { client.signedOutSessions().collect { clearCaches() } }
         // console_campaigns / console_campaign_targets are VIEWS — Supabase Realtime
         // does not emit postgres_changes for views, so refresh on a light poll.
         scope.launch {
@@ -511,6 +537,26 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
                 delay(60_000)
             }
         }
+    }
+
+    /**
+     * Drops every row read under the session that just ended — see the twin in
+     * `SupabaseCallRepository`.
+     *
+     * `targetsMap` and `eventGuestsMap` are emptied IN PLACE rather than having their
+     * entries removed. Screens already hold the `StateFlow` instances these maps handed
+     * out, so dropping the entries would leave an open screen bound to a flow nothing
+     * writes to again; emptying each flow makes the previous agent's targets and guest
+     * phone numbers disappear from a screen that is currently displayed. Guest phone
+     * numbers are the most sensitive thing this repository ever holds — they are present
+     * only for an agent with `view_customer_data`, and must not survive that agent's
+     * session.
+     */
+    private fun clearCaches() {
+        _campaigns.value = emptyList()
+        targetsMap.values.forEach { it.value = emptyList() }
+        eventGuestsMap.values.forEach { it.value = emptyList() }
+        _health.value = RepositoryHealth.Loading
     }
 
     override fun refresh() = fetchCampaigns()
@@ -631,6 +677,7 @@ class SupabaseRsvpRepository(private val client: SupabaseClient) : RsvpRepositor
         // call repository, during MainActivity's first composition, before AuthGate has
         // resolved anything.
         scope.launch { client.signedInSessions().collect { fetchRsvpResults() } }
+        scope.launch { client.signedOutSessions().collect { clearCaches() } }
         // console_rsvp_results is a VIEW (no realtime) — poll lightly; the dashboard's
         // freshness driver is console_call_feed realtime anyway.
         scope.launch {
@@ -639,6 +686,16 @@ class SupabaseRsvpRepository(private val client: SupabaseClient) : RsvpRepositor
                 delay(60_000)
             }
         }
+    }
+
+    /**
+     * Drops the previous session's RSVP rows — see the twin in `SupabaseCallRepository`.
+     * These carry guest names and attendance answers, which are the previous agent's
+     * event data, not this one's.
+     */
+    private fun clearCaches() {
+        _rsvpResults.value = emptyList()
+        _health.value = RepositoryHealth.Loading
     }
 
     override fun refresh() = fetchRsvpResults()
@@ -731,6 +788,17 @@ class SupabaseCallEngineImpl(
                 subscribeToAgentStatus()
                 subscribeToDispatchStatus()
                 fetchTrackedDispatchStatuses()
+            }
+        }
+        // Dispatch receipts are per-agent and must not survive the session that created
+        // them. Presence state (_currentStatus / _shiftActive) is deliberately NOT reset
+        // here: this fires for RefreshFailure as well as a real sign-out, and a transient
+        // refresh must not silently rewrite the agent's declared availability underneath
+        // the presence notification, which reports its own sync state separately.
+        scope.launch(Dispatchers.IO) {
+            client.signedOutSessions().collect {
+                _dispatchStatuses.value = emptyMap()
+                trackedDispatchIds.value = emptySet()
             }
         }
         // Reconciliation poll is intentional: views and Realtime connections can

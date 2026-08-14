@@ -86,4 +86,60 @@ class SessionGateTest {
             flowOf(false, true, false, true).enteredSignedIn().toList(),
         )
     }
+
+    // ── leftSignedIn: the clear-on-the-way-out half ───────────────────────────────────
+    //
+    // Gating reads governs what the NEXT agent may request; it says nothing about the
+    // rows already in memory. The repositories are singletons on DependencyContainer and
+    // survive a sign-out/sign-in inside one process, so the previous agent's data is
+    // still in the flows when the next agent's first frame renders.
+
+    @Test
+    fun `a cold start clears nothing`() = runTest {
+        // sessionStatus begins at Initializing, which maps to false. A process that has
+        // never been signed in has nothing to clear, and a filter { !it } alone would
+        // fire here — on the value every new collector is replayed.
+        val signedIn = MutableStateFlow(false)
+        var clears = 0
+        backgroundScope.launch { signedIn.leftSignedIn().collect { clears++ } }
+
+        runCurrent()
+
+        assertEquals(0, clears)
+    }
+
+    @Test
+    fun `signing out clears exactly once`() = runTest {
+        val signedIn = MutableStateFlow(false)
+        var clears = 0
+        backgroundScope.launch { signedIn.leftSignedIn().collect { clears++ } }
+
+        runCurrent()
+        signedIn.value = true
+        runCurrent()
+        assertEquals(0, clears)
+
+        signedIn.value = false
+        runCurrent()
+
+        assertEquals(1, clears)
+    }
+
+    @Test
+    fun `a token refresh of a live session never clears`() = runTest {
+        // The failure this guards is the ugly one: dropping the agent's own data out from
+        // under them mid-shift, on the hourly refresh cadence, for no reason.
+        assertEquals(
+            emptyList<Unit>(),
+            flowOf(false, true, true, true).leftSignedIn().toList(),
+        )
+    }
+
+    @Test
+    fun `each sign-out clears, and a later sign-in does not`() = runTest {
+        assertEquals(
+            listOf(Unit, Unit),
+            flowOf(false, true, false, true, false).leftSignedIn().toList(),
+        )
+    }
 }
