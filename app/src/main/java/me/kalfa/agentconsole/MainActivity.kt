@@ -139,6 +139,13 @@ class MainActivity : ComponentActivity() {
                         if (pendingOffer == null) clearIncomingCallWindowFlags()
                     }
 
+                    // The RTL provider wraps BOTH branches. It used to wrap only the
+                    // nav/dashboard branch, which left IncomingCallScreen — the one
+                    // surface an agent sees on a locked phone, and the only one with a
+                    // two-button choice where getting Answer/Decline the wrong way
+                    // round costs a real call — rendering left-to-right in a
+                    // Hebrew-first app (AGENTS.md hard rule 1).
+                    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                     if (pendingOffer != null) {
                         IncomingCallScreen(
                             displayName = pendingOffer?.displayName.orEmpty(),
@@ -146,7 +153,6 @@ class MainActivity : ComponentActivity() {
                             onDecline = { pendingOffer?.let { incomingCallCoordinator?.decline(it.callId) } }
                         )
                     } else {
-                    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                         // Adaptive nav: bottom bar on compact, rail on expanded. Hidden entirely during a call.
                         AdaptiveConsoleScaffold(
                             navController = navController,

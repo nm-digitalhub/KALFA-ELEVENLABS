@@ -3,6 +3,7 @@ package me.kalfa.agentconsole.telephony.vox
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.voximplant.android.sdk.calls.Call
@@ -40,6 +41,17 @@ class VoxIncomingCallCoordinator(
     private val _pendingOffer = MutableStateFlow<IncomingOffer?>(null)
     val pendingOffer: StateFlow<IncomingOffer?> = _pendingOffer.asStateFlow()
 
+    // The call that has been ANSWERED and is therefore the current owner of
+    // CallForegroundService and CallEngine.currentSession. Deliberately separate from
+    // _pendingOffer, which answer() clears: without it, cleanUp() had no way to tell
+    // "the leg that owns the microphone service ended" from "some other leg ended",
+    // and tore down both unconditionally. See cleanUp's comment for the sequence that
+    // broke. @Volatile because handleIncomingCall arrives on the SDK's own executor
+    // thread (verified in android-sdk-calls 3.2.0: VICalls' message listener
+    // dispatches through a ScheduledExecutorService) while answer()/decline() can be
+    // called from the main thread or a BroadcastReceiver.
+    @Volatile private var answeredCallId: String? = null
+
     init {
         IncomingCallNotificationBuilder.ensureChannel(context)
     }
@@ -61,8 +73,13 @@ class VoxIncomingCallCoordinator(
         // The offer's own leg needs the microphone FGS type available BEFORE answer()
         // can be safely called (see answer() below) — start it now too, matching how
         // a real phone rings while already holding the resources it will need.
-        if (hasRecordAudioPermission()) {
-            CallForegroundService.start(context, title = "שיחה נכנסת...")
+        //
+        // NOT when a call is already answered: the service is a singleton, so starting
+        // it again would retitle the ACTIVE call's ongoing notification to
+        // "שיחה נכנסת..." — the answered leg already holds exactly the resource this
+        // start is for.
+        if (answeredCallId == null && hasRecordAudioPermission()) {
+            startCallForegroundService(title = "שיחה נכנסת...")
         }
 
         NotificationManagerCompat.from(context).notify(
@@ -93,8 +110,9 @@ class VoxIncomingCallCoordinator(
         }
 
         offer.session.answer()
+        answeredCallId = offer.callId
         callEngine.attachIncomingSession(offer.session)
-        CallForegroundService.start(context, title = "שיחה פעילה")
+        startCallForegroundService(title = "שיחה פעילה")
         NotificationManagerCompat.from(context).cancel(IncomingCallNotificationBuilder.NOTIFICATION_ID)
         _pendingOffer.value = null
     }
@@ -105,18 +123,80 @@ class VoxIncomingCallCoordinator(
         offer.session.decline() // triggers finish() synchronously -> cleanUp() below
     }
 
+    /**
+     * Tears down only what THIS call still owns.
+     *
+     * Every branch here used to be unconditional except the `_pendingOffer` clear, and
+     * that made an ordinary second call destroy the first one. Sequence: call A is
+     * answered — `attachIncomingSession(A)`, `CallForegroundService` running for the
+     * live leg. Call B arrives and is declined (or the caller gives up). B's
+     * `first { DISCONNECTED }` collector fires `cleanUp(B)`, which stopped the
+     * foreground service A's audio depends on and nulled `CallEngine.currentSession`,
+     * so `CallHangupActionReceiver`'s "נתק" action could no longer end A either.
+     * Losing a `microphone`-typed FGS mid-call is also how the platform reclaims the
+     * process on API 34+, so this was not merely cosmetic.
+     *
+     * The three resources have three different owners, so each is released by its own
+     * owner: the ring notification belongs to the offer currently on screen, the
+     * attached session belongs to the answered call, and the foreground service is
+     * shared — released only once neither a pending offer nor an answered call needs
+     * it.
+     */
     private fun cleanUp(callId: String) {
-        if (_pendingOffer.value?.callId == callId) {
-            _pendingOffer.value = null
+        val plan = planIncomingCallCleanup(
+            endedCallId = callId,
+            pendingCallId = _pendingOffer.value?.callId,
+            answeredCallId = answeredCallId,
+        )
+        if (plan.clearPendingOffer) _pendingOffer.value = null
+        if (plan.clearAttachedSession) answeredCallId = null
+
+        if (plan.cancelRingNotification) {
+            NotificationManagerCompat.from(context)
+                .cancel(IncomingCallNotificationBuilder.NOTIFICATION_ID)
         }
-        NotificationManagerCompat.from(context).cancel(IncomingCallNotificationBuilder.NOTIFICATION_ID)
-        CallForegroundService.stop(context)
-        callEngine.clearAttachedSession()
+        if (plan.clearAttachedSession) callEngine.clearAttachedSession()
+        if (plan.stopForegroundService) CallForegroundService.stop(context)
+    }
+
+    /**
+     * Starting the call FGS can THROW, and the throw is not a bug to let crash.
+     *
+     * `Context.startForegroundService` raises `ForegroundServiceStartNotAllowedException`
+     * when the app is in the background and no exemption applies (Android 12+). This
+     * path is reached from exactly there: the SDK's incoming-call callback on a
+     * push-woken, backgrounded app, and from `IncomingCallActionReceiver` — a
+     * `BroadcastReceiver`, where an escaping exception kills the process outright
+     * instead of dropping one call. Whether Voximplant's wake push carries the
+     * high-priority FCM exemption, and whether it is still inside the temporary
+     * allowlist window after `VoxWakePushHandler`'s up-to-9s login, are both
+     * unverified without a device.
+     *
+     * Degrading is what docs/android-presence-and-call-ux.md §3 already prescribes for
+     * the sibling case (RECORD_AUDIO missing): the notification still shows, the agent
+     * can still see and open the call. Logged rather than surfaced because there is no
+     * action an agent could take about it mid-ring.
+     *
+     * NOTE this cannot cover the whole failure: on Android 14+ a `microphone`-typed
+     * FGS started from the background throws `SecurityException` from inside
+     * `Service.startForeground()`, on the main looper, long after this call has
+     * returned. That half has to be handled in CallForegroundService itself.
+     */
+    private fun startCallForegroundService(title: String) {
+        try {
+            CallForegroundService.start(context, title = title)
+        } catch (e: Exception) {
+            Log.w(TAG, "call foreground service refused to start: ${e.javaClass.simpleName}: ${e.message}")
+        }
     }
 
     private fun hasRecordAudioPermission() =
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
+
+    private companion object {
+        const val TAG = "VoxIncomingCall"
+    }
 }
 
 // Pure gating logic for answer()/decline(), pulled out to the top level so it is
@@ -128,4 +208,48 @@ class VoxIncomingCallCoordinator(
 // CallException for the dead-call case this guards against.
 fun canActOnOffer(pendingCallId: String?, actionCallId: String, sessionState: CallState): Boolean =
     pendingCallId == actionCallId && sessionState == CallState.RINGING
+
+/** What a finished leg is allowed to tear down. See [planIncomingCallCleanup]. */
+data class IncomingCallCleanup(
+    val clearPendingOffer: Boolean,
+    val cancelRingNotification: Boolean,
+    val clearAttachedSession: Boolean,
+    val stopForegroundService: Boolean,
+)
+
+/**
+ * Decides which shared resources a just-ended call may release — pulled out to the top
+ * level for the same reason as [canActOnOffer]: unit-testable with no Android or SDK
+ * class on the classpath, and this project has no mocking library that could stand in
+ * for a `Context` or an SDK `Call`.
+ *
+ * The bug this encodes against: the three resources are shared across calls but were
+ * being released unconditionally by whichever leg happened to end. Call A is answered
+ * (holding `CallForegroundService` and `CallEngine.currentSession`); call B arrives and
+ * is declined; B's teardown stopped A's foreground service and cleared A's session,
+ * leaving a live call with no microphone FGS — which on API 34+ is how the platform
+ * reclaims the process — and no working "נתק" action.
+ *
+ * Ownership, one rule each:
+ *  - the ring notification belongs to the offer currently displayed,
+ *  - the attached `CallSession` belongs to the answered call,
+ *  - the foreground service is shared, so it is stopped only once NEITHER a pending
+ *    offer nor an answered call is left to need it.
+ */
+fun planIncomingCallCleanup(
+    endedCallId: String,
+    pendingCallId: String?,
+    answeredCallId: String?,
+): IncomingCallCleanup {
+    val wasPending = pendingCallId == endedCallId
+    val wasAnswered = answeredCallId == endedCallId
+    val pendingAfter = if (wasPending) null else pendingCallId
+    val answeredAfter = if (wasAnswered) null else answeredCallId
+    return IncomingCallCleanup(
+        clearPendingOffer = wasPending,
+        cancelRingNotification = wasPending,
+        clearAttachedSession = wasAnswered,
+        stopForegroundService = pendingAfter == null && answeredAfter == null,
+    )
+}
 
