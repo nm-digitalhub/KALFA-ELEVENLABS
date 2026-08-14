@@ -42,8 +42,29 @@ android {
     applicationId = "me.kalfa.agentconsole"
     minSdk = 24
     targetSdk = 36
-    versionCode = 10
-    versionName = "5.5"
+    // Build identity, not just a marketing number.
+    //
+    // versionName was "5.5" and had not changed since the project was initialized on
+    // 2026-07-20 — so every APK ever produced reported the same string, and the version
+    // shown in Android's own app-info screen identified nothing. That cost real time:
+    // diagnosing a device problem on 2026-08-14 meant guessing which build was
+    // installed, and a whole line of reasoning ("the message has no stage suffix, so
+    // login must have failed first") turned out to hinge on whether the installed build
+    // even contained the code that writes that suffix. It did not, and the screenshot
+    // could not say so.
+    //
+    // CI stamps the commit into versionName, so a screenshot of the app-info screen now
+    // answers "which build is this" on sight. Local builds keep the bare name — an
+    // uncommitted working tree has no honest sha to claim.
+    //
+    // providers.environmentVariable (not System.getenv) so the configuration cache
+    // tracks it as an input; this build runs with the configuration cache enabled and
+    // a raw getenv would be read once and then silently reused across runs.
+    versionCode = 10 + (providers.environmentVariable("GITHUB_RUN_NUMBER").orNull?.toIntOrNull() ?: 0)
+    versionName = providers.environmentVariable("GITHUB_SHA").orNull
+        ?.take(7)
+        ?.let { sha -> "5.5 ($sha)" }
+        ?: "5.5"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

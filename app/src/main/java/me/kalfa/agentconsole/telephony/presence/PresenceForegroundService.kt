@@ -64,7 +64,7 @@ class PresenceForegroundService : Service() {
         // changed" — refresh synchronously here (cheap, no network) so the very
         // first notification built below already reflects reality; refreshed again
         // every heartbeat tick (see startHeartbeatAndObservers).
-        RingCapabilityState.refresh(applicationContext)
+        PresenceActions.refreshAndReportRingCapability(applicationContext)
         // Seed the in-process push-registration signal from the durable record
         // BEFORE the first notification is built below — a process that was just
         // restarted (kill, then START_STICKY) must show the truth immediately, not
@@ -168,7 +168,7 @@ class PresenceForegroundService : Service() {
                         // No OS callback for a settings change — piggyback on the
                         // same cadence so a fix (or a new break) is reflected within
                         // one heartbeat interval, not only at service (re)start.
-                        RingCapabilityState.refresh(applicationContext)
+                        PresenceActions.refreshAndReportRingCapability(applicationContext)
                     }
                 }
             }

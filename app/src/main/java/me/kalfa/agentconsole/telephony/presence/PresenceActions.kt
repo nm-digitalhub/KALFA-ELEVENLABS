@@ -1,5 +1,6 @@
 package me.kalfa.agentconsole.telephony.presence
 
+import android.content.Context
 import me.kalfa.agentconsole.data.toAppFailure
 import me.kalfa.agentconsole.di.DependencyContainer
 import me.kalfa.agentconsole.domain.error.AppResult
@@ -77,7 +78,7 @@ object PresenceActions {
             // NOT run through AppFailure/FailureMapping (there is no operation here
             // to map a status code from). See telephony/vox/RingCapability.kt's kdoc.
             DependencyContainer.appContext?.let { context ->
-                reportRingCapability(RingCapabilityState.refresh(context))
+                refreshAndReportRingCapability(context)
             }
         }
     }
@@ -163,6 +164,34 @@ object PresenceActions {
         detail.startsWith("vox_register:") || detail.startsWith("registerForPushNotifications:") ->
             " המכשיר קיבל מזהה, אך מערכת הטלפוניה דחתה את הרישום."
         else -> ""
+    }
+
+    /**
+     * Re-reads the device's ring capability AND republishes the agent-visible banner
+     * to match it.
+     *
+     * The banner used to be published from exactly one place — the READY branch of
+     * [applyStatus] — while `RingCapabilityState.refresh` was ALSO called on its own
+     * from PresenceForegroundService (startup + every heartbeat). That split meant the
+     * persistent notification tracked reality on a 30-second cadence while the in-app
+     * banner was frozen at whatever was true the last time the agent set themselves
+     * READY. Since the banner is `dismissible = false` and clears only via
+     * `resolve(RING_CAPABILITY_MESSAGE_ID)` inside [reportRingCapability], a fixed
+     * problem stayed on screen indefinitely.
+     *
+     * That is not hypothetical: the owner tapped the banner's own "אפשר עכשיו" button
+     * (added the same day), granted full-screen-intent in Settings — device screenshot
+     * confirms the system toggle ON — came back, and the app still said
+     * "מסך שיחה נכנסת לא ייפתח במכשיר נעול". A fix-it button whose success cannot clear
+     * the message it fixed is worse than no button: it teaches the agent the banner is
+     * noise, which is exactly what it must never be.
+     *
+     * So refresh and report are one call now, and every caller uses it. Cheap and
+     * network-free (RingCapabilityChecker only reads NotificationManager), so calling
+     * it on the heartbeat cadence costs nothing.
+     */
+    fun refreshAndReportRingCapability(context: Context) {
+        reportRingCapability(RingCapabilityState.refresh(context))
     }
 
     // Two distinct messages because the consequences differ (RingCapability's kdoc):
