@@ -7,6 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.TimeZone
 
 class ManualDialPolicyTest {
     private fun guest(
@@ -72,5 +73,15 @@ class ManualDialPolicyTest {
         assertTrue(dispatchPresentation(dispatch("failed", "temporary_dispatch_failure")).retryAllowed)
         assertTrue(dispatchPresentation(dispatch("skipped", "max_concurrency")).retryAllowed)
         assertFalse(dispatchPresentation(dispatch("blocked", "balance_below_reserve")).retryAllowed)
+    }
+
+    @Test fun callbackTimeIsHumanReadableAndNeverAnEnumOrRawIso() {
+        val original = TimeZone.getDefault()
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("Asia/Jerusalem"))
+            assertEquals("23.07.2026 13:00", formatCallbackScheduledAt("2026-07-23T10:00:00Z"))
+        } finally {
+            TimeZone.setDefault(original)
+        }
     }
 }
