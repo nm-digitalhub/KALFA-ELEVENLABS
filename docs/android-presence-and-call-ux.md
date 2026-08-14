@@ -750,3 +750,120 @@ new cases in `PresenceNotificationBuilderTest.kt` covering the priority rules ag
 Whether `canUseFullScreenIntent()` reports correctly, whether the settings deep links
 actually land on the right screen, and whether the fix is durable after the user
 grants it, are all open per "What could not be verified" above.
+
+## Update 2026-08-14 (latest): the confirmed root cause of the empty `push_results` —
+## a mis-signed installed APK, not the swallowed-`Result` bug
+
+**Correction to the "even later" section above.** That section ruled out root cause
+(b) — "no working Firebase config" — by extracting `google_app_id` from the installed
+APK and confirming `google-services.json` was baked in. That check answers a different
+question than the one that matters: whether the APK's **signing certificate** is one
+Google will accept requests from. A build can carry a perfectly valid
+`google-services.json` and still have every FCM token request rejected at Google's API
+layer if it is signed with a certificate that isn't on the API key's allow-list.
+Conflating the two was the gap.
+
+**[measured, git history + `gh run view`]** On 2026-08-14, the Firebase Android API
+key for project `kalfa-rsvp` (`10b5313d-d8dd-4f6b-b9f4-36f1ba07cb15`) was restricted
+(ops action, recorded in `AGENTS.md` "Build & CI") to package `me.kalfa.agentconsole` +
+SHA-1 `e011b737d04d91d3488c991ca96d089117b8734c` — the certificate of
+`my-upload-key.jks`, the release signing key. `app/build.gradle.kts`'s `buildTypes`
+block (`app/build.gradle.kts:81-88`) declares a `signingConfig` for `release` only;
+`debug` gets AGP's own default debug config, and this repo's CI workflow generates that
+keystore **fresh on every run** (`.github/workflows/android-build.yml`, "Create
+temporary debug keystore" step, `keytool -genkeypair` with no persisted/cached
+keystore path) — a new, random certificate every build, none of them the upload key's.
+Restriction enforcement happens on Google's servers at request time, not at build or
+install time, so this applies to every debug build regardless of when it was compiled
+relative to the restriction being added.
+
+**[measured, `gh run view 31791889800`]** The CI run this doc's own "even later"
+section identifies as the source of the installed APK (`ccb7bc5` + the icon commits)
+published three artifacts: `kalfa-debug-apk`, `kalfa-release-apk`, `kalfa-release-aab`
+— confirming a `kalfa-debug-apk` genuinely existed from that run and was available to
+install. **[inference, not confirmed from this environment]** which of the two APK
+variants from that run is the one actually on the device could not be determined
+without device access; the strong circumstantial case for the debug variant is that
+(a) it was the default, no-extra-steps download throughout this project's ad-hoc
+testing (there is no Play distribution yet), and (b) the same-day fix below exists
+specifically because someone connected this mechanism to a real, currently-broken
+install — not as a hypothetical hygiene concern.
+
+**[measured, byte-for-byte, corroborating]** The exact Hebrew string the owner
+reported seeing, "המכשיר לא נרשם לקבלת שיחות כשהאפליקציה סגורה" (no trailing
+"בדוק את החיבור ונסה שוב"), is `FailureContext.PUSH_REGISTRATION` under
+`AppFailure.Unknown` specifically (`ui/message/FailureMessages.kt:44-48`), not
+`AppFailure.NetworkUnavailable` (`:7-11`, which appends that trailing sentence).
+`Throwable.toAppFailure()` (`data/FailureMapping.kt:6-10`) maps to `NetworkUnavailable`
+only for `java.io.IOException`; anything else — including the
+`RuntimeExecutionException`/`FirebaseException`-shaped errors Google Play services
+throws for an API-key/certificate rejection, which are not `IOException` — falls to
+`Unknown`. The specific message the owner saw is consistent with an API-key rejection
+and inconsistent with a plain connectivity failure, though the exact exception type has
+never been read off a device.
+
+**This was already fixed prospectively, same day, before this note:** commit `b5a11f4`
+stopped CI from publishing `kalfa-debug-apk` as an installable artifact, specifically
+because of this mechanism (see that commit's own message — it states the certificate
+mismatch outright). It does not fix a device that already has the old debug build
+installed; nothing in this repo can push new bits to that device.
+
+**The unblock, verified as available right now:** the latest green run on `main`
+(`31816353447`, commit `b134ac4`) reached `ready=true` in "Check release readiness"
+and published `kalfa-release-apk` / `kalfa-release-aab`, signed with the upload key
+whose SHA-1 is the one the API key allow-list holds. **Uninstalling the current app and
+installing that release APK is the fix** — no code change is needed for this root
+cause, because there is no app-code bug in it: the platform-side rejection happens
+before any of this app's own registration logic runs. Uninstall first — a
+signature-mismatch reinstall over the existing (differently-signed) app will be
+refused by the OS.
+
+**To confirm which certificate is actually on the device**, before or after
+reinstalling: `apksigner verify --print-certs <the-apk-file>` (run against a copy of
+whatever was installed, if one is available) or, with `adb` reachable,
+`adb shell dumpsys package me.kalfa.agentconsole | grep -A2 signatures` — compare the
+SHA-1 against `e011b737d04d91d3488c991ca96d089117b8734c`. Neither could be run from
+this environment (no device attached).
+
+**What this finding does NOT establish:** that `registerCurrentPushToken()` succeeds
+end to end on a correctly-signed build, or that a push actually wakes the device inside
+the ring window. Both remain unverified per "What could not be verified" above. The
+"fcm_token:"/"registerForPushNotifications:" tag on the next registration attempt from
+a `kalfa-release-apk` install is the next real signal to read.
+
+### A second, independent finding: the wake-path timeout can silently swallow the
+### push-registration outcome — flagged, not fixed here
+
+**[measured, byte-verified via `javap` on the shipped `android-sdk-core-3.2.0.aar`]**
+`PushManager.registerPushToken$android_sdk_core_release` sends the registration
+request immediately if the SDK's own internally-tracked client state is already
+`LoggedIn`, otherwise queues it and flushes on the next login transition; either way,
+a per-request response timeout is scheduled via `createTimeoutFutureForRequest` at a
+hard-coded `PUSH_MANAGER.PUSH_TOKEN_TIMEOUT = 10_000L` (10 seconds) — not
+configurable from this app's side.
+
+`VoxFirebaseMessagingService.WAKE_PUSH_TIMEOUT_MS = 9_000L`
+(`telephony/vox/VoxFirebaseMessagingService.kt:93`) wraps the **entire** three-step
+sequence (`ensureLoggedIn` → `handlePushNotification` → `registerPushToken`) in one
+`withTimeoutOrNull`. Because 9s < the SDK's own 10s internal timeout, if
+`registerPushToken()` is still in flight when the outer 9s deadline fires, the whole
+coroutine — including the `suspendCancellableCoroutine` awaiting the SDK's
+`RegisterPushTokenCallback` — is cancelled before the SDK's own timeout could ever
+have delivered `onFailure`. The result: no success, no failure, nothing recorded via
+`PushRegistrationState`/`PresenceStateStore` — a push-wake re-registration attempt
+that runs long produces a genuinely silent non-outcome, structurally the same shape of
+bug `db49786` fixed for the interactive path.
+
+**Not the cause of today's symptom:** the interactive READY-tap registration path
+(`ConsoleViewModel.setAgentStatus` → `PresenceActions.applyStatus`) has no such
+timeout, and the platform's own logs show the failure starting from the very first
+registration attempt of the day — before any push-wake cycle could have run at all.
+
+**Not fixed in this change, deliberately:** the "right" number depends on how long
+`ensureLoggedIn`'s three login paths and `handlePushNotification` actually take on a
+real device — exactly the still-open, still-unmeasured cold-start timing test this doc
+and `AGENTS.md` "Push wake-up" already flag repeatedly. Widening the outer timeout
+without that data is another guess stacked on an already-flagged guess (the original
+9s was itself "a judgment call... NOT a measured figure" per its own comment); shrinking
+the registration step's effective budget further would make the race worse, not
+better. Fix together with that timing test, not in isolation from it.
