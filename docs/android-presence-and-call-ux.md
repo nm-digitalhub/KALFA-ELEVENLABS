@@ -751,8 +751,99 @@ Whether `canUseFullScreenIntent()` reports correctly, whether the settings deep 
 actually land on the right screen, and whether the fix is durable after the user
 grants it, are all open per "What could not be verified" above.
 
-## Update 2026-08-14 (latest): the probable root cause of the empty `push_results` —
-## a mis-signed installed APK, not the swallowed-`Result` bug — pending one device check
+## Update 2026-08-14 (latest): RETRACTED as the cause of today's incident — timeline
+## refutes it. Real mechanism, wrong incident. Kept below, corrected, not deleted.
+
+**The section that follows this note originally claimed the mis-signed-debug-APK /
+Firebase-API-key-restriction mechanism explained the empty `push_results` observed in
+session 7665916994 and earlier the same day. It does not, and the claim was wrong —
+caught by a timeline check the original write-up skipped.**
+
+```
+push_results:[] first observed (session logs, from)     2026-08-14 10:31 UTC
+push_results:[] observed, session 7665916994             2026-08-14 11:24:29 UTC
+Firebase Android API key restricted (gcloud updateTime)  2026-08-14 12:47:46 UTC
+```
+
+The restriction — verified via `gcloud services api-keys describe
+10b5313d-d8dd-4f6b-b9f4-36f1ba07cb15 --project=kalfa-rsvp --format='value(updateTime)'`
+— was applied **83 minutes after** the session this doc already cited as evidence, and
+over two hours after the earliest identical failures the same day. No Android
+application restriction existed on that API key before 12:47:46 UTC. A restriction
+that does not yet exist cannot reject a request that already failed. The mechanism
+described below is real, but it is not what caused the failures this doc attributed it
+to, and the section's original "confirmed"/"probable root cause" framing (and the
+matching bullet added to `AGENTS.md`'s "Push wake-up" section) was wrong to assert.
+
+**What still stands, and is worth keeping:**
+- The mechanism itself (debug builds signed by a keystore CI regenerates every run;
+  the API key restriction, now live, only allow-lists the release upload key's SHA-1)
+  is real and is now a genuine forward-looking trap **from 12:47:46 UTC onward** — any
+  debug-signed install attempting FCM registration after that timestamp will fail this
+  way. `b5a11f4` (already on `main` before this correction) already prevents CI from
+  publishing an installable debug APK for exactly this reason. Nothing here changes
+  that; it is good, still-valid, defensive work — just not an explanation for events
+  that happened before the trap existed.
+- The corroborating detail — the exact Hebrew string the owner reported,
+  "המכשיר לא נרשם לקבלת שיחות כשהאפליקציה סגורה" with no trailing sentence — is
+  `AppFailure.Unknown` under `FailureContext.PUSH_REGISTRATION`
+  (`ui/message/FailureMessages.kt:44-48`), not `AppFailure.NetworkUnavailable`
+  (`:7-11`, which appends "בדוק את החיבור ונסה שוב"). That still narrows the search:
+  whatever throws is not a `java.io.IOException` (`data/FailureMapping.kt:6-10`). It
+  does not, on its own, distinguish *which* non-`IOException` failure it was — see the
+  next section.
+- Installing `kalfa-release-apk` (latest green run, `31816353447`/`b134ac4`) is still
+  worth doing regardless — it carries the visibility fixes (the `fcm_token:` /
+  `registerForPushNotifications:` tagging) that the next section explains do not
+  reliably reach the surface the owner may have been reading from. It is a genuine
+  diagnostic upgrade even though it is not confirmed to be *the* fix.
+
+**What is now open again, unconfirmed:** why `push_results` has been empty since
+10:31 UTC, hours before the API key was touched. See the next section for a
+code-derived narrowing (not yet device-verified) and the remaining candidate
+directions from `AGENTS.md`'s original task framing.
+
+### Note on the persistent notification vs. the in-app banner — a distinction the
+### retracted section did not check, and the next investigator needs
+
+`PresenceNotificationBuilder.contentTextFor` (`telephony/presence/
+PresenceNotificationBuilder.kt:80-94`) renders push-registration failure as
+`pushRegistrationFailure.toHebrewMessage(FailureContext.PUSH_REGISTRATION)` — the
+coarse `AppFailure` only. It has no access to, and never renders, the WHICH-step
+`detail` string (`"fcm_token: ..."` / `"registerForPushNotifications: ..."`) that
+`VoxClientManager.registerCurrentPushToken` tags. Only `PresenceActions.
+reportPushRegistrationResult`'s `AppMessageCenter` banner
+(`telephony/presence/PresenceActions.kt:111-142`, via `pushFailureStageSuffix`)
+appends that detail, as a second sentence.
+
+Consequence: **if the owner's report of the exact text came from the persistent
+notification (the always-visible surface this whole design centers on), the absence
+of a "the device itself..."/"the telephony system rejected..." second sentence proves
+nothing about which step failed** — the notification never shows that sentence
+either way. Only if the text came from the in-app banner does a bare, unsuffixed
+sentence mean `registerCurrentPushToken()` was never reached at all (i.e.
+`VoxClientManager.ensureLoggedIn()` failed first — none of its own exception messages,
+`"no Supabase session"` / `"agent has no Voximplant identity (sdk-auth 409)"` /
+`"not a console agent (sdk-auth 401)"` / `"sdk-auth HTTP ..."` / `"connect: ..."` /
+`"requestOneTimeKey: ..."` / `"loginWithOneTimeKey: ..."` / `"loginWithAccessToken:
+..."` / `"refreshToken: ..."`, start with `fcm_token:` or `registerForPushNotifications:`
+either). This has not been established either way — which surface produced the text
+the owner reported is unknown from this environment and needs to be asked, not
+assumed.
+
+**The ground truth that settles it without needing the UI at all:**
+`PresenceStateStore.recordPushRegistrationOutcome` persists the tagged `detail` string
+durably (`telephony/presence/PresenceStateStore.kt:104-116`, DataStore Preferences,
+file `presence_state.preferences_pb` under the app's `files/datastore/` directory). If
+the device is reachable even briefly: `adb shell run-as me.kalfa.agentconsole cat
+/data/data/me.kalfa.agentconsole/files/datastore/presence_state.preferences_pb` (works
+only if the installed build is debuggable — `run-as` requires it) would show the exact
+persisted `push_registration_failure_detail` key, which is the actual answer,
+independent of any Hebrew-text inference. If that is not possible, `adb logcat`
+captured while the agent taps "זמין" — filtered for the Voximplant SDK's own `Logger`
+output and this app's package — is the next-best evidence: the SDK's `PushManager`
+(byte-verified via `javap`) logs its own failures (`PushTokenError`, connection-state
+transitions) independently of anything this app reports.
 
 **Correction to the "even later" section above.** That section ruled out root cause
 (b) — "no working Firebase config" — by extracting `google_app_id` from the installed
