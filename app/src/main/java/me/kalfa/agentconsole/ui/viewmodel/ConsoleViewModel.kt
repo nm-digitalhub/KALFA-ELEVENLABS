@@ -69,6 +69,10 @@ data class ConsoleUiState(
     val currentSessionMuted: Boolean = false,
     val currentSessionHeld: Boolean = false,
     val currentSessionDuration: Int = 0,
+    // Media path to the cloud is down on a leg that is otherwise still up — see
+    // CallSession.isReconnecting. Drives ActiveCallScreen's banner; without it a
+    // mid-call audio drop is invisible and the duration keeps reassuring.
+    val currentSessionReconnecting: Boolean = false,
     // Form inputs for In-Call screen
     val inCallNotes: String = "",
     val inCallRsvpAnswer: RsvpAnswer = RsvpAnswer.ATTENDING,
@@ -204,14 +208,16 @@ class ConsoleViewModel : ViewModel() {
                         session.state,
                         session.isMuted,
                         session.isHeld,
-                        session.durationSec
-                    ) { state, muted, held, duration ->
+                        session.durationSec,
+                        session.isReconnecting
+                    ) { state, muted, held, duration, reconnecting ->
                         _uiState.update { ui ->
                             ui.copy(
                                 currentSessionState = state,
                                 currentSessionMuted = muted,
                                 currentSessionHeld = held,
-                                currentSessionDuration = duration
+                                currentSessionDuration = duration,
+                                currentSessionReconnecting = reconnecting
                             )
                         }
                     }.collect()
@@ -221,7 +227,8 @@ class ConsoleViewModel : ViewModel() {
                             currentSessionState = CallState.DISCONNECTED,
                             currentSessionMuted = false,
                             currentSessionHeld = false,
-                            currentSessionDuration = 0
+                            currentSessionDuration = 0,
+                            currentSessionReconnecting = false
                         )
                     }
                 }

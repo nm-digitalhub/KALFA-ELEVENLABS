@@ -32,6 +32,29 @@ import me.kalfa.agentconsole.domain.model.CallState
 import me.kalfa.agentconsole.domain.model.RsvpAnswer
 import me.kalfa.agentconsole.ui.theme.*
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DEAD CODE AS OF THIS COMMIT, AND DELIBERATELY NOT REVIVABLE AS-IS.
+//
+// `MainActivity`'s `session != null && BuildConfig.DEBUG` call site — the only one
+// this screen ever had — was removed when `ActiveCallScreen` replaced it. Nothing
+// references `InCallScreen`, `CallActionButton` or `DtmfKeypad` any more.
+//
+// DO NOT WIRE THIS BACK UP. Two of its controls are dishonest, which is why it was
+// replaced rather than reused:
+//
+//  * "שמור ונתק" loses the agent's work, silently. `ConsoleViewModel.submitRsvpAndHangup`
+//    builds an `RsvpResult` around a FABRICATED `guestId` (`"guest-" + random`) and hands
+//    it to `SupabaseRsvpRepository.saveRsvpResult`, which is an intentionally empty body:
+//    RSVP outcomes belong to the ElevenLabs client-tools pipeline and the console must
+//    never write them (AGENTS.md "Known state" #3). The agent types the guest's answer,
+//    taps save, and it goes nowhere — then the call is hung up, so it cannot be retried.
+//  * The DTMF keypad sends tones nowhere. The agent leg is bridged to the RSVPAgent
+//    scenario, which has no DTMF handler.
+//
+// Kept rather than deleted only because the file was another agent's to remove; deletion
+// is the recommended follow-up. See ActiveCallScreen.kt's header for what replaced it and
+// what was deliberately left out.
+// ─────────────────────────────────────────────────────────────────────────────
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun InCallScreen(

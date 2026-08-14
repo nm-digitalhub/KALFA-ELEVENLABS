@@ -201,10 +201,15 @@ class MainActivity : ComponentActivity() {
                         // Adaptive nav: bottom bar on compact, rail on expanded. Hidden entirely during a call.
                         AdaptiveConsoleScaffold(
                             navController = navController,
-                            // Hide nav exactly when the (DEBUG-only) in-call overlay shows.
-                            // In release currentSession is always null (see below), so nav
-                            // always shows.
-                            showNavigation = !(state.currentSession != null && BuildConfig.DEBUG)
+                            // Always. The connected-call surface is now a top-level
+                            // overlay drawn OUTSIDE AuthGate (see the ActiveCallScreen
+                            // block further down), and a full-size Material3 Surface
+                            // already covers the nav and blocks touches through it — so
+                            // there is nothing left for this flag to hide. It used to
+                            // read `!(currentSession != null && BuildConfig.DEBUG)`,
+                            // which hid the nav for a screen that could not render in
+                            // release anyway.
+                            showNavigation = true
                         ) {
                             val snackbarHostState = remember { SnackbarHostState() }
                             LaunchedEffect(snackbarHostState) {
@@ -242,37 +247,26 @@ class MainActivity : ComponentActivity() {
                                         .fillMaxWidth()
                                         .weight(1f)
 
-                                    // Full-screen in-call overlay — DEBUG-only. In a release
-                                    // build the real engine never fabricates a session (it
-                                    // throws until the telephony-wiring step) and the ViewModel
-                                    // gates monitor/takeover/outbound to an honest "בקרוב"
-                                    // notice, so this fake in-call surface is structurally
-                                    // unreachable in production. Kept for DEBUG demos and as the
-                                    // layout the telephony-wiring step will wire for real.
-                                    val session = state.currentSession
-                                    if (session != null && BuildConfig.DEBUG) {
-                                        InCallScreen(
-                                            customerName = session.customerName,
-                                            customerPhone = session.customerPhone,
-                                            state = state.currentSessionState,
-                                            isMuted = state.currentSessionMuted,
-                                            isHeld = state.currentSessionHeld,
-                                            durationSec = state.currentSessionDuration,
-                                            notes = state.inCallNotes,
-                                            rsvpAnswer = state.inCallRsvpAnswer,
-                                            guestsCount = state.inCallGuestsCount,
-                                            onNotesChange = { viewModel.updateInCallNotes(it) },
-                                            onRsvpAnswerChange = { viewModel.updateInCallRsvpAnswer(it) },
-                                            onGuestsCountChange = { viewModel.updateInCallGuestsCount(it) },
-                                            onMuteToggle = { viewModel.toggleMute() },
-                                            onHoldToggle = { viewModel.toggleHold() },
-                                            onSendDtmf = { viewModel.sendDtmf(it) },
-                                            onHangup = { viewModel.hangupDirectly() },
-                                            onSubmitRsvpAndHangup = { viewModel.submitRsvpAndHangup() }
-                                        )
-                                    } else {
-                                        ConsoleNavHost(navController, state, viewModel, contentModifier)
-                                    }
+                                    // The DEBUG-gated InCallScreen branch that used to sit
+                                    // here is GONE, and its removal is the fix this file
+                                    // exists to carry.
+                                    //
+                                    // It read `if (session != null && BuildConfig.DEBUG)`.
+                                    // That gate was written when a session could only be a
+                                    // DEBUG mock, and it stayed in place after
+                                    // CallEngine.attachIncomingSession made a REAL answered
+                                    // call publish a real session
+                                    // (docs/android-presence-and-call-ux.md §3). Measured
+                                    // consequence, reported from the first live answered
+                                    // call on 2026-08-14: the agent answered and the app
+                                    // showed him THIS — the dashboard — with no timer, no
+                                    // controls and no sign a call was in progress.
+                                    //
+                                    // The connected call is now drawn by ActiveCallScreen as
+                                    // a top-level overlay outside AuthGate; see that block
+                                    // below for why the placement, not this Column, is where
+                                    // it has to live.
+                                    ConsoleNavHost(navController, state, viewModel, contentModifier)
                                 }
                             }
                         }
@@ -301,6 +295,63 @@ class MainActivity : ComponentActivity() {
                 // overlay, so TalkBack would offer a third, unlabelled, does-nothing
                 // action beside "ענה" and "דחה" — on a locked-screen surface whose
                 // entire design is two labelled buttons.
+                // ── The connected call ────────────────────────────────────────────
+                //
+                // Declared BEFORE the ring overlay on purpose: in a Box the later child
+                // draws on top, and a still-ringing second offer must be able to cover a
+                // call already in progress rather than hide behind it.
+                //
+                // OUTSIDE AuthGate, for the reason spelled out above the coordinator: an
+                // agent who answered from the notification on a push-woken process and
+                // then opens the app can land on AuthGate's spinner (session
+                // Initializing) or its LOGIN FORM (RefreshFailure) — with a live call in
+                // their ear and no way to hang up from the screen. Inside AuthGate this
+                // surface would be missing at exactly the moment it is needed most.
+                //
+                // Its own collectAsState rather than hoisting AuthGate's `state`: hoisting
+                // would mean reading uiState above AuthGate and threading it down, which
+                // changes the recomposition scope of every authenticated screen. A second
+                // collector on the same StateFlow is cheap and local.
+                val callState by viewModel.uiState.collectAsState()
+                val callVisibility = activeCallVisibility(
+                    hasSession = callState.currentSession != null,
+                    state = callState.currentSessionState,
+                )
+                if (callVisibility != ActiveCallVisibility.HIDDEN) {
+                    // Back does nothing while a call is up. There is no way back TO this
+                    // screen once it is dismissed — CallForegroundService's notification
+                    // carries a "נתק" action but no content intent — so letting back pop
+                    // the nav stack underneath would strand an agent mid-call with the
+                    // hangup button gone and no route back to it. Home still backgrounds
+                    // the app normally, and returning re-enters this overlay because the
+                    // session lives in the CallEngine singleton, not in screen state.
+                    BackHandler { }
+
+                    // Registered only while the call surface is on screen, and torn down
+                    // with it. AudioDeviceManager is a process-global SDK object, so an
+                    // unpaired listener would outlive every call.
+                    val audioController = remember { me.kalfa.agentconsole.telephony.vox.VoxAudioController() }
+                    val audioRoute by audioController.route.collectAsState()
+                    DisposableEffect(audioController) {
+                        val stopObserving = audioController.observe()
+                        onDispose { stopObserving() }
+                    }
+
+                    ActiveCallScreen(
+                        customerName = callState.currentSession?.customerName.orEmpty(),
+                        customerPhone = callState.currentSession?.customerPhone.orEmpty(),
+                        visibility = callVisibility,
+                        callState = callState.currentSessionState,
+                        isMuted = callState.currentSessionMuted,
+                        isReconnecting = callState.currentSessionReconnecting,
+                        durationSec = callState.currentSessionDuration,
+                        audioRoute = audioRoute,
+                        onToggleMute = { viewModel.toggleMute() },
+                        onSelectAudioDevice = { audioController.selectRoute(it) },
+                        onHangup = { viewModel.hangupDirectly() },
+                    )
+                }
+
                 if (pendingOffer != null) {
                     IncomingCallScreen(
                         displayName = pendingOffer?.displayName.orEmpty(),

@@ -17,6 +17,33 @@ interface CallSession {
     val isHeld: StateFlow<Boolean>
     val durationSec: StateFlow<Int>
 
+    /**
+     * Whether the media path to the Voximplant cloud is DOWN right now on a leg that
+     * is otherwise still up — the SDK's `onCallReconnecting` / `onCallReconnected`
+     * pair (verified live against
+     * `voximplant.com/api/v2/getDoc?fqdn=references.androidsdk3.android.sdk.calls.calllistener`
+     * on 2026-08-15: "Triggered when the connection to the Voximplant Cloud is lost
+     * due to a network issues and media streams may be interrupted").
+     *
+     * Separate from [state] rather than a new [CallState] entry, deliberately. The
+     * existing enum is shared with AI-call rows read from the database and is matched
+     * exhaustively in several screens; a new constant would change the meaning of
+     * those rows and break those `when`s for a signal that only ever applies to an
+     * SDK leg. This is additive and every other implementation keeps compiling.
+     *
+     * Why it must be surfaced at all: without it a mid-call media drop is invisible.
+     * `VoxCallSession.mapState` folds the SDK's `Reconnecting` into `RINGING`, so a
+     * call whose audio has just died renders as "מחייג..." beside a duration that
+     * keeps counting up — the screen actively reassures the agent while the guest
+     * hears nothing.
+     *
+     * Default (a constant false) keeps mock mode and every other implementer
+     * compiling — see [DefaultSessionFlows] for why it must be a shared value and
+     * not a fresh one.
+     */
+    val isReconnecting: StateFlow<Boolean>
+        get() = DefaultSessionFlows.notReconnecting
+
     fun mute(muted: Boolean)
     fun hold(held: Boolean)
     fun sendDtmf(digit: String)
@@ -142,6 +169,17 @@ sealed interface PresenceSyncState {
  */
 private object DefaultEngineFlows {
     val noDispatchStatuses: StateFlow<Map<String, CallDispatchStatus>> = MutableStateFlow(emptyMap())
+}
+
+/**
+ * The constant flow [CallSession.isReconnecting]'s default hands back. Same rule, and
+ * same reason, as [DefaultEngineFlows] and [DefaultPresenceFlows]: an interface holds no
+ * backing field, so `get() = MutableStateFlow(false)` would mint a fresh flow on every
+ * read — a value that can never change and is never the same object twice, which
+ * quietly defeats any `collect` or `combine` built on it.
+ */
+private object DefaultSessionFlows {
+    val notReconnecting: StateFlow<Boolean> = MutableStateFlow(false)
 }
 
 private object DefaultPresenceFlows {
