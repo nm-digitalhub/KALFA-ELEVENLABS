@@ -146,22 +146,31 @@ class CallForegroundService : Service() {
     }
 
     /**
-     * Starts typed, with one narrow retry for one specific, temporary condition: a
-     * manifest whose `foregroundServiceType` ceiling does not include `phoneCall` yet.
+     * Starts typed, with NO fallback if the type is refused — deliberately.
      *
-     * The type passed must be a subset of the manifest attribute or ActiveServices
-     * (refs/heads/main, L2207) throws IllegalArgumentException — "is not a subset of
-     * foregroundServiceType attribute ... in service element of manifest file". The
-     * manifest widening (`phoneCall|microphone`) and this file are separate commits on
-     * separate branches, and if they merge in the wrong order every answered call would
-     * lose its foreground service. Retrying with the microphone bit alone is exactly the
-     * behaviour that shipped before this change, so a wrong-order merge degrades to the
-     * old, working answer path instead of to nothing.
+     * The value passed must be a subset of the manifest's `foregroundServiceType`
+     * attribute or ActiveServices (refs/heads/main, L2207) throws IllegalArgumentException
+     * carrying its own diagnosis: "foregroundServiceType 0x… is not a subset of
+     * foregroundServiceType attribute 0x… in service element of manifest file". The
+     * caller logs that message verbatim, so the failure names its own cause.
      *
-     * Deliberately narrow: only IllegalArgumentException, and only when a microphone bit
-     * is available to fall back TO. A RINGING start has none, so it rethrows rather than
-     * silently retrying with a type that is illegal from the background anyway. This
-     * retry becomes dead code once both commits are in, and should be deleted then.
+     * An earlier version of this function retried with the microphone bit alone, to
+     * absorb the window where the manifest widening had not merged yet. It was removed at
+     * telecom-owner's request and they were right: the hazard is merge ordering, whose
+     * control is the lead, and a retry here would have masked an open-ended class of
+     * FUTURE manifest misconfiguration — a narrowed ceiling, a renamed service, an edited
+     * attribute — by silently downgrading it to microphone-only forever. Insuring against
+     * one known transient at the price of hiding every later one is a bad trade, and this
+     * repo already carries the receipt for "temporary" code that outlives its reason (the
+     * commented-out ConsoleConnectionService stub, removed only in 66ad7dc).
+     *
+     * Worth stating precisely, because the reasoning for removing it was partly built on
+     * a wrong premise: a refused type does NOT crash. startForegroundCompat catches it,
+     * logs ERROR, and returns false, so the service stops and the answered call runs with
+     * no ongoing notification and no process protection. Visible on a desk (the "שיחה
+     * פעילה" notification and its hangup action simply never appear) and legible in
+     * logcat — but it is a missing notification, not a stack trace. Do not go looking for
+     * a crash that will not come.
      *
      * The API-level branch lives HERE rather than at the call site so Lint can see the
      * guard in the same function as the API-29 `startForeground` overload — `NewApi` is
@@ -172,14 +181,7 @@ class CallForegroundService : Service() {
             startForeground(NOTIFICATION_ID, notification)
             return
         }
-        try {
-            startForeground(NOTIFICATION_ID, notification, type)
-        } catch (e: IllegalArgumentException) {
-            val micOnly = type and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            if (micOnly == 0) throw e
-            Log.w(TAG, "manifest ceiling lacks phoneCall — retrying microphone-only: ${e.message}")
-            startForeground(NOTIFICATION_ID, notification, micOnly)
-        }
+        startForeground(NOTIFICATION_ID, notification, type)
     }
 
     private fun hasRecordAudio(): Boolean =
