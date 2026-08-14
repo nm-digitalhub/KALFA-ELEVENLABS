@@ -35,8 +35,34 @@ object DependencyContainer {
     // "activity" is the signature of a headless push wake — the case the whole
     // telemetry channel exists to observe.
     fun attach(context: Context, via: String = "other") {
-        val first = applicationContext == null
-        if (first) applicationContext = context.applicationContext
+        // `synchronized`, NOT a bare check-then-act on the @Volatile field, and the
+        // difference only became consequential when `via` arrived.
+        //
+        // The old body — `if (applicationContext == null) applicationContext = …` —
+        // raced harmlessly: two threads could both observe null and both assign,
+        // but they assigned the SAME application context, so nothing downstream
+        // could tell. Hanging a side effect off that read changes the stakes.
+        // `attach` is called from three threads with no happens-before between
+        // them (MainActivity.onCreate on main, VoxFirebaseMessagingService.onCreate
+        // on the FCM delivery thread, PresenceActionReceiver.onReceive on a
+        // binder thread), so two of them could each take the `first` branch and
+        // each emit app.attach with a DIFFERENT `via`.
+        //
+        // That is the one field this whole channel most depends on: "fcm with no
+        // matching activity" is the signature of a headless push wake, and a race
+        // there can produce both, or file the process under the wrong entry point.
+        // A diagnostic whose headline field can be wrong is worse than no
+        // diagnostic. Same lock and same reasoning as the four properties below,
+        // whose kdoc already documents this hazard in as many words. (Found by
+        // `analyst` in review; the old body was correct until this change.)
+        val first = synchronized(this) {
+            if (applicationContext == null) {
+                applicationContext = context.applicationContext
+                true
+            } else {
+                false
+            }
+        }
         if (!first) return
         // Reading the property is what CREATES and installs telemetry, so the
         // writer thread is up before any other call-path code runs. Deliberately

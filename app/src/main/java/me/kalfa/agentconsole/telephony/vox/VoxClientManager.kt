@@ -418,11 +418,26 @@ class VoxClientManager(
     }.onFailure { e ->
         // `stage` splits the two failure domains this method already separates in
         // its message — a local Google Play services / FCM problem fetching the
-        // token, versus Voximplant rejecting the token we did get. AGENTS.md
-        // records that reading this ONE string is the action that decides which
-        // branch of the push investigation is live, and that no more code should
-        // be written before it is read. Until now it existed only in a
-        // notification the agent had to be looking at.
+        // token, versus Voximplant rejecting the token we did get.
+        //
+        // AGENTS.md says reading this ONE string decides which branch of the push
+        // investigation is live and that no more code should be written before it
+        // is read. **That guidance is stale and should not be acted on**: the
+        // branch was settled from bytecode, not from a device. The app never
+        // called `VICore.initialize(Context)`, so `VICalls.initialize()` threw on
+        // the first statement of every login attempt, forever — which is why all
+        // 76 ring attempts showed `push_results: []` and no Android client
+        // appeared in 2724 Voximplant sessions. `81788b3` fixed it.
+        //
+        // The string matters MORE now, for the opposite reason. Until that fix,
+        // this method was UNREACHABLE — login never succeeded, so neither
+        // `fcm_token` nor `vox_register` could ever have been the answer.
+        // Registration is about to execute for the first time in this app's
+        // existence, and the two branches have genuinely different owners: a
+        // device-local Play Services problem, or Voximplant rejecting a token we
+        // did obtain. Keep the event; do not hold work waiting on it.
+        // (Correction owed to `analyst`, who caught me repeating the stale
+        // premise from AGENTS.md.)
         val message = e.message.orEmpty()
         val stage = when {
             // MUST come first, for the same reason the two catch blocks above

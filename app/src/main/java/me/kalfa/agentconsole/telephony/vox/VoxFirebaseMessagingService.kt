@@ -135,13 +135,27 @@ class VoxFirebaseMessagingService : FirebaseMessagingService() {
      * precisely the question this whole channel was built to answer, and which
      * has until now had to be inferred from an absence of evidence.
      *
-     * The two flushes cost nothing when telemetry is off (the default): both
-     * return immediately. When it is on they are bounded at 200ms and 300ms.
-     * That ceiling is deliberate — WAKE_PUSH_TIMEOUT_MS is already 9s against a
-     * ~10s budget and AGENTS.md flags that it races the SDK's own 10s internal
-     * registration timeout, so the diagnostic must not be what pushes it over.
-     * Nothing is lost if either expires: the local file already holds every line
-     * and the next pump ships them.
+     * Both flushes cost nothing when telemetry is off (the default): they return
+     * immediately. When it is on, the local one is bounded at 200ms and the
+     * upload at 300ms — and **the upload is skipped entirely when the 9s budget
+     * was already consumed.**
+     *
+     * That skip is not a micro-optimisation, it decouples two worst cases that
+     * otherwise arrive together. `WAKE_PUSH_TIMEOUT_MS` is 9s, sized to sit under
+     * Android's ~10s background-execution budget "leaving headroom", and AGENTS.md
+     * flags that it already races the SDK's own 10s internal registration timeout.
+     * 500ms is most of that headroom. Worse, `timedOut == true` means the full 9s
+     * was spent, which in practice means the network was bad — which is exactly
+     * when `flushUploadsBestEffort` burns its entire 300ms achieving nothing. So
+     * the slow path and the slow flush correlated, and the sum landed at ~9.5s
+     * against ~10s precisely on the runs least able to afford it.
+     *
+     * The local flush is kept unconditionally, because it is the one the whole
+     * `tail -f` story rests on: the file is the record of truth (see
+     * TelemetryLogFile's kdoc) and the upload is a convenience on top. Nothing is
+     * lost by skipping the upload — the lines are on disk, and "שלח יומן" or the
+     * next pump ships them. (Raised by `fixer`, whose correlation argument is what
+     * makes this worth doing rather than shrugging at.)
      */
     private fun finishWake(startedAtMs: Long, timedOut: Boolean) {
         Telemetry.emit(
@@ -151,7 +165,9 @@ class VoxFirebaseMessagingService : FirebaseMessagingService() {
             "incoming" to Telemetry.incomingCallSeen().toString(),
         )
         Telemetry.flushLocalBlocking(LOCAL_FLUSH_MS)
-        runBlocking { Telemetry.flushUploadsBestEffort(UPLOAD_FLUSH_MS) }
+        if (!timedOut) {
+            runBlocking { Telemetry.flushUploadsBestEffort(UPLOAD_FLUSH_MS) }
+        }
     }
 
     companion object {
