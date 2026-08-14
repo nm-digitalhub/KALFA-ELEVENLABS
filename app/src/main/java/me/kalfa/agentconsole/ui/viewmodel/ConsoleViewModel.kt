@@ -3,6 +3,8 @@ package me.kalfa.agentconsole.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import me.kalfa.agentconsole.di.DependencyContainer
+import me.kalfa.agentconsole.telephony.vox.RingCapabilityChecker
+import me.kalfa.agentconsole.telephony.presence.PresenceActions
 import me.kalfa.agentconsole.domain.model.*
 import me.kalfa.agentconsole.domain.telephony.*
 import me.kalfa.agentconsole.domain.error.AppFailure
@@ -379,6 +381,30 @@ class ConsoleViewModel : ViewModel() {
             "retry_calls" -> callRepo.refresh()
             "retry_campaigns" -> campaignRepo.refresh()
             "retry_rsvp" -> rsvpRepo.refresh()
+            // The ring-capability banners used to describe where to go instead of
+            // taking the agent there ("ניתן לתקן דרך התראת הנוכחות הקבועה"). Neither
+            // capability has a runtime dialog that could ever appear — both are
+            // Settings-only toggles — so a banner without a button leaves the agent
+            // to find a screen they have no reason to know the name of.
+            //
+            // appContext rather than an Activity: this handler is reached from a
+            // banner that can be published by PresenceActions running under the
+            // foreground service, with no Activity guaranteed alive. Both intents
+            // already carry FLAG_ACTIVITY_NEW_TASK for exactly that reason.
+            PresenceActions.ACTION_OPEN_NOTIFICATION_SETTINGS ->
+                DependencyContainer.appContext?.let { ctx ->
+                    runCatching { ctx.startActivity(RingCapabilityChecker.appNotificationSettingsIntent(ctx)) }
+                }
+            // Null below API 34, where there is nothing to grant — then this is
+            // correctly a no-op rather than a crash, and the banner that offered it
+            // cannot appear on such a device anyway (fullScreenIntentAllowed is
+            // hard-coded true there).
+            PresenceActions.ACTION_OPEN_FULL_SCREEN_INTENT_SETTINGS ->
+                DependencyContainer.appContext?.let { ctx ->
+                    RingCapabilityChecker.fullScreenIntentSettingsIntent(ctx)?.let { intent ->
+                        runCatching { ctx.startActivity(intent) }
+                    }
+                }
         }
     }
 

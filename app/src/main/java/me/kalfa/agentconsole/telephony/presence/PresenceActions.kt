@@ -8,6 +8,7 @@ import me.kalfa.agentconsole.telephony.vox.RingCapability
 import me.kalfa.agentconsole.telephony.vox.RingCapabilityState
 import me.kalfa.agentconsole.ui.message.AppMessageCenter
 import me.kalfa.agentconsole.ui.message.FailureContext
+import me.kalfa.agentconsole.ui.message.MessageAction
 import me.kalfa.agentconsole.ui.message.MessageSeverity
 import me.kalfa.agentconsole.ui.message.UiMessage
 import me.kalfa.agentconsole.ui.message.toHebrewMessage
@@ -29,6 +30,12 @@ object PresenceActions {
     private const val PRESENCE_MESSAGE_ID = "presence_sync"
     private const val PUSH_REGISTRATION_MESSAGE_ID = "push_registration"
     private const val RING_CAPABILITY_MESSAGE_ID = "ring_capability"
+
+    // Handled in ConsoleViewModel.handleGlobalMessageAction. Public because the
+    // banner and its handler live on opposite sides of the ui/telephony boundary and
+    // a literal string in two files is exactly how these silently stop matching.
+    const val ACTION_OPEN_NOTIFICATION_SETTINGS = "ring_open_notification_settings"
+    const val ACTION_OPEN_FULL_SCREEN_INTENT_SETTINGS = "ring_open_fsi_settings"
 
     /**
      * Sets the agent's status and, for READY specifically, declares shift and drives
@@ -170,7 +177,8 @@ object PresenceActions {
                     id = RING_CAPABILITY_MESSAGE_ID,
                     severity = MessageSeverity.ERROR,
                     title = "התראות למסוף חסומות",
-                    body = "שיחות נכנסות לא יוצגו כלל במכשיר זה. יש לאפשר התראות בהגדרות המכשיר.",
+                    body = "שיחות נכנסות לא יוצגו כלל במכשיר זה.",
+                    primaryAction = MessageAction("פתח הגדרות התראות", ACTION_OPEN_NOTIFICATION_SETTINGS),
                     dismissible = false,
                     deduplicationKey = RING_CAPABILITY_MESSAGE_ID,
                 ),
@@ -180,7 +188,8 @@ object PresenceActions {
                     id = RING_CAPABILITY_MESSAGE_ID,
                     severity = MessageSeverity.WARNING,
                     title = "מסך שיחה נכנסת לא ייפתח במכשיר נעול",
-                    body = "שיחות עלולות להתפספס כשהמכשיר נעול. ניתן לתקן דרך התראת הנוכחות הקבועה.",
+                    body = "שיחות עלולות להתפספס כשהמכשיר נעול.",
+                    primaryAction = MessageAction("אפשר עכשיו", ACTION_OPEN_FULL_SCREEN_INTENT_SETTINGS),
                     dismissible = false,
                     deduplicationKey = RING_CAPABILITY_MESSAGE_ID,
                 ),

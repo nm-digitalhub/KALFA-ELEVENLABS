@@ -80,3 +80,39 @@ class PresenceNotificationTapTest {
         assertEquals(0, n.flags and Notification.FLAG_AUTO_CANCEL)
     }
 }
+
+/**
+ * The in-app banners for a ring-capability problem must carry a BUTTON, not a
+ * sentence telling the agent where to go looking.
+ *
+ * Both capabilities are Settings-only toggles — neither has a runtime dialog that
+ * could ever appear — so a banner without an action leaves the agent to find a
+ * screen they have no reason to know the name of. The locked-screen one previously
+ * read "ניתן לתקן דרך התראת הנוכחות הקבועה", which pointed at a different surface
+ * entirely.
+ *
+ * Pure: this asserts on the message objects PresenceActions publishes, so no
+ * Android is needed and the action ids stay pinned to the ids the ViewModel
+ * actually handles — a literal string on each side of that boundary is exactly how
+ * these silently stop matching.
+ */
+class RingCapabilityBannerActionTest {
+
+    @org.junit.Test
+    fun `the action ids the banners publish are the ones the handler expects`() {
+        // Guards the ui/telephony boundary: ConsoleViewModel.handleGlobalMessageAction
+        // branches on these same constants, so a rename on one side without the other
+        // would silently produce a button that does nothing — the exact class of
+        // failure this whole change exists to remove.
+        assertEquals("ring_open_notification_settings", PresenceActions.ACTION_OPEN_NOTIFICATION_SETTINGS)
+        assertEquals("ring_open_fsi_settings", PresenceActions.ACTION_OPEN_FULL_SCREEN_INTENT_SETTINGS)
+    }
+
+    @org.junit.Test
+    fun `the two ids are distinct, so one button cannot open the other screen`() {
+        assertNotEquals(
+            PresenceActions.ACTION_OPEN_NOTIFICATION_SETTINGS,
+            PresenceActions.ACTION_OPEN_FULL_SCREEN_INTENT_SETTINGS,
+        )
+    }
+}

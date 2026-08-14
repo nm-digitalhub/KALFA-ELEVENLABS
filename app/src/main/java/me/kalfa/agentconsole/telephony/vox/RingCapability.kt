@@ -74,6 +74,18 @@ object RingCapabilityChecker {
     }
 
     /**
+     * The app's own notification settings — the only place a blocked app-level
+     * notification permission can be turned back on. Unlike a runtime permission
+     * denied twice, where Android's guidance is to respect the choice and stop
+     * asking, this is a toggle the agent is expected to reach themselves; there is
+     * no dialog that could ever offer it.
+     */
+    fun appNotificationSettingsIntent(context: Context): Intent =
+        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    /**
      * Sends the agent to the one settings screen that can grant full-screen intent.
      * Null below API 34, where there is nothing to grant — callers should treat null as
      * "no action needed", never as an error.
