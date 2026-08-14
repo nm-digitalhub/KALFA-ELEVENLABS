@@ -1,0 +1,89 @@
+package me.kalfa.agentconsole.data
+
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+/**
+ * Regression guard for the cold-start defect described in SessionGate.kt: every console
+ * read and every Realtime join fired at construction time, before the Supabase session
+ * had loaded, and supabase-kt silently substituted the anon key — which holds no SELECT
+ * on any relation this app reads (measured against the live project). The agent was shown
+ * "הפעולה לא הושלמה. נסה שוב." over their own data, and "נסה שוב" fixed it because by then
+ * the session had settled.
+ *
+ * Pure flow logic, so it is asserted directly with no Android, no Supabase client and no
+ * network on the classpath — the same approach as PresenceShiftWatcherTest.
+ */
+class SessionGateTest {
+
+    @Test
+    fun `does not fire while the session is still initializing`() = runTest {
+        // Exactly Auth.sessionStatus on a cold process: AuthImpl starts _sessionStatus at
+        // SessionStatus.Initializing and loads the stored session in a detached coroutine.
+        val signedIn = MutableStateFlow(false)
+        var fetches = 0
+        backgroundScope.launch { signedIn.enteredSignedIn().collect { fetches++ } }
+
+        runCurrent()
+
+        // This is where the anon-key reads used to go out.
+        assertEquals(0, fetches)
+    }
+
+    @Test
+    fun `fires once the session settles as signed in`() = runTest {
+        val signedIn = MutableStateFlow(false)
+        var fetches = 0
+        backgroundScope.launch { signedIn.enteredSignedIn().collect { fetches++ } }
+
+        runCurrent()
+        signedIn.value = true
+        runCurrent()
+
+        assertEquals(1, fetches)
+    }
+
+    @Test
+    fun `fires immediately for a collector that arrives already signed in`() = runTest {
+        // The repositories ConsoleViewModel constructs are built after AuthGate has let
+        // the app through, so they must not be made to wait for a transition that already
+        // happened. A StateFlow replays its current value, and distinctUntilChanged always
+        // passes its first emission.
+        val signedIn = MutableStateFlow(true)
+        var fetches = 0
+        backgroundScope.launch { signedIn.enteredSignedIn().collect { fetches++ } }
+
+        runCurrent()
+
+        assertEquals(1, fetches)
+    }
+
+    @Test
+    fun `a token refresh of an already-signed-in session does not re-fire`() = runTest {
+        // Auth.sessionStatus re-emits Authenticated with a NEW UserSession on every
+        // background token refresh. Each emission here (re)joins a Realtime channel, and
+        // subscribe() on an already-joined channel sends a duplicate JOIN — so the
+        // repeated `true`s must collapse. This is what distinctUntilChanged buys.
+        assertEquals(
+            listOf(Unit),
+            flowOf(false, true, true, true).enteredSignedIn().toList(),
+        )
+    }
+
+    @Test
+    fun `signing out and back in fires again`() = runTest {
+        // Not cosmetic: supabase-kt drops the Realtime socket on session loss
+        // (disconnectOnSessionLoss defaults to true) and never reconnects on its own, so
+        // the second sign-in is the only thing that can re-join the feed.
+        assertEquals(
+            listOf(Unit, Unit),
+            flowOf(false, true, false, true).enteredSignedIn().toList(),
+        )
+    }
+}

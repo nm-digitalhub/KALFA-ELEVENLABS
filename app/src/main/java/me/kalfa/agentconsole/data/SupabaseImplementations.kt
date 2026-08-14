@@ -18,6 +18,7 @@ import io.github.jan.supabase.realtime.realtime
 import io.github.jan.supabase.realtime.channel
 import io.github.jan.supabase.realtime.postgresChangeFlow
 import io.github.jan.supabase.realtime.PostgresAction
+import io.github.jan.supabase.realtime.RealtimeChannel
 import io.ktor.client.*
 import io.ktor.client.engine.okhttp.*
 import io.ktor.client.request.*
@@ -328,28 +329,65 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
     private val _callHistory = MutableStateFlow<List<Call>>(emptyList())
     override val callHistory: StateFlow<List<Call>> = _callHistory.asStateFlow()
 
+    // Declared BEFORE init on purpose: property initializers and init blocks run in
+    // declaration order, so a `= null` sitting below the block that starts the coroutine
+    // which assigns it is a loaded gun.
+    private var callFeedChannel: RealtimeChannel? = null
+
     init {
-        fetchCalls()
+        // Nothing is read and no channel is joined until the session is signed in — see
+        // SessionGate.kt for the measured reason. The wait cannot live in the UI layer:
+        // this repository is constructed during MainActivity's FIRST composition
+        // (`remember { DependencyContainer.incomingCallCoordinator }` -> callEngine ->
+        // callRepository), i.e. while AuthGate is still showing its spinner, and again
+        // from a bare PresenceForegroundService START_STICKY restart with no Activity at
+        // all.
+        scope.launch {
+            client.signedInSessions().collect {
+                fetchCalls()
+                subscribeToCallFeed()
+            }
+        }
         // console_events is a VIEW (no realtime, §4) — poll lightly in the foreground
         // so a deleted/renamed event disappears without restarting the app (spec §8.4).
         scope.launch {
             while (isActive) {
-                if (AppVisibility.isForeground.value) fetchEvents()
+                if (AppVisibility.isForeground.value && client.hasUserSession()) fetchEvents()
                 delay(60_000)
             }
         }
-        scope.launch {
-            try {
-                val channel = client.realtime.channel("db-console-call-feed")
-                val changeFlow = channel.postgresChangeFlow<PostgresAction>(schema = "public") {
-                    table = "console_call_feed"
+    }
+
+    /**
+     * Joins the feed channel, creating it at most once and re-joining on every later
+     * sign-in. Both halves are deliberate.
+     *
+     * The channel and its change flow are created ONCE because `postgresChangeFlow`
+     * registers the binding that `subscribe()` sends inside its JOIN payload, and
+     * because it throws outright ("You cannot call postgresChangeFlow after joining the
+     * channel") once the channel is joined. `realtime.channel(id)` returns the existing
+     * instance for a topic, so the guard here is about the flow, not the channel.
+     *
+     * `subscribe()` runs again on each later sign-in because supabase-kt drops the socket
+     * on session loss (`Realtime.Config.disconnectOnSessionLoss` defaults to true) and
+     * never reconnects by itself: `RealtimeImpl.init`'s status collector only acts while
+     * the socket is CONNECTED. Without the re-join, signing out and back in inside one
+     * process left the live feed permanently dead.
+     */
+    private suspend fun subscribeToCallFeed() {
+        try {
+            val channel = callFeedChannel
+                ?: client.realtime.channel("db-console-call-feed").also { fresh ->
+                    val changeFlow = fresh.postgresChangeFlow<PostgresAction>(schema = "public") {
+                        table = "console_call_feed"
+                    }
+                    // CRITICAL: collect BEFORE subscribe(), or events are lost.
+                    scope.launch { changeFlow.collect { fetchCalls() } }
+                    callFeedChannel = fresh
                 }
-                // CRITICAL: collect BEFORE subscribe(), or events are lost.
-                launch { changeFlow.collect { fetchCalls() } }
-                channel.subscribe()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            channel.subscribe()
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
@@ -371,6 +409,7 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
     // restarting the app (spec §8.4). REPLACE semantics — _events is overwritten, so
     // a row that is gone upstream is dropped here too.
     private suspend fun fetchEvents() {
+        if (!client.hasUserSession()) return
         try {
             val evs = client.postgrest["console_events"].select()
                 .decodeList<DbConsoleEvent>()
@@ -383,6 +422,11 @@ class SupabaseCallRepository(private val client: SupabaseClient) : CallRepositor
 
     private fun fetchCalls() {
         scope.launch {
+            // Belt-and-braces against a caller that is not the signed-in gate:
+            // refresh() (the "נסה שוב" button) and the realtime change flow both land
+            // here. An anon read would not merely return nothing — it errors, and the
+            // error is what the agent is shown.
+            if (!client.hasUserSession()) return@launch
             // Event names are a display nicety — fetch them independently so a
             // failure here can never block the feed below.
             refreshEventNames()
@@ -452,11 +496,18 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
     private val httpClient = HttpClient(OkHttp)
 
     init {
+        // First read waits for a signed-in session — see SessionGate.kt. This
+        // repository happens to be constructed after sign-in today (ConsoleViewModel
+        // builds it, and that only exists inside AuthGate), and the gate is a no-op in
+        // that case: a new collector is replayed sessionStatus's current value. It is
+        // here so the invariant holds for every repository rather than for the two that
+        // are provably raced today.
+        scope.launch { client.signedInSessions().collect { fetchCampaigns() } }
         // console_campaigns / console_campaign_targets are VIEWS — Supabase Realtime
         // does not emit postgres_changes for views, so refresh on a light poll.
         scope.launch {
             while (isActive) {
-                if (AppVisibility.isForeground.value) fetchCampaigns()
+                if (AppVisibility.isForeground.value && client.hasUserSession()) fetchCampaigns()
                 delay(60_000)
             }
         }
@@ -466,6 +517,7 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
 
     private fun fetchCampaigns() {
         scope.launch {
+            if (!client.hasUserSession()) return@launch
             // Event names label campaigns only — read them best-effort so a missing/
             // failing console_events view never blocks campaign+target population.
             val names: Map<String, String> = try {
@@ -514,6 +566,7 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
     override fun getEventGuests(eventId: String): StateFlow<List<EventGuest>> {
         val flow = eventGuestsMap.getOrPut(eventId) { MutableStateFlow(emptyList()) }
         scope.launch {
+            if (!client.hasUserSession()) return@launch
             try {
                 val rows = client.postgrest["console_event_guests"].select {
                     filter { eq("event_id", eventId) }
@@ -573,11 +626,16 @@ class SupabaseRsvpRepository(private val client: SupabaseClient) : RsvpRepositor
     override val rsvpResults: StateFlow<List<RsvpResult>> = _rsvpResults.asStateFlow()
 
     init {
+        // First read waits for a signed-in session — see SessionGate.kt. Unlike the
+        // campaign repository this one IS raced today: it is constructed alongside the
+        // call repository, during MainActivity's first composition, before AuthGate has
+        // resolved anything.
+        scope.launch { client.signedInSessions().collect { fetchRsvpResults() } }
         // console_rsvp_results is a VIEW (no realtime) — poll lightly; the dashboard's
         // freshness driver is console_call_feed realtime anyway.
         scope.launch {
             while (isActive) {
-                if (AppVisibility.isForeground.value) fetchRsvpResults()
+                if (AppVisibility.isForeground.value && client.hasUserSession()) fetchRsvpResults()
                 delay(60_000)
             }
         }
@@ -587,6 +645,7 @@ class SupabaseRsvpRepository(private val client: SupabaseClient) : RsvpRepositor
 
     private fun fetchRsvpResults() {
         scope.launch {
+            if (!client.hasUserSession()) return@launch
             try {
                 val rows = client.postgrest["console_rsvp_results"].select()
                     .decodeList<DbRsvpRow>()
@@ -650,39 +709,28 @@ class SupabaseCallEngineImpl(
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
+    // Declared before init — see the same fields on SupabaseCallRepository for why.
+    private var agentStatusChannel: RealtimeChannel? = null
+    private var dispatchStatusChannel: RealtimeChannel? = null
+
     init {
+        // Every read and both channel joins wait for a signed-in session — see
+        // SessionGate.kt. This engine is on the same cold-start path as the call
+        // repository (DependencyContainer.incomingCallCoordinator constructs it during
+        // MainActivity's first composition, and PresenceForegroundService.
+        // startForegroundCompat constructs it with no Activity at all), so both its
+        // channels were joining as anon on the very run where it matters most.
+        //
+        // fetchAgentStatus in particular was worse than a failed read: it returns early
+        // when there is no user id, so on a cold start the first status read silently did
+        // nothing at all, and was then only ever re-driven by the agent_status channel
+        // that had itself just joined unauthenticated.
         scope.launch(Dispatchers.IO) {
-            try {
+            client.signedInSessions().collect {
                 fetchAgentStatus()
-                
-                val channel = client.realtime.channel("agent_status_channel")
-                val changeFlow = channel.postgresChangeFlow<PostgresAction>(schema = "public") {
-                    table = "agent_status"
-                }
-                
-                launch {
-                    changeFlow.collect {
-                        fetchAgentStatus()
-                    }
-                }
-                
-                channel.subscribe()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-        scope.launch(Dispatchers.IO) {
-            try {
-                val channel = client.realtime.channel("call_dispatch_status_channel")
-                val changes = channel.postgresChangeFlow<PostgresAction>(schema = "public") {
-                    table = "call_dispatch_status"
-                }
-                // Supabase can emit immediately after subscribe; collect first.
-                launch { changes.collect { fetchTrackedDispatchStatuses() } }
-                channel.subscribe()
+                subscribeToAgentStatus()
+                subscribeToDispatchStatus()
                 fetchTrackedDispatchStatuses()
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
         }
         // Reconciliation poll is intentional: views and Realtime connections can
@@ -690,7 +738,10 @@ class SupabaseCallEngineImpl(
         // every dispatch_id still being tracked is read from the source of truth.
         scope.launch(Dispatchers.IO) {
             while (isActive) {
-                if (AppVisibility.isForeground.value && trackedDispatchIds.value.isNotEmpty()) {
+                if (AppVisibility.isForeground.value &&
+                    client.hasUserSession() &&
+                    trackedDispatchIds.value.isNotEmpty()
+                ) {
                     fetchTrackedDispatchStatuses()
                 }
                 delay(15_000)
@@ -698,7 +749,44 @@ class SupabaseCallEngineImpl(
         }
     }
 
+    // Created once, re-joined on each later sign-in — see
+    // SupabaseCallRepository.subscribeToCallFeed for the full reasoning behind that
+    // split; it applies verbatim to both channels here.
+    private suspend fun subscribeToAgentStatus() {
+        try {
+            val channel = agentStatusChannel
+                ?: client.realtime.channel("agent_status_channel").also { fresh ->
+                    val changeFlow = fresh.postgresChangeFlow<PostgresAction>(schema = "public") {
+                        table = "agent_status"
+                    }
+                    scope.launch(Dispatchers.IO) { changeFlow.collect { fetchAgentStatus() } }
+                    agentStatusChannel = fresh
+                }
+            channel.subscribe()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private suspend fun subscribeToDispatchStatus() {
+        try {
+            val channel = dispatchStatusChannel
+                ?: client.realtime.channel("call_dispatch_status_channel").also { fresh ->
+                    val changes = fresh.postgresChangeFlow<PostgresAction>(schema = "public") {
+                        table = "call_dispatch_status"
+                    }
+                    // Supabase can emit immediately after subscribe; collect first.
+                    scope.launch(Dispatchers.IO) { changes.collect { fetchTrackedDispatchStatuses() } }
+                    dispatchStatusChannel = fresh
+                }
+            channel.subscribe()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     private suspend fun fetchTrackedDispatchStatuses() {
+        if (!client.hasUserSession()) return
         val ids = trackedDispatchIds.value
         if (ids.isEmpty()) return
         try {
