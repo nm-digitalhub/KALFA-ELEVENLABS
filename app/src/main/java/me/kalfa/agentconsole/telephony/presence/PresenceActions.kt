@@ -343,7 +343,15 @@ object PresenceActions {
                 // "registerForPushNotifications: ..."); AppFailure itself stays the
                 // coarse, reused-everywhere taxonomy (see PersistedPushRegistrationFailure's
                 // kdoc for why this travels as a separate raw string).
-                val detail = e.message
+                // `?: e::class.simpleName` is the difference between a classified
+                // failure and a bare banner. pushFailureStageSuffix's first branch is
+                // `detail == null -> ""`, so ANY exception with a null message rendered
+                // with no stage sentence at all -- it never reached the tag matching.
+                // That is not exotic: ExceptionInInitializerError and a bare
+                // IllegalStateException() both carry a null message, and a failing
+                // VICalls static initialiser produces exactly the former. Same idiom the
+                // SDK-boundary throws in VoxClientManager already use.
+                val detail = e.message ?: e::class.simpleName
                 persistPushRegistrationOutcome(failure, nowMs, detail)
                 PushRegistrationState.recordFailure(failure, detail)
                 AppMessageCenter.publish(

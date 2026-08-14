@@ -254,11 +254,21 @@ class VoxClientManager(
     suspend fun registerCurrentPushToken(): Result<Unit> = runCatching {
         val token = try {
             FirebaseMessaging.getInstance().token.awaitTask()
+        } catch (e: CancellationException) {
+            // MUST precede catch (e: Exception): CancellationException IS an Exception in
+            // Kotlin, so without this a cancellation -- in practice the timeout
+            // PresenceActions.ensurePushRegistration wraps this call in -- would be
+            // re-tagged "fcm_token:" and reported as a Google Play services problem. A
+            // timed-out attempt is not an FCM failure, and mislabelling it would send
+            // whoever reads the banner to the wrong device subsystem entirely.
+            throw e
         } catch (e: Exception) {
             throw VoxAuthException.Sdk("fcm_token: ${e.message ?: e::class.simpleName}")
         }
         try {
             registerPushTokenSuspend(token)
+        } catch (e: CancellationException) {
+            throw e // same reason as above -- must not become "vox_register:"
         } catch (e: VoxAuthException) {
             throw e // already tagged "registerForPushNotifications: ..." at the source
         } catch (e: Exception) {
