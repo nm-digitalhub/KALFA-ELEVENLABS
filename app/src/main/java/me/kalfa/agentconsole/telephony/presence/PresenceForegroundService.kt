@@ -38,6 +38,14 @@ private data class PresenceNotificationInputs(
     val ringCapability: RingCapability?,
 )
 
+// The AOSP claims in this file are cited by SYMBOL — `ActiveServices
+// .serviceForegroundTimeout()`, `ServiceStartNotAllowedException extends
+// IllegalStateException` — deliberately, not by line number. A symbol survives the drift
+// that a `refs/heads/main` line number does not, and it is grep-able as written. If one
+// stops resolving, treat the claim as unverified rather than hunting for where it moved:
+// the platform changing that code is the event these findings would need re-deriving for.
+// (CallForegroundService carries the line-numbered citations and a resolve recipe.)
+//
 // Makes "I am on shift" a technical fact rather than a ViewModel-scoped claim that
 // dies with the Activity — see docs/android-presence-and-call-ux.md §1 for the full
 // design and the reasoning behind every decision below (cadence, specialUse FGS type,
