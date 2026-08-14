@@ -286,7 +286,7 @@ Where an item needs a code or manifest change it names the owning file, because 
 | **A-3** | **Privacy policy URL**, live and app-specific. | Play Console → **App content** | Required for apps requesting sensitive permissions, and it gates A-4: "Ensure that you've added a privacy policy; this is required to complete the Data safety form" (10787469). |
 | **A-4** | **Data safety form.** | Play Console → **App content** | Mandatory for every app. **See B-4 for what this app must disclose — and for the one input that is still unresolved and must be settled before the audio question can be answered honestly.** |
 | **A-5** | **Upload keystore + release signing secrets.** CI refuses to emit a release artifact without them, by design. | Repo secrets | Already documented in §"Build & CI" above — not restated here. |
-| **A-6** | **Create the Play entry for `me.kalfa.agentconsole`.** The old entry uses a different, permanent package name (`com.aistudio.kalfaagent.bdfgtz`) and is unusable. | Play Console | Owner action, already recorded. A package name cannot be changed after publication. |
+| **A-6** | **Create the Play entry for `me.kalfa.agentconsole`. DO THIS FIRST — A-1, A-2 and A-4 are forms *inside* this entry and cannot be started without it.** The old entry uses a different package name (`com.aistudio.kalfaagent.bdfgtz`) and is unusable. | Play Console | Owner action, already recorded. **The package name is permanent from the first upload to *any* track — internal testing included, not from public release.** That is exactly how the unusable entry came to exist. Get the applicationId right before the first upload of any kind; there is no later correction. |
 
 #### A-1. The full-screen-intent question — answered
 
@@ -307,6 +307,25 @@ Where an item needs a code or manifest change it names the owning file, because 
 **Therefore the `RingCapability` degradation path stays, permanently.** `telephony/vox/RingCapability.kt` already checks `NotificationManager.canUseFullScreenIntent()` and offers `Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT`, which is precisely the "prompt users to grant permission on new installs and gracefully degrade" the policy demands. It is the app's only safety net if approval does not arrive. Do not delete it on the strength of a submitted declaration.
 
 The claim itself is strong and should be made confidently: the app's core function is receiving routed calls, it renders `NotificationCompat.CallStyle.forIncomingCall` with `CATEGORY_CALL` (`IncomingCallNotificationBuilder.kt`), and it registers a self-managed `PhoneAccount`. **Verified: nothing further is needed in the app to make this claim honest.**
+
+**Hard platform constraint, independent of any Play decision: never remove `USE_FULL_SCREEN_INTENT` from the manifest, and never refactor `CallStyle` away. Either one is a crash, not a downgrade.** AOSP `NotificationManagerService` (`refs/heads/main`, read during this audit) rejects a `CallStyle` notification outright:
+
+```java
+if (n.isStyle(Notification.CallStyle.class)) {                       // L8741-8750
+    boolean hasFullScreenIntent = n.fullScreenIntent != null;
+    boolean requestedFullScreenIntent = (n.flags & FLAG_FSI_REQUESTED_BUT_DENIED) != 0;
+    if (!n.isFgsOrUij() && !hasFullScreenIntent && !requestedFullScreenIntent
+            && !byForegroundService) {
+        throw new IllegalArgumentException(r.getKey() + " Not posted."
+                + " CallStyle notifications must be for a foreground service or"
+                + " user initated job or use a fullScreenIntent.");
+    }
+}
+```
+
+This app posts the incoming-call notification through `NotificationManagerCompat.notify`, not `startForeground`, so `isFgsOrUij()` / `byForegroundService` are both false — the notification survives *only* via the full-screen intent. And when the app-op is off, `makeStickyHun` (L8266-8277) nulls `fullScreenIntent` and substitutes `FLAG_FSI_REQUESTED_BUT_DENIED` **only** `if (mPermissionHelper.hasRequestedPermission(Manifest.permission.USE_FULL_SCREEN_INTENT, pkg, userId))` — i.e. only because the manifest declares it. Drop the declaration and that last branch disappears too: `IllegalArgumentException` on every incoming call on Android 14+ devices where the app-op is off. The manifest line is load-bearing against a crash, which is a stronger reason to keep it than the Play argument. (Found by `notification-owner`; re-read from AOSP here before recording.)
+
+**Known gap a reviewer could ask about.** The `CallStyle` notification is not associated with a foreground service, which `developer.android.com/develop/ui/compose/notifications/call-style` recommends ("Associate CallStyle notifications on API versions 30 or earlier with a foreground service…"). The doc's `setColorized()` fallback is inert here — AOSP `Notification.java` gates `isColorized()` on `USE_COLORIZED_NOTIFICATIONS` or the notification being FGS/UIJ, and this app has neither. Not a policy violation and not an upload blocker; recorded so the answer exists if it is ever raised. It is also a second argument for B-2's foreground-service work, since an FGS-backed call notification would satisfy the first branch above outright.
 
 #### A-2. The FGS declaration — sequencing matters
 
@@ -345,7 +364,11 @@ Consequence: the *offer* leg (line 65, before any notification exists) is unexem
 
 `MANAGE_OWN_CALLS` **is** declared as of `66ad7dc` — verified in the built AAB. The prerequisite is the *declared permission*, not `CallsManager.addCall`; the manifest comment saying `FOREGROUND_SERVICE_PHONE_CALL` "belongs with the `addCall` migration" is mistaken on this point. `phoneCall` has no while-in-use prerequisite, so it does not throw from the background.
 
-Change requested of `fgs-owner` / `telecom-owner`: `CallForegroundService` → `foregroundServiceType="phoneCall"`, declare `FOREGROUND_SERVICE_PHONE_CALL`. **`phoneCall` alone — not `phoneCall|microphone`.** The system checks the prerequisites of *every* declared type, so keeping `microphone` in the pair reinstates the `SecurityException` this change removes. Whether microphone *capture* then works from a background start is a separate question that needs a physical device; the fully-correct answer per the AEP Telecom requirement is `CallsManager.addCall`, which hands Telecom audio focus outright. **Blocks nothing at upload time; breaks the core feature on Android 14+ devices, which is worse.**
+Change requested of `fgs-owner` / `telecom-owner`: `CallForegroundService` → `foregroundServiceType="phoneCall"`, declare `FOREGROUND_SERVICE_PHONE_CALL`. **`phoneCall` alone — not `phoneCall|microphone`.** The system checks the prerequisites of *every* declared type, so keeping `microphone` in the pair reinstates the `SecurityException` this change removes.
+
+> **Required device verification, and do not skip it — the fix has a failure mode worse than the bug.** Switching the type stops `startForeground` throwing, but whether microphone *capture* actually works from a background start is a separate question that no static check answers. If it does not, the app trades a loud `SecurityException` for a **connected call with no audio** — silent, harder to diagnose, and invisible to `gplay preflight` either way. Verify on a physical Android 14+ device: lock the phone, let a real routed call arrive via push, answer it, and confirm **two-way** audio. The fully-correct end state per the AEP Telecom guideline is `CallsManager.addCall`, which hands Telecom audio focus outright rather than relying on the FGS type to imply it.
+
+**Blocks nothing at upload time; breaks the core feature on Android 14+ devices, which is worse.**
 
 **B-3 — AEP Telecom conformance is partial.** The Telecom API requirement asks VoIP apps to "register all incoming and outgoing VoIP calls with the Telecom framework using the `CallsManager#addCall` API", to let Telecom own audio focus and routing rather than using audio/Bluetooth APIs directly, and to use "the `callStyle` API to display call-style notifications". `CallStyle` ✅ (`IncomingCallNotificationBuilder`); `PhoneAccount` registration ✅ (`TelecomRegistration`); **`addCall` ❌**, and `VoxAudioController` drives audio directly. **This is an Apps Experience Program guideline, NOT the Play policy that revokes the full-screen-intent app-op — do not conflate them.** They have different teeth: failing AEP costs a quality-programme badge, failing A-1's declaration costs locked-screen ringing. AEP blocks nothing at upload.
 
