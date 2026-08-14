@@ -90,9 +90,15 @@
 
       What to look for instead, in order:
         1. The ongoing "שיחה פעילה" notification and its hangup action are MISSING after
-           answering. That is the whole symptom. The call may still carry audio; what is
-           lost is the notification and the process protection that keeps the call alive
-           in the background.
+           answering. That is the whole visible symptom — and it is NOT cosmetic, which is
+           the trap. Audio sounds perfectly fine while the agent is looking at the screen:
+           OomAdjuster.getDefaultCapability gives PROCESS_STATE_TOP the full
+           PROCESS_CAPABILITY_ALL, so a visible process holds the microphone whether or not
+           any foreground service ever started. The moment the phone is pocketed and the
+           process leaves TOP that grant is gone, and with no mic-typed FGS to fall back on
+           the call goes mute. So a missing ongoing notification means "this call dies in a
+           pocket", not "a notification is missing" — do not file it as cosmetic because it
+           sounded fine on the desk.
         2. logcat, which is self-diagnosing for the ceiling case — ActiveServices emits
            "foregroundServiceType 0x… is not a subset of foregroundServiceType attribute
            0x… in service element of manifest file", naming both values.
