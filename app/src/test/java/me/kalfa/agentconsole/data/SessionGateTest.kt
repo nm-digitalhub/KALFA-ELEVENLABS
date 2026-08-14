@@ -1,5 +1,8 @@
 package me.kalfa.agentconsole.data
 
+import io.github.jan.supabase.auth.status.RefreshFailureCause
+import io.github.jan.supabase.auth.status.SessionStatus
+import io.github.jan.supabase.auth.user.UserSession
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
@@ -142,4 +145,75 @@ class SessionGateTest {
             flowOf(false, true, false, true, false).leftSignedIn().toList(),
         )
     }
+
+    // ── settledSignedIn: the narrowing that keeps a lost signal from wiping the cache ──
+    //
+    // Initializing and RefreshFailure both mean "we do not know yet", not "signed out".
+    // Mapping them to false made every one look like a sign-out to leftSignedIn and like a
+    // fresh sign-in to enteredSignedIn. RefreshFailure is the one that bites: it is what a
+    // phone in a pocket with no signal produces during the 80%-of-lifetime token refresh,
+    // and it used to wipe cached guest phone numbers on the way through.
+
+    @Test
+    fun `an unknown status produces no emission at all, in either direction`() = runTest {
+        val statuses = flowOf(
+            SessionStatus.Initializing,
+            SessionStatus.RefreshFailure(
+                RefreshFailureCause.NetworkError(java.io.IOException("no signal")),
+            ),
+        )
+
+        assertEquals(emptyList<Boolean>(), statuses.settledSignedIn().toList())
+    }
+
+    @Test
+    fun `a refresh failure mid-session neither clears nor re-fetches`() = runTest {
+        // The exact sequence a backgrounded phone produces when it loses signal and gets
+        // it back: authenticated, refresh fails, refresh succeeds. Nothing should move.
+        val statuses = flowOf(
+            authenticated(),
+            SessionStatus.RefreshFailure(
+                RefreshFailureCause.NetworkError(java.io.IOException("no signal")),
+            ),
+            authenticated(),
+        )
+
+        // distinctUntilChanged collapses the two `true`s once the failure is filtered out,
+        // so there is no second sign-in either -- which also avoids re-subscribing a
+        // Realtime channel that was never disconnected (RealtimeImpl only disconnects on
+        // NotAuthenticated).
+        assertEquals(emptyList<Unit>(), statuses.settledSignedIn().leftSignedIn().toList())
+        assertEquals(listOf(Unit), statuses.settledSignedIn().enteredSignedIn().toList())
+    }
+
+    @Test
+    fun `a real sign-out still clears`() = runTest {
+        // The 4xx refresh path calls clearSession() and so arrives as NotAuthenticated,
+        // not RefreshFailure -- so this covers it as well as an explicit sign-out.
+        val statuses = flowOf(
+            authenticated(),
+            SessionStatus.NotAuthenticated(isSignOut = true),
+        )
+
+        assertEquals(listOf(Unit), statuses.settledSignedIn().leftSignedIn().toList())
+    }
+
+    @Test
+    fun `a cold start that was never signed in clears nothing`() = runTest {
+        val statuses = flowOf(
+            SessionStatus.Initializing,
+            SessionStatus.NotAuthenticated(isSignOut = false),
+        )
+
+        assertEquals(emptyList<Unit>(), statuses.settledSignedIn().leftSignedIn().toList())
+    }
+
+    private fun authenticated() = SessionStatus.Authenticated(
+        UserSession(
+            accessToken = "access",
+            refreshToken = "refresh",
+            expiresIn = 3600,
+            tokenType = "bearer",
+        ),
+    )
 }

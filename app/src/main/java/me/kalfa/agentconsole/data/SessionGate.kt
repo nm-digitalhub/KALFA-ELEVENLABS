@@ -82,7 +82,39 @@ internal fun Flow<Boolean>.enteredSignedIn(): Flow<Unit> =
  * gate only delays the ones constructed before it, which is the whole point.
  */
 internal fun SupabaseClient.signedInSessions(): Flow<Unit> =
-    auth.sessionStatus.map { it is SessionStatus.Authenticated }.enteredSignedIn()
+    auth.sessionStatus.settledSignedIn().enteredSignedIn()
+
+/**
+ * Narrows `sessionStatus` to the two values that actually answer "is this agent signed
+ * in", and drops the two that mean "we do not know yet".
+ *
+ * `Initializing` and `RefreshFailure` are both UNKNOWN, not signed-out. Mapping them to
+ * `false` — which is what `map { it is Authenticated }` did — made every one of them look
+ * to [leftSignedIn] like the agent had signed out, and to [enteredSignedIn] like they had
+ * signed back in afterwards.
+ *
+ * `RefreshFailure` is the one that bites. Read from AuthImpl's `tryImportingSession`: a
+ * network error or 5xx during the 80%-of-lifetime refresh sets `RefreshFailure` and
+ * retries every 10s until it succeeds, while a 4xx calls `clearSession()` and becomes a
+ * real `NotAuthenticated`. So it is a transient state that resolves itself in both
+ * directions — and treating it as a sign-out meant a phone that lost signal in a pocket
+ * wiped its cached live calls, history, events, campaigns, targets, RSVP results and
+ * GUEST PHONE NUMBERS, then refetched them when signal returned.
+ *
+ * That window could not open before: while the app was backgrounded the status was pinned
+ * at `Initializing` and no refresh ran at all. Disabling supabase-kt's lifecycle callbacks
+ * (see DependencyContainer) is what lets background refreshes happen, which is exactly
+ * what makes this reachable — so the narrowing ships with it rather than after it.
+ *
+ * Filtering rather than mapping is deliberate: an unknown state should produce NO
+ * emission, so both operators below simply keep waiting instead of being told something
+ * false. It also removes a duplicate JOIN — `RefreshFailure` → `Authenticated` used to
+ * look like a fresh sign-in and re-`subscribe()` a channel that was never disconnected
+ * (RealtimeImpl only disconnects on `NotAuthenticated`).
+ */
+internal fun Flow<SessionStatus>.settledSignedIn(): Flow<Boolean> =
+    filter { it is SessionStatus.Authenticated || it is SessionStatus.NotAuthenticated }
+        .map { it is SessionStatus.Authenticated }
 
 /**
  * Whether a request issued right now would carry the agent's own JWT rather than the
@@ -122,12 +154,19 @@ internal fun Flow<Boolean>.leftSignedIn(): Flow<Unit> =
     distinctUntilChanged().dropWhile { !it }.filter { !it }.map { }
 
 /**
- * [leftSignedIn] over this client's own session status.
+ * [leftSignedIn] over this client's own session status, narrowed by [settledSignedIn].
  *
- * Note this fires for `RefreshFailure` as well as a real sign-out, which is correct for
- * clearing: a session that could not be refreshed is one whose reads would now go out as
- * `anon`, so continuing to display its rows claims a freshness the app cannot back. The
- * data returns on the next successful sign-in via [signedInSessions].
+ * This kdoc used to argue the opposite — that firing on `RefreshFailure` was "correct for
+ * clearing", because a session that cannot be refreshed would read as `anon`. That
+ * reasoning was wrong on its own terms: a read is gated by [hasUserSession], which is
+ * already false in `RefreshFailure`, so nothing stale is ever REQUESTED. Clearing on top
+ * of that does not prevent a bad read, it only throws away rows the agent is still
+ * entitled to see, and re-fetches them a moment later. The cost is paid in the one place
+ * it should never be paid — guest phone numbers, on a phone that briefly lost signal.
+ *
+ * Now only a genuine `NotAuthenticated` clears. That still covers every case the clear
+ * exists for: an explicit sign-out, and the 4xx refresh path, which calls `clearSession()`
+ * and therefore arrives here as `NotAuthenticated` rather than `RefreshFailure`.
  */
 internal fun SupabaseClient.signedOutSessions(): Flow<Unit> =
-    auth.sessionStatus.map { it is SessionStatus.Authenticated }.leftSignedIn()
+    auth.sessionStatus.settledSignedIn().leftSignedIn()
