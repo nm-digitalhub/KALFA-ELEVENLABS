@@ -16,7 +16,13 @@
 local.properties
 .env
 debug.keystore
-.github/
+# NOTE: `.github/` was ignored here from 2026-07-20 (77c307e, a Supabase-auth
+# commit that had nothing to do with CI — collateral, not a decision) until
+# 2026-08-14. android-build.yml survived only because it was already tracked;
+# any NEW file under .github/ — a second workflow, CODEOWNERS, dependabot config
+# — would have been dropped silently, with `git status` showing a clean tree.
+# Do not re-add: CI configuration is exactly the kind of thing that must be
+# versioned, and nothing secret belongs under .github/ in the first place.
 
 # Firebase client config (Phase 2 / FCM push wake-up). Not a hard secret — it
 # ships inside the APK — but it names the Firebase project and its API keys,

@@ -210,13 +210,24 @@ jobs:
             \( -name "*.apk" -o -name "*.aab" \) \
             -print 2>/dev/null || true
 
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v6
-        with:
-          name: kalfa-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-          retention-days: 14
+      # The debug APK is still BUILT above — it is what proves the debug variant
+      # compiles — but it is deliberately no longer published as an installable
+      # artifact.
+      #
+      # Debug builds are signed by AGP's default debug config, i.e. a keystore
+      # this runner generates fresh on every run, so each one carries a different
+      # random certificate. On 2026-08-14 the Firebase Android API key was
+      # restricted to package + the upload key's SHA-1, which means those debug
+      # APKs now fail FCM registration — silently, since the failure surfaces
+      # only inside the app. Publishing an APK whose push is guaranteed broken
+      # would hand whoever installs it a phantom bug to chase, which is exactly
+      # the class of false signal the push work spent a day eliminating.
+      #
+      # Install the release APK below instead: it is signed with the stable
+      # upload key that the API key restriction allows. To restore an installable
+      # debug artifact, give the debug build type a committed, stable signing
+      # config and add THAT certificate's SHA-1 to the API key's allowed
+      # applications — do not simply re-add this step.
 
       - name: Upload release APK
         if: steps.release_check.outputs.ready == 'true'
