@@ -9,6 +9,12 @@ import androidx.compose.ui.platform.LocalInspectionMode
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.MultiplePermissionsState
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
+// PermissionStatus.shouldShowRationale is an EXTENSION property (PermissionsUtil.kt,
+// verified against the installed 0.37.3 source), not an interface member — unlike
+// MultiplePermissionsState.shouldShowRationale, which resolves without an import
+// because it IS a member. Needed here because this file now reads each permission's
+// OWN rationale (PermissionState.status.shouldShowRationale) instead of the group's.
+import com.google.accompanist.permissions.shouldShowRationale
 import me.kalfa.agentconsole.ui.message.AppMessageCenter
 import me.kalfa.agentconsole.ui.message.MessageSeverity
 import me.kalfa.agentconsole.ui.message.UiMessage
@@ -35,6 +41,78 @@ fun rememberCallAudioPermissionState(): MultiplePermissionsState {
 }
 
 const val CALL_AUDIO_PERMISSION_MESSAGE_ID = "call_audio_permission"
+
+/**
+ * What [EnsureCallAudioPermission] should do about its (possibly several) missing
+ * permissions, decided PER PERMISSION and then combined — never from one group-level
+ * reading.
+ *
+ * The bug this replaces: this app used to ask `state.shouldShowRationale` — a
+ * SINGLE boolean for the whole permission group. Verified against the real installed
+ * artifact's source (accompanist 0.37.3, `MutableMultiplePermissionsState.kt`):
+ *
+ * ```
+ * override val shouldShowRationale: Boolean by derivedStateOf {
+ *     permissions.any { it.status.shouldShowRationale } &&
+ *         permissions.none { !it.status.isGranted && !it.status.shouldShowRationale }
+ * }
+ * ```
+ *
+ * That second clause makes it false — group-wide — the instant ANY missing
+ * permission's own rationale is false, which is true for BOTH "never asked" and
+ * "permanently denied" (see [classifyPermission]'s table). Paired with the old
+ * `missing.any { everRequested }` (true the instant ANY missing permission was ever
+ * logged as requested, regardless of which one), the two combine to poison the WHOLE
+ * group to [RuntimePermissionState.DeniedPermanently] whenever:
+ *
+ *  - any missing permission looks permanently denied to the system, even if a
+ *    sibling permission was never itself requested and its dialog would still
+ *    appear, OR
+ *  - any missing permission has simply never been asked yet (rationale is false for
+ *    "never asked" too), while ANY permission in the group carries a "we asked
+ *    before" record — even one that is only `DeniedOnce`, still fully requestable.
+ *
+ * Either way the group is declared un-requestable and `launchMultiplePermissionRequest()`
+ * is never called — for a permission whose system dialog absolutely would still
+ * appear. That is exactly the "no permission dialog ever shown" symptom this
+ * function exists to stop.
+ *
+ * The fix: classify each missing permission independently, using ITS OWN
+ * `PermissionState.status.shouldShowRationale` (not the group aggregate) and ITS OWN
+ * durable "asked before" record ([PermissionRequestLog]). If ANY of them is still
+ * requestable, request — `launchMultiplePermissionRequest()` always requests every
+ * configured permission together regardless of which subset is passed here (there is
+ * no accompanist API to request a subset), and Android itself already handles a
+ * mixed batch correctly: it shows a dialog only for the permissions that still can,
+ * and silently confirms "denied" for the rest in the same callback. This function
+ * only decides WHETHER to call it, never which permissions to include. Only when
+ * NOTHING in the group is requestable does this report the permanent-denial banner —
+ * and only then is that true for every permission it names.
+ */
+internal sealed class CallAudioPermissionAction {
+    data class Request(val permissions: List<String>) : CallAudioPermissionAction()
+    data class ShowPermanentDenial(val permissions: List<String>) : CallAudioPermissionAction()
+}
+
+internal fun decideCallAudioPermissionAction(
+    // permission -> THAT permission's own shouldShowRationale, never the group's.
+    revoked: List<Pair<String, Boolean>>,
+    everRequested: (String) -> Boolean,
+): CallAudioPermissionAction {
+    val classified = revoked.map { (permission, rationale) ->
+        permission to classifyPermission(
+            granted = false,
+            shouldShowRationale = rationale,
+            everRequested = everRequested(permission),
+        )
+    }
+    val requestable = classified.filter { (_, state) -> state.isRequestable }.map { it.first }
+    return if (requestable.isNotEmpty()) {
+        CallAudioPermissionAction.Request(requestable)
+    } else {
+        CallAudioPermissionAction.ShowPermanentDenial(classified.map { it.first })
+    }
+}
 
 /**
  * Requests the call-audio permissions, and — the part that was missing — notices when
@@ -67,40 +145,43 @@ fun EnsureCallAudioPermission() {
     val state = rememberCallAudioPermissionState()
 
     val granted = state.allPermissionsGranted
-    val missing = state.revokedPermissions.map { it.permission }
-    // Group-level: accompanist reports true when ANY revoked permission still has a
-    // reversible denial, which is exactly the condition for "a request can still
-    // show a dialog".
-    val rationale = state.shouldShowRationale
+    // Each permission's OWN rationale — see decideCallAudioPermissionAction's kdoc
+    // for why the group-level state.shouldShowRationale is the wrong input. Keyed
+    // into the effect below as (permission, rationale) pairs, not just permission
+    // names, so a denied-once -> denied-permanently transition (same missing set,
+    // different rationale) still re-triggers it.
+    val revoked = state.revokedPermissions.map { it.permission to it.status.shouldShowRationale }
 
-    LaunchedEffect(granted, rationale, missing) {
+    LaunchedEffect(granted, revoked) {
         if (granted) {
             AppMessageCenter.resolve(CALL_AUDIO_PERMISSION_MESSAGE_ID)
             return@LaunchedEffect
         }
+        if (revoked.isEmpty()) return@LaunchedEffect
 
-        val everRequested = missing.any { PermissionRequestLog.hasEverRequested(context, it) }
-        when (classifyPermission(granted = false, shouldShowRationale = rationale, everRequested = everRequested)) {
-            RuntimePermissionState.NeverRequested, RuntimePermissionState.DeniedOnce -> {
+        when (
+            val action = decideCallAudioPermissionAction(revoked) {
+                PermissionRequestLog.hasEverRequested(context, it)
+            }
+        ) {
+            is CallAudioPermissionAction.Request -> {
                 // Recorded at LAUNCH, not on the result: a request that produces no
                 // dialog produces no result either, so recording on the callback
                 // would never record the case this log exists to catch.
-                PermissionRequestLog.markRequested(context, missing)
+                PermissionRequestLog.markRequested(context, action.permissions)
                 state.launchMultiplePermissionRequest()
             }
 
-            RuntimePermissionState.DeniedPermanently -> AppMessageCenter.publish(
+            is CallAudioPermissionAction.ShowPermanentDenial -> AppMessageCenter.publish(
                 UiMessage(
                     id = CALL_AUDIO_PERMISSION_MESSAGE_ID,
                     severity = MessageSeverity.ERROR,
-                    title = permanentDenialTitle(missing),
-                    body = permanentDenialBody(missing),
+                    title = permanentDenialTitle(action.permissions),
+                    body = permanentDenialBody(action.permissions),
                     dismissible = false,
                     deduplicationKey = CALL_AUDIO_PERMISSION_MESSAGE_ID,
                 ),
             )
-
-            RuntimePermissionState.Granted -> AppMessageCenter.resolve(CALL_AUDIO_PERMISSION_MESSAGE_ID)
         }
     }
 }
