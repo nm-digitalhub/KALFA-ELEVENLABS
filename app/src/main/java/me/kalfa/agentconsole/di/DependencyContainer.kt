@@ -58,7 +58,65 @@ object DependencyContainer {
                 ) {
                     install(Postgrest)
                     install(Realtime)
-                    install(Auth)
+                    install(Auth) {
+                        // supabase-kt's Android build registers a ProcessLifecycleOwner
+                        // observer whose onStop calls resetLoadingState(), which sets
+                        // sessionStatus back to SessionStatus.Initializing — and leaves it
+                        // there for as long as the app is backgrounded. Read from the
+                        // library's own androidMain source (auth-kt-android 3.1.4,
+                        // io/github/jan/supabase/auth/setupPlatform.kt) and its
+                        // AuthConfig defaults (enableLifecycleCallbacks = true,
+                        // alwaysAutoRefresh = true), neither of which this app overrode.
+                        //
+                        // ProcessLifecycleOwner tracks ACTIVITY lifecycle only. A
+                        // foreground service does not hold it started. So this fires on
+                        // exactly the app this console is — one whose whole job runs while
+                        // no Activity is up — and the consequences are both remaining
+                        // symptoms of 2026-08-14:
+                        //
+                        //  - PresenceForegroundService's 30s heartbeat calls
+                        //    awaitAuthToken(), whose awaitInitialization() cannot complete
+                        //    while the status is Initializing. It times out at 3s, returns
+                        //    Unsettled -> AppFailure.Unknown, and no write leaves the
+                        //    device. agent_status.updated_at therefore freezes while the
+                        //    phone is in a pocket, the server's 90s freshness gate ages the
+                        //    agent out, and the notification reads
+                        //    "הסטטוס לא התעדכן בשרת. ייתכן ששיחות לא יגיעו." — measured
+                        //    frozen across four samples on the owner's account.
+                        //  - VoxSdkAuthClient's getJwt is a bare currentAccessTokenOrNull(),
+                        //    null in Initializing, so a backgrounded ensureLoggedIn throws
+                        //    NoSession, Voximplant login fails, registerForPushNotifications
+                        //    is never reached, and the platform holds no push token —
+                        //    measured directly as push_results: [] on 76 ring attempts.
+                        //
+                        // VERIFIED that turning this off does not disable or delay the
+                        // initial session load, which is the obvious way this could have
+                        // backfired. AuthImpl.init() calls setupPlatform() and then, as a
+                        // SEPARATE statement, runs the `if (config.autoLoadFromStorage)`
+                        // branch; autoLoadFromStorage defaults true and is not overridden.
+                        // Auto-refresh is started by importSession ("Starting auto refresh…",
+                        // sessionJob = authScope.launch), reached via loadFromStorage —
+                        // never by the observer. With the flag off, setupPlatform() is a
+                        // no-op and everything else is untouched.
+                        //
+                        // The observer's two halves are a matched pair: onStop stops
+                        // auto-refresh, onStart restarts it. Its own kdoc says that is all
+                        // it does ("stop auto-refresh on focus loss, and resume it on focus
+                        // again"). Nothing in this app calls stop/startAutoRefresh, so with
+                        // the pair removed auto-refresh simply keeps running.
+                        //
+                        // That is the intended trade, not a side effect: token refresh now
+                        // continues while backgrounded, which is precisely what an app with
+                        // a 24/7 foreground service needs and precisely what the library
+                        // default is not written for. The cost is honest and worth naming —
+                        // refreshes now happen when they fall due rather than when the agent
+                        // next opens the app, so more of them land on whatever network the
+                        // phone has at the time. A failed one becomes RefreshFailure, and
+                        // AuthGate currently renders that as a LOGIN FORM for an agent who
+                        // is signed in. That gap is real, is not created by this change, and
+                        // should be fixed next.
+                        enableLifecycleCallbacks = false
+                    }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
