@@ -391,8 +391,15 @@ Each of these looks like a finding and is not. They are listed so the next perso
 - **Runtime permission requests are wired.** `POST_NOTIFICATIONS` and `RECORD_AUDIO` are both requested through `CallAudioPermissions`, from a single deliberate call site in `MainActivity`. `RingCapability` *checks* rather than requests, which is correct — it exists to detect the settings a request cannot reach.
 - **`android.permission.DUMP` appears in the merged manifest** but is not declared in this repo's manifest — it merges in from a dependency. It is `signature|privileged`, so a normally-installed app can never hold it and it grants nothing. Cosmetic; harmless to leave.
 - **Target API 36 / min 24, 64-bit coverage, 16 KB page alignment, dex and download size** — all clean (`gplay preflight`: `native_libs ok`, `policy ok`, `size ok`, **0 errors**).
+- **If incoming-call notifications ever work while `POST_NOTIFICATIONS` reads as denied, that is not a bug.** As of `66ad7dc` this app meets all three conditions for the self-managed-calls exemption, verbatim from developer.android.com's notification-permission page: *"If your app configures itself to self-manage phone calls, you don't need the `POST_NOTIFICATIONS` permission in order for your app to send notifications that use the `Notification.CallStyle` notification style"* — requiring that the app (1) declares `MANAGE_OWN_CALLS`, (2) implements `ConnectionService`, (3) registers via `registerPhoneAccount()`. All three now hold (the AAR supplies 1 and 2; `TelecomRegistration` does 3). **This does not make requesting the permission wrong** — the exemption covers `CallStyle` only, `checkSelfPermission` still reports DENIED, and the presence FGS notification plus every non-`CallStyle` notification still need it. It is a third thing `66ad7dc` bought that its commit message did not name. (Raised by `permission-owner`.)
 
-### D. Re-running this audit
+### D. Open question — unresolved, and it undercuts the safety net if true
+
+**Does a full-screen intent require the channel's importance to be `IMPORTANCE_HIGH`, or merely not `IMPORTANCE_NONE`?** `RingCapabilityChecker.channelAlerting` tests only `importance != IMPORTANCE_NONE`. If the platform actually requires `IMPORTANCE_HIGH` for the FSI to launch, that check is too lenient and `canRingOnLockedScreen` can report a device as able to ring on a locked screen when it cannot — a false green light in exactly the degradation path A-1 pins as the app's only safety net.
+
+Not resolved here, and stated as unknown rather than guessed. `permission-owner` tried three sources including the AOSP SystemUI interruption provider; the decision delegates to a `FullScreenIntentDecisionProvider` neither of us reached. Partial mitigation on the current code: `IncomingCallNotificationBuilder.ensureChannel` creates the channel at `IMPORTANCE_HIGH`, so the gap only opens if a **user** later lowers the importance to something between `NONE` and `HIGH` — possible from system settings, not the default state. **Worth closing on a physical device before relying on `canRingOnLockedScreen` for anything user-facing;** do not "fix" `channelAlerting` to demand `IMPORTANCE_HIGH` on speculation, as that would report false negatives instead.
+
+### E. Re-running this audit
 
 ```
 gh run list -R nm-digitalhub/KALFA-ELEVENLABS --branch main --status success --limit 1
