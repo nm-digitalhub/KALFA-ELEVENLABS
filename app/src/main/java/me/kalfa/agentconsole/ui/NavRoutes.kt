@@ -9,3 +9,8 @@ import kotlinx.serialization.Serializable
 @Serializable object HistoryRoute
 @Serializable data class EventDetailRoute(val eventId: String)
 @Serializable data class CallDetailRoute(val callId: String)
+
+// Diagnostic only — deliberately NOT in `consoleDestinations`, so it never
+// appears in the navigation suite. Reached by a long-press hotspot in
+// MainActivity; see DebugLiveScreen's header for why it must work in release.
+@Serializable object DebugLiveRoute

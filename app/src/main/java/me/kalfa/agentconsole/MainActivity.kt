@@ -16,8 +16,12 @@ import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteDefaul
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -32,6 +36,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import kotlinx.coroutines.flow.collect
 import me.kalfa.agentconsole.di.DependencyContainer
+import me.kalfa.agentconsole.telemetry.Telemetry
+import me.kalfa.agentconsole.telemetry.TelemetryEvents
 import me.kalfa.agentconsole.telephony.EnsureCallAudioPermission
 import me.kalfa.agentconsole.telephony.TelecomRegistration
 import me.kalfa.agentconsole.telephony.presence.PresenceForegroundService
@@ -61,7 +67,8 @@ class MainActivity : ComponentActivity() {
         // Gives DependencyContainer's VoxTokenStore a Context. Also called from
         // VoxFirebaseMessagingService.onCreate for the cold-start-via-push case
         // (AGENTS.md "Push wake-up"); attach() is idempotent either order.
-        DependencyContainer.attach(applicationContext)
+        DependencyContainer.attach(applicationContext, via = "activity")
+        Telemetry.emit(TelemetryEvents.APP_ACTIVITY_CREATE)
         // Declares this app a self-managed calling app to the platform. Idempotent and
         // never throws — see TelecomRegistration's kdoc for why it must be in place
         // BEFORE the first Play upload rather than with the later Telecom phase: Play
@@ -228,6 +235,35 @@ class MainActivity : ComponentActivity() {
                                         messages = state.globalMessages,
                                         onAction = viewModel::handleGlobalMessageAction,
                                         onDismiss = viewModel::dismissMessage
+                                    )
+
+                                    // Long-press hotspot for the live-diagnostic screen.
+                                    //
+                                    // A hotspot rather than a fifth navigation destination:
+                                    // this is a diagnostic, not a product surface, and it
+                                    // must nonetheless work in RELEASE — CI stopped
+                                    // publishing a debug APK in b5a11f4, so a
+                                    // BuildConfig.DEBUG gate would put it on the one variant
+                                    // the owner does not install.
+                                    //
+                                    // detectTapGestures, not `clickable`/`combinedClickable`:
+                                    // a plain tap must fall through to whatever is beneath,
+                                    // and only the long press navigates.
+                                    //
+                                    // It carries a real contentDescription rather than being
+                                    // an unlabelled target — the same accessibility concern
+                                    // the ring overlay below is written against. An
+                                    // unlabelled action a screen reader announces and cannot
+                                    // explain is worse than a named one.
+                                    Box(
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .semantics { contentDescription = "אבחון חי — לחיצה ארוכה" }
+                                            .pointerInput(Unit) {
+                                                detectTapGestures(
+                                                    onLongPress = { navController.navigate(DebugLiveRoute) },
+                                                )
+                                            }
                                     )
 
                                     val contentModifier = Modifier
@@ -627,6 +663,11 @@ private fun ConsoleNavHost(
                     modifier = contentModifier
                 )
             }
+        }
+        // Diagnostic surface, off the navigation suite on purpose — see
+        // DebugLiveScreen's header and DebugLiveRoute's comment in ui/NavRoutes.kt.
+        composable<DebugLiveRoute> {
+            DebugLiveScreen(modifier = contentModifier)
         }
     }
 }

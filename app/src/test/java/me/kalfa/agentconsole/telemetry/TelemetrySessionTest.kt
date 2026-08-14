@@ -69,16 +69,24 @@ class TelemetrySessionTest {
     }
 
     @Test
-    fun `the incoming-call flag is per attempt and resets with it`() {
-        // This flag is what fcm_wake_done's `incoming=` reports — the single
-        // highest-value reading in the whole channel. A leak across attempts would
-        // make a missed call look like an answered one.
+    fun `the incoming-call flag survives the attempt closing, and resets when the next one opens`() {
+        // This flag is what fcm.wake_done's `incoming=` reports — the single
+        // highest-value reading in the whole channel, and the one that must not be
+        // able to lie in the direction of "nothing happened".
+        //
+        // The close case is the trap: a call that arrives, is not answered and
+        // disconnects INSIDE the 9s wake window closes the session before
+        // onMessageReceived returns. Clearing on close would then report
+        // incoming=false for a wake in which a call demonstrably arrived.
         val s = TelemetrySession(newId = fixedIds("p1", "c9", "cA"))
         s.openCall()
         assertFalse(s.incomingCallSeen)
         s.noteIncomingCall()
         assertTrue(s.incomingCallSeen)
         s.closeCall()
+        assertTrue("must survive the leg ending", s.incomingCallSeen)
+        // A leak into the NEXT attempt would be the opposite lie, so the next open
+        // clears it.
         s.openCall()
         assertFalse(s.incomingCallSeen)
     }

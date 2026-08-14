@@ -8,6 +8,8 @@ import me.kalfa.agentconsole.data.toAppFailure
 import me.kalfa.agentconsole.di.DependencyContainer
 import me.kalfa.agentconsole.domain.error.AppResult
 import me.kalfa.agentconsole.domain.model.AgentStatus
+import me.kalfa.agentconsole.telemetry.Telemetry
+import me.kalfa.agentconsole.telemetry.TelemetryEvents
 import me.kalfa.agentconsole.telephony.vox.RingCapability
 import me.kalfa.agentconsole.telephony.vox.RingCapabilityState
 import me.kalfa.agentconsole.telephony.vox.VoxAuthException
@@ -64,10 +66,27 @@ object PresenceActions {
      */
     suspend fun applyStatus(status: AgentStatus, voxUsername: String?) {
         val presence = DependencyContainer.agentPresence
-        reportPresenceResult(presence.setStatus(status))
+        val statusResult = presence.setStatus(status)
+        // The routing layer, not the telephony layer — and AGENTS.md is emphatic
+        // that they fail independently: an agent whose status write never lands is
+        // excluded from `ring_order` BEFORE callUser is attempted, so no push is
+        // ever sent and every telephony line below stays silent for a reason that
+        // has nothing to do with telephony.
+        Telemetry.emit(
+            TelemetryEvents.PRESENCE_STATUS_SET,
+            "s" to status.name.lowercase(),
+            "ok" to (statusResult is AppResult.Success).toString(),
+        )
+        reportPresenceResult(statusResult)
 
         if (status == AgentStatus.READY) {
-            reportPresenceResult(presence.setShiftActive(true))
+            val shiftResult = presence.setShiftActive(true)
+            Telemetry.emit(
+                TelemetryEvents.PRESENCE_SHIFT,
+                "active" to "true",
+                "ok" to (shiftResult is AppResult.Success).toString(),
+            )
+            reportPresenceResult(shiftResult)
 
             loginAndRegisterForPush(voxUsername)
 
@@ -117,7 +136,19 @@ object PresenceActions {
         // to send. If that ever needs to change, the fix is a separately-tracked
         // declared status, not a status the server rejects.
         if (!current.isAgentSettable) return
-        reportPresenceResult(presence.setStatus(current))
+        val result = presence.setStatus(current)
+        // The 30s heartbeat. Its ABSENCE from the log is the single strongest
+        // explanation for "the phone was never rung": the server drops an agent
+        // whose agent_status.updated_at is older than 90s, and on 2026-08-13 that
+        // heartbeat had been frozen for 661 minutes while the app still showed
+        // "זמין". A gap between these lines is that condition, visible as it
+        // happens rather than reconstructed afterwards.
+        Telemetry.emit(
+            if (result is AppResult.Success) TelemetryEvents.PRESENCE_HEARTBEAT_OK
+            else TelemetryEvents.PRESENCE_HEARTBEAT_FAIL,
+            "s" to current.name.lowercase(),
+        )
+        reportPresenceResult(result)
     }
 
     /**

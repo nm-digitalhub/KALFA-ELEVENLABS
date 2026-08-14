@@ -84,7 +84,18 @@ class TelemetrySession(
     /** Record that the SDK actually delivered a call inside this attempt. */
     fun noteIncomingCall() = synchronized(lock) { sawIncomingCall = true }
 
-    /** Whether [noteIncomingCall] has been called for the attempt currently open. */
+    /**
+     * Whether the SDK delivered a call since the most recent attempt OPENED.
+     *
+     * Reset by [openCall] and deliberately NOT by [closeCall], which is the
+     * difference between a true reading and a false one. `fcm.wake_done` reports
+     * this from the end of `onMessageReceived`, and a call that arrived, was not
+     * answered and disconnected inside the wake window would have already closed
+     * the session by then — so resetting on close would report `incoming=false`
+     * for a wake in which a call demonstrably arrived. That is the single line the
+     * whole channel is read for; it must not be able to lie in the direction of
+     * "nothing happened".
+     */
     val incomingCallSeen: Boolean get() = synchronized(lock) { sawIncomingCall }
 
     /**
@@ -96,7 +107,7 @@ class TelemetrySession(
         if (callSessionId == null) return null
         val elapsed = nowMs() - callOpenedAtMs
         callSessionId = null
-        sawIncomingCall = false
+        // sawIncomingCall is NOT cleared here — see [incomingCallSeen].
         elapsed
     }
 

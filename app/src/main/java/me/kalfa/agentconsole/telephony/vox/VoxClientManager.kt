@@ -30,6 +30,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import me.kalfa.agentconsole.telemetry.Telemetry
+import me.kalfa.agentconsole.telemetry.TelemetryEvents
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -137,15 +139,44 @@ class VoxClientManager(
                 hasIncomingVideo: Boolean,
                 headers: Map<String, String>?,
             ) {
-                onIncomingCall?.invoke(call, headers ?: emptyMap())
+                // THE line the whole diagnostic is waiting for. Everything before
+                // this is the app trying; this is the platform delivering.
+                //
+                // openCallSession is idempotent, so on the push path it joins the
+                // trace the FCM service already opened rather than starting a
+                // second one. It matters on the OTHER path too: an app already
+                // foreground and logged in receives a call with no push at all,
+                // and that attempt would otherwise have no `sid` of its own.
+                //
+                // `hdrs` is a COUNT. SIP headers routinely carry caller identity,
+                // so neither keys nor values are ever recorded.
+                Telemetry.openCallSession("sdk_incoming")
+                Telemetry.noteIncomingCall()
+                val listener = onIncomingCall
+                Telemetry.emit(
+                    if (listener != null) TelemetryEvents.VOX_INCOMING_CALL
+                    else TelemetryEvents.VOX_INCOMING_NO_LISTENER,
+                    "hdrs" to (headers?.size ?: 0).toString(),
+                )
+                listener?.invoke(call, headers ?: emptyMap())
             }
         })
         Client.setClientSessionListener(object : ClientSessionListener {
             override fun onConnectionClosed(reason: DisconnectReason) {
+                // A connection closing between the push and the call is one of the
+                // documented ways registerForPushNotifications silently registers
+                // nothing (ConnectionClosed) — worth a line of its own.
+                Telemetry.emit(TelemetryEvents.VOX_SESSION_STATE, "s" to "closed")
                 _loginState.value = VoxLoginState.LOGGED_OUT
             }
-            override fun onReconnecting() { _loginState.value = VoxLoginState.CONNECTING }
-            override fun onReconnected() { _loginState.value = VoxLoginState.LOGGED_IN }
+            override fun onReconnecting() {
+                Telemetry.emit(TelemetryEvents.VOX_SESSION_STATE, "s" to "reconnecting")
+                _loginState.value = VoxLoginState.CONNECTING
+            }
+            override fun onReconnected() {
+                Telemetry.emit(TelemetryEvents.VOX_SESSION_STATE, "s" to "reconnected")
+                _loginState.value = VoxLoginState.LOGGED_IN
+            }
         })
         initialized = true
     }
@@ -174,14 +205,34 @@ class VoxClientManager(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                Telemetry.emit(
+                    TelemetryEvents.VOX_SDK_INIT_FAIL,
+                    "err" to (e.message ?: e::class.simpleName ?: "unknown"),
+                )
                 throw VoxAuthException.Sdk("sdk_init: ${e.message ?: e::class.simpleName}")
             }
-            if (Client.clientState == ClientState.LoggedIn) return@runCatching
+            if (Client.clientState == ClientState.LoggedIn) {
+                Telemetry.emit(TelemetryEvents.VOX_LOGIN_START, "plan" to "already")
+                return@runCatching
+            }
             val fullUsername = VoxConfig.fullUsername(voxUsername)
 
             if (Client.clientState != ClientState.Connected) {
                 _loginState.value = VoxLoginState.CONNECTING
-                connectSuspend()
+                Telemetry.emit(TelemetryEvents.VOX_CONNECT_START)
+                try {
+                    connectSuspend()
+                } catch (e: Throwable) {
+                    // A wrong VoxConfig.node fails HERE, not at login, and presents
+                    // as a network problem — AGENTS.md flags it as the first thing
+                    // to re-check. Naming the step removes the guess.
+                    Telemetry.emit(
+                        TelemetryEvents.VOX_CONNECT_FAIL,
+                        "err" to (e.message ?: e::class.simpleName ?: "unknown"),
+                    )
+                    throw e
+                }
+                Telemetry.emit(TelemetryEvents.VOX_CONNECT_OK)
             }
             _loginState.value = VoxLoginState.LOGGING_IN
 
@@ -191,6 +242,21 @@ class VoxClientManager(
                 isLoggedIn = false, // already returned above if true
                 stored = stored,
                 voxUsername = voxUsername,
+            )
+            // WHICH of the three login paths was taken is a timing fact, not
+            // trivia: AGENTS.md records that they have very different budgets
+            // against the server's 15s retry window — the access-token path is one
+            // round trip, the refresh path two, and the interactive fallback adds
+            // a round trip to beta.kalfa.me and plausibly does NOT fit. A wake that
+            // ran out of time is diagnosed differently depending on this line.
+            Telemetry.emit(
+                TelemetryEvents.VOX_LOGIN_START,
+                "plan" to when (plan) {
+                    is SilentLoginPlan.UseAccessToken -> "access"
+                    is SilentLoginPlan.UseRefreshToken -> "refresh"
+                    SilentLoginPlan.AlreadyLoggedIn -> "already"
+                    SilentLoginPlan.FallBackToInteractive -> "interactive"
+                },
             )
             val silentlyLoggedIn = when (plan) {
                 is SilentLoginPlan.UseAccessToken ->
@@ -205,7 +271,14 @@ class VoxClientManager(
                 loginInteractively(fullUsername, voxUsername) // may throw -> real failure
             }
             _loginState.value = VoxLoginState.LOGGED_IN
-        }.onFailure { _loginState.value = VoxLoginState.FAILED }
+            Telemetry.emit(TelemetryEvents.VOX_LOGIN_OK, "silent" to silentlyLoggedIn.toString())
+        }.onFailure { e ->
+            _loginState.value = VoxLoginState.FAILED
+            Telemetry.emit(
+                TelemetryEvents.VOX_LOGIN_FAIL,
+                "err" to (e.message ?: e::class.simpleName ?: "unknown"),
+            )
+        }
     }
 
     private suspend fun trySilentAccessToken(
@@ -317,6 +390,7 @@ class VoxClientManager(
     // every other SDK-boundary failure in this class) so callers don't need a new
     // exception type, but the message tags which step it was.
     suspend fun registerCurrentPushToken(): Result<Unit> = runCatching {
+        Telemetry.emit(TelemetryEvents.VOX_PUSH_REGISTER_START)
         val token = try {
             FirebaseMessaging.getInstance().token.awaitTask()
         } catch (e: CancellationException) {
@@ -339,6 +413,36 @@ class VoxClientManager(
         } catch (e: Exception) {
             throw VoxAuthException.Sdk("vox_register: ${e.message ?: e::class.simpleName}")
         }
+    }.onSuccess {
+        Telemetry.emit(TelemetryEvents.VOX_PUSH_REGISTER_OK)
+    }.onFailure { e ->
+        // `stage` splits the two failure domains this method already separates in
+        // its message — a local Google Play services / FCM problem fetching the
+        // token, versus Voximplant rejecting the token we did get. AGENTS.md
+        // records that reading this ONE string is the action that decides which
+        // branch of the push investigation is live, and that no more code should
+        // be written before it is read. Until now it existed only in a
+        // notification the agent had to be looking at.
+        val message = e.message.orEmpty()
+        val stage = when {
+            // MUST come first, for the same reason the two catch blocks above
+            // check CancellationException before Exception: runCatching wraps a
+            // cancellation as a failure like any other, and the cancellation here
+            // is in practice ensurePushRegistration's own timeout. Reporting a
+            // timed-out attempt as an FCM or a Voximplant fault would send whoever
+            // reads this line to the wrong subsystem entirely — which is exactly
+            // the mislabelling this method's two-branch design exists to prevent.
+            e is CancellationException -> "cancelled"
+            message.startsWith("fcm_token:") -> "fcm_token"
+            message.startsWith("vox_register:") -> "vox_register"
+            message.startsWith("registerForPushNotifications:") -> "vox_register"
+            else -> "unknown"
+        }
+        Telemetry.emit(
+            TelemetryEvents.VOX_PUSH_REGISTER_FAIL,
+            "stage" to stage,
+            "err" to (message.ifEmpty { e::class.simpleName ?: "unknown" }),
+        )
     }
 
     // Best-effort, called on explicit sign-out alongside forgetPersistedSession.

@@ -7,6 +7,9 @@ import me.kalfa.agentconsole.data.*
 import me.kalfa.agentconsole.data.mock.*
 import me.kalfa.agentconsole.domain.repository.*
 import me.kalfa.agentconsole.domain.telephony.*
+import me.kalfa.agentconsole.telemetry.DeviceTelemetry
+import me.kalfa.agentconsole.telemetry.Telemetry
+import me.kalfa.agentconsole.telemetry.TelemetryEvents
 import me.kalfa.agentconsole.telephony.presence.PresenceStateStore
 import me.kalfa.agentconsole.telephony.vox.VoxClientManager
 import me.kalfa.agentconsole.telephony.vox.VoxIncomingCallCoordinator
@@ -27,8 +30,21 @@ object DependencyContainer {
     // running (AGENTS.md "Push wake-up"). Idempotent: the second caller is a no-op.
     @Volatile private var applicationContext: Context? = null
 
-    fun attach(context: Context) {
-        if (applicationContext == null) applicationContext = context.applicationContext
+    // `via` is additive with a default, so no existing call site breaks: it names
+    // which entry point created this process, and "fcm" with no matching
+    // "activity" is the signature of a headless push wake — the case the whole
+    // telemetry channel exists to observe.
+    fun attach(context: Context, via: String = "other") {
+        val first = applicationContext == null
+        if (first) applicationContext = context.applicationContext
+        if (!first) return
+        // Reading the property is what CREATES and installs telemetry, so the
+        // writer thread is up before any other call-path code runs. Deliberately
+        // here rather than lazily at the first emit: on a push cold start the
+        // first emit IS fcm.service_created, and creating the recorder inside the
+        // call that wants to record would lose it.
+        deviceTelemetry
+        Telemetry.emit(TelemetryEvents.APP_ATTACH, "via" to via)
     }
 
     // Read-only escape hatch for the rare caller that genuinely needs a raw Context
@@ -272,6 +288,34 @@ object DependencyContainer {
         get() = _presenceStateStore ?: synchronized(this) {
             _presenceStateStore ?: applicationContext?.let { ctx ->
                 PresenceStateStore(ctx).also { _presenceStateStore = it }
+            }
+        }
+
+    // Records the steps of the call path so they can be read from a phone nobody
+    // can attach a debugger to — see DeviceTelemetry's kdoc. Off by default at
+    // both ends; creating it costs a daemon thread and nothing else.
+    //
+    // Its own HttpClient rather than the one built for VoxSdkAuthClient below,
+    // and that isolation is the point: a diagnostic must not be able to affect
+    // the login path's connection pool, timeouts or failure behaviour. The cost
+    // is a second OkHttp dispatcher, which is cheap; the alternative risks the
+    // observer changing what it observes.
+    //
+    // `getJwt` resolves supabaseClient at CALL time, not construction time, so
+    // building this on a push cold start does not drag the whole Supabase client
+    // into existence before the wake path needs it.
+    @Volatile private var _deviceTelemetry: DeviceTelemetry? = null
+    val deviceTelemetry: DeviceTelemetry?
+        get() = _deviceTelemetry ?: synchronized(this) {
+            _deviceTelemetry ?: applicationContext?.let { ctx ->
+                DeviceTelemetry.create(
+                    context = ctx,
+                    httpClient = HttpClient(OkHttp),
+                    getJwt = { supabaseClient?.auth?.currentAccessTokenOrNull() },
+                ).also {
+                    _deviceTelemetry = it
+                    Telemetry.install(it)
+                }
             }
         }
 

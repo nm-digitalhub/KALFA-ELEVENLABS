@@ -1,5 +1,8 @@
 package me.kalfa.agentconsole.telephony.vox
 
+import me.kalfa.agentconsole.telemetry.Telemetry
+import me.kalfa.agentconsole.telemetry.TelemetryEvents
+
 // Executes the app-side portion of Voximplant's documented six-step wake sequence
 // (guides.sdk.android-push, mirrored in AGENTS.md "Push wake-up"): receive push ->
 // connect/log in if necessary -> handlePushNotification -> re-register the push
@@ -19,15 +22,42 @@ class VoxWakePushHandler(
     private val registerPushToken: suspend () -> Unit,
 ) {
     suspend fun handle(data: Map<String, String>) {
-        if (!isVoximplantPush(data)) return
+        if (!isVoximplantPush(data)) {
+            Telemetry.emit(TelemetryEvents.WAKE_NOT_VOX_PUSH)
+            return
+        }
+        Telemetry.emit(TelemetryEvents.WAKE_START)
 
         // Every step is best-effort and ALWAYS runs, regardless of whether an
         // earlier step failed: a failed silent login must not also throw away a
         // push the platform already sent (handlePushNotification is documented as
         // safe "in any state"), and a failed handlePushNotification must not skip
         // re-registering the token for every FUTURE push too.
-        runCatching { ensureLoggedIn() }
-        runCatching { handlePushNotification(data) }
-        runCatching { registerPushToken() }
+        //
+        // That best-effort discipline is exactly why each step is recorded
+        // separately: `runCatching` deliberately discards the failure, so
+        // without these three pairs there is no way to tell "all three succeeded
+        // and the SDK still produced no call" from "the login failed silently and
+        // the rest ran against a logged-out client". Those have opposite fixes.
+        step(TelemetryEvents.WAKE_LOGIN_OK, TelemetryEvents.WAKE_LOGIN_FAIL) { ensureLoggedIn() }
+        step(TelemetryEvents.WAKE_HANDLE_PUSH_OK, TelemetryEvents.WAKE_HANDLE_PUSH_FAIL) {
+            handlePushNotification(data)
+        }
+        step(TelemetryEvents.WAKE_REGISTER_OK, TelemetryEvents.WAKE_REGISTER_FAIL) {
+            registerPushToken()
+        }
+    }
+
+    // Same runCatching semantics as before — the failure is still swallowed and
+    // the next step still runs — with the outcome written down on the way past.
+    // `err` is the exception CLASS NAME plus its own message, which for every
+    // failure on this path is a tagged SDK string (VoxAuthException.Sdk); the
+    // scrub in TelemetryEvent.kt redacts it if it ever carries anything else.
+    private suspend fun step(okEvent: String, failEvent: String, body: suspend () -> Unit) {
+        runCatching { body() }
+            .onSuccess { Telemetry.emit(okEvent) }
+            .onFailure { e ->
+                Telemetry.emit(failEvent, "err" to (e.message ?: e::class.simpleName ?: "unknown"))
+            }
     }
 }

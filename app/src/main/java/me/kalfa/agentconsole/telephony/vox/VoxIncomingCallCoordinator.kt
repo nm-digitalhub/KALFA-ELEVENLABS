@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import me.kalfa.agentconsole.domain.model.CallState
 import me.kalfa.agentconsole.domain.telephony.CallEngine
+import me.kalfa.agentconsole.telemetry.Telemetry
+import me.kalfa.agentconsole.telemetry.TelemetryEvents
 import me.kalfa.agentconsole.telephony.CallForegroundService
 
 // THE missing link AGENTS.md flags: assigned to VoxClientManager.onIncomingCall in
@@ -87,9 +89,39 @@ class VoxIncomingCallCoordinator(
         _pendingOffer.value?.let { superseded ->
             if (superseded.callId != offer.callId) {
                 Log.w(TAG, "incoming offer ${offer.callId} superseded ${superseded.callId}; the older leg is now unreachable")
+                Telemetry.emit(
+                    TelemetryEvents.CALL_OFFER_SUPERSEDED,
+                    "id" to shortId(offer.callId),
+                    "was" to shortId(superseded.callId),
+                )
             }
         }
         _pendingOffer.value = offer
+
+        // `named` and `numlen` rather than the values themselves: remoteDisplayName
+        // and number are guest PII and must never reach a log file. Whether they
+        // were PRESENT is still diagnostic — an offer arriving with neither is a
+        // different shape of problem from one arriving with both.
+        Telemetry.emit(
+            TelemetryEvents.CALL_OFFER,
+            "id" to shortId(offer.callId),
+            "named" to offer.displayName.isNotBlank().toString(),
+            "numlen" to offer.number.length.toString(),
+        )
+
+        // Read just before the notification is posted, because it decides whether
+        // the notification can do anything at all. AGENTS.md §D records that
+        // canRingOnLockedScreen may be optimistic on a device whose channel
+        // importance was lowered by hand — so all three are recorded, not just the
+        // verdict, and the one that is false says which remedy applies.
+        RingCapabilityState.refresh(context).let { cap ->
+            Telemetry.emit(
+                TelemetryEvents.CALL_RING_CAPABILITY,
+                "alert" to cap.canAlert.toString(),
+                "fsi" to cap.fullScreenIntentAllowed.toString(),
+                "locked_ring" to cap.canRingOnLockedScreen.toString(),
+            )
+        }
 
         // NO foreground service during the ring phase — a deliberate deviation from
         // docs/android-presence-and-call-ux.md §3 step 4, which says the coordinator
@@ -124,22 +156,47 @@ class VoxIncomingCallCoordinator(
             IncomingCallNotificationBuilder.NOTIFICATION_ID,
             IncomingCallNotificationBuilder.build(context, offer.callId, offer.displayName, offer.number),
         )
+        // Deliberately AFTER the notify rather than wrapped around it. AOSP rejects
+        // a CallStyle notification outright in some states (AGENTS.md §A-1), and
+        // catching that here would change this method's behaviour, which is not
+        // this change's business. Recorded instead: a trace that reaches
+        // call.ring_capability and stops has told you the notify threw.
+        Telemetry.emit(TelemetryEvents.CALL_NOTIFY_OK, "id" to shortId(offer.callId))
 
         // One cleanup path for every way this leg can end (declined, hung up after
         // answer, remote hangup, SDK failure) — see docs §3, "the coordinator observes
         // that single transition once". first{} lets this coroutine complete naturally
         // instead of collecting forever after the call is long over.
         scope.launch {
-            session.state.first { it == CallState.DISCONNECTED }
+            // The predicate runs once per emission, so recording inside it yields
+            // every state transition while leaving `first`'s completion semantics
+            // exactly as they were. A separate collector would have been a second
+            // coroutine on a path this file is careful about.
+            session.state.first { state ->
+                Telemetry.emit(
+                    TelemetryEvents.CALL_STATE,
+                    "id" to shortId(offer.callId),
+                    "s" to state.name,
+                )
+                state == CallState.DISCONNECTED
+            }
             cleanUp(offer.callId)
         }
     }
 
     fun answer(callId: String) {
-        val offer = _pendingOffer.value ?: return
-        if (!canActOnOffer(offer.callId, callId, offer.session.state.value)) return
+        val offer = _pendingOffer.value
+        if (offer == null) {
+            Telemetry.emit(TelemetryEvents.CALL_ACTION_IGNORED, "a" to "answer", "why" to "no_offer")
+            return
+        }
+        if (!canActOnOffer(offer.callId, callId, offer.session.state.value)) {
+            Telemetry.emit(TelemetryEvents.CALL_ACTION_IGNORED, "a" to "answer", "why" to "stale")
+            return
+        }
 
         if (!hasRecordAudioPermission()) {
+            Telemetry.emit(TelemetryEvents.CALL_NO_RECORD_AUDIO, "id" to shortId(offer.callId))
             // Can't safely claim the microphone FGS type without the permission this
             // app already relies on for every other call leg (CallAudioPermissions) —
             // decline rather than crash inside startForeground(). See docs §3.
@@ -147,6 +204,7 @@ class VoxIncomingCallCoordinator(
             return
         }
 
+        Telemetry.emit(TelemetryEvents.CALL_ANSWER, "id" to shortId(offer.callId))
         offer.session.answer()
         answeredCallId = offer.callId
         callEngine.attachIncomingSession(offer.session)
@@ -156,8 +214,16 @@ class VoxIncomingCallCoordinator(
     }
 
     fun decline(callId: String) {
-        val offer = _pendingOffer.value ?: return
-        if (!canActOnOffer(offer.callId, callId, offer.session.state.value)) return
+        val offer = _pendingOffer.value
+        if (offer == null) {
+            Telemetry.emit(TelemetryEvents.CALL_ACTION_IGNORED, "a" to "decline", "why" to "no_offer")
+            return
+        }
+        if (!canActOnOffer(offer.callId, callId, offer.session.state.value)) {
+            Telemetry.emit(TelemetryEvents.CALL_ACTION_IGNORED, "a" to "decline", "why" to "stale")
+            return
+        }
+        Telemetry.emit(TelemetryEvents.CALL_DECLINE, "id" to shortId(offer.callId))
         offer.session.decline() // triggers finish() synchronously -> cleanUp() below
     }
 
@@ -195,6 +261,17 @@ class VoxIncomingCallCoordinator(
         }
         if (plan.clearAttachedSession) callEngine.clearAttachedSession()
         if (plan.stopForegroundService) CallForegroundService.stop(context)
+
+        Telemetry.emit(
+            TelemetryEvents.CALL_CLEANUP,
+            "id" to shortId(callId),
+            "fgs_stop" to plan.stopForegroundService.toString(),
+        )
+        // The trace closes only when NOTHING is left that could still belong to it
+        // — the same condition the foreground service is released under. Closing on
+        // any leg ending would end the trace of a live call because a second,
+        // declined one finished.
+        if (plan.stopForegroundService) Telemetry.closeCallSession("leg_ended")
     }
 
     /**
@@ -226,8 +303,15 @@ class VoxIncomingCallCoordinator(
     private fun startCallForegroundService(title: String) {
         try {
             CallForegroundService.start(context, title = title)
+            Telemetry.emit(TelemetryEvents.CALL_FGS_START_OK)
         } catch (e: Exception) {
             Log.w(TAG, "call foreground service refused to start: ${e.javaClass.simpleName}: ${e.message}")
+            // The SecurityException / ForegroundServiceStartNotAllowedException case
+            // AGENTS.md §B-2 is about. It degrades silently by design, and a
+            // degradation nobody can see is how a night gets spent — so it gets a
+            // line. The CLASS NAME only: the message can quote arbitrary platform
+            // text, and this one is not worth widening the PII surface for.
+            Telemetry.emit(TelemetryEvents.CALL_FGS_REFUSED, "err" to e.javaClass.simpleName)
         }
     }
 
@@ -239,6 +323,15 @@ class VoxIncomingCallCoordinator(
         const val TAG = "VoxIncomingCall"
     }
 }
+
+/**
+ * The first 8 characters of a Voximplant call id.
+ *
+ * Not PII — it is an opaque platform identifier — but the full value is long
+ * enough to wrap a terminal line, and 8 characters is ample to tie two lines to
+ * the same leg in a log covering one device over one evening.
+ */
+internal fun shortId(callId: String): String = callId.take(8)
 
 // Pure gating logic for answer()/decline(), pulled out to the top level so it is
 // unit-testable with no Android/SDK classes on the classpath — same
