@@ -8,6 +8,7 @@ import me.kalfa.agentconsole.ui.message.FailureContext
 import me.kalfa.agentconsole.ui.message.toHebrewMessage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 // contentTextFor is what the persistent presence notification actually shows — the
@@ -153,4 +154,177 @@ class PresenceNotificationBuilderTest {
     }
 
     private fun AppFailure.toHebrewMessageForPresence() = toHebrewMessage(FailureContext.PRESENCE)
+}
+
+/**
+ * The masking that docs/android-presence-and-call-ux.md calls out by name — "It is worse
+ * than 'coarse' on the notification — it can be absent entirely" — and then leaves in
+ * place: contentTextFor is a first-match-wins chain, so a failed sync, a pending sync, or
+ * blocked notifications each hide push-registration completely.
+ *
+ * These pin the property that actually matters and that the contentTextFor tests above
+ * cannot express: no signal that is true may be UNSAYABLE. The collapsed line still obeys
+ * the documented priority (those tests are unchanged); the expanded view carries the rest.
+ */
+class PresenceNotificationExpandedTextTest {
+
+    private val blocked = RingCapability(
+        notificationsEnabled = false,
+        channelAlerting = true,
+        fullScreenIntentAllowed = true,
+    )
+    private val lockedScreenGapOnly = RingCapability(
+        notificationsEnabled = true,
+        channelAlerting = true,
+        fullScreenIntentAllowed = false,
+    )
+    private val healthy = RingCapability(
+        notificationsEnabled = true,
+        channelAlerting = true,
+        fullScreenIntentAllowed = true,
+    )
+
+    // The exact combination the doc describes as unreadable: the device never registered
+    // for push AND the sync is failing AND notifications are blocked. Before this, the
+    // notification said only the first of the three.
+    @Test
+    fun `every simultaneously-true signal appears, not just the highest-priority one`() {
+        val text = PresenceNotificationBuilder.expandedTextFor(
+            AgentStatus.READY,
+            PresenceSyncState.Failed(AppFailure.NotSignedIn),
+            pushRegistrationFailure = AppFailure.Unknown,
+            ringCapability = blocked,
+        )
+
+        assertTrue(text.contains(AppFailure.NotSignedIn.toHebrewMessage(FailureContext.PRESENCE)))
+        assertTrue(text.contains(AppFailure.Unknown.toHebrewMessage(FailureContext.PUSH_REGISTRATION)))
+        // NOTIFICATIONS_BLOCKED_TEXT is private; assert on the only thing the caller can
+        // see — that the blocked-notifications line is present and distinct from the two
+        // failures above, i.e. three lines rather than two.
+        assertEquals(3, text.lines().size)
+    }
+
+    // A pending sync masks push-registration exactly the same way a failed one does —
+    // the doc counts it as one of the three maskers, and it is the easiest to hit
+    // (every heartbeat passes through Pending).
+    @Test
+    fun `a pending sync no longer hides a push-registration failure`() {
+        val text = PresenceNotificationBuilder.expandedTextFor(
+            AgentStatus.READY,
+            PresenceSyncState.Pending,
+            pushRegistrationFailure = AppFailure.Unknown,
+        )
+
+        assertTrue(text.contains(AppFailure.Unknown.toHebrewMessage(FailureContext.PUSH_REGISTRATION)))
+        assertEquals(2, text.lines().size)
+    }
+
+    // build() attaches the BigText style only on a multi-line result, so "one line" is
+    // the contract that keeps a healthy or single-problem notification unchanged.
+    @Test
+    fun `a healthy agent produces a single line identical to the collapsed text`() {
+        val expanded = PresenceNotificationBuilder.expandedTextFor(
+            AgentStatus.READY,
+            PresenceSyncState.Synced,
+            pushRegistrationFailure = null,
+            ringCapability = healthy,
+        )
+
+        assertEquals(1, expanded.lines().size)
+        assertEquals(
+            PresenceNotificationBuilder.contentTextFor(
+                AgentStatus.READY,
+                PresenceSyncState.Synced,
+                pushRegistrationFailure = null,
+                ringCapability = healthy,
+            ),
+            expanded,
+        )
+    }
+
+    // canRingOnLockedScreen is canAlert && fullScreenIntentAllowed, so a blocked device
+    // satisfies BOTH ring conditions. Emitting both would tell the agent to fix two
+    // things when only one is wrong.
+    @Test
+    fun `blocked notifications do not also emit the narrower locked-screen line`() {
+        val text = PresenceNotificationBuilder.expandedTextFor(
+            AgentStatus.READY,
+            PresenceSyncState.Synced,
+            pushRegistrationFailure = null,
+            ringCapability = blocked,
+        )
+
+        assertEquals(2, text.lines().size)
+    }
+
+    @Test
+    fun `the locked-screen gap alone still gets its own line`() {
+        val text = PresenceNotificationBuilder.expandedTextFor(
+            AgentStatus.READY,
+            PresenceSyncState.Synced,
+            pushRegistrationFailure = null,
+            ringCapability = lockedScreenGapOnly,
+        )
+
+        assertEquals(2, text.lines().size)
+        assertNotEquals(
+            PresenceNotificationBuilder.expandedTextFor(
+                AgentStatus.READY,
+                PresenceSyncState.Synced,
+                pushRegistrationFailure = null,
+                ringCapability = blocked,
+            ),
+            text,
+        )
+    }
+
+    // The WHICH-step tag the whole push investigation turned on. The notification never
+    // rendered it (docs: "It has no access to, and never renders, the WHICH-step detail
+    // string"), so the two surfaces disagreed about the one fact being chased.
+    @Test
+    fun `the which-step push detail changes the text, so the notification can carry it`() {
+        val withoutDetail = PresenceNotificationBuilder.expandedTextFor(
+            AgentStatus.READY,
+            PresenceSyncState.Synced,
+            pushRegistrationFailure = AppFailure.Unknown,
+        )
+        val fcmStep = PresenceNotificationBuilder.expandedTextFor(
+            AgentStatus.READY,
+            PresenceSyncState.Synced,
+            pushRegistrationFailure = AppFailure.Unknown,
+            pushRegistrationDetail = "fcm_token: boom",
+        )
+        val voxStep = PresenceNotificationBuilder.expandedTextFor(
+            AgentStatus.READY,
+            PresenceSyncState.Synced,
+            pushRegistrationFailure = AppFailure.Unknown,
+            pushRegistrationDetail = "vox_register: Timeout",
+        )
+
+        assertNotEquals(withoutDetail, fcmStep)
+        assertNotEquals(withoutDetail, voxStep)
+        assertNotEquals(fcmStep, voxStep)
+        // Same wording as the in-app banner, from the same function — the two surfaces
+        // saying different things about the same failure is the bug being closed here.
+        assertTrue(fcmStep.contains(PresenceActions.pushFailureStageSuffix("fcm_token: boom").trim()))
+    }
+
+    // An untagged detail must add nothing rather than guess (pushFailureStageSuffix's own
+    // contract), so an unrecognised string cannot make the line longer or stranger.
+    @Test
+    fun `an unrecognised detail tag leaves the text exactly as it was`() {
+        val untagged = PresenceNotificationBuilder.expandedTextFor(
+            AgentStatus.READY,
+            PresenceSyncState.Synced,
+            pushRegistrationFailure = AppFailure.Unknown,
+            pushRegistrationDetail = "something nobody tagged",
+        )
+        val none = PresenceNotificationBuilder.expandedTextFor(
+            AgentStatus.READY,
+            PresenceSyncState.Synced,
+            pushRegistrationFailure = AppFailure.Unknown,
+        )
+
+        assertEquals(none, untagged)
+    }
 }

@@ -50,6 +50,26 @@ object IncomingCallNotificationBuilder {
     // console_call_feed view — see docs §3 "Lock-screen redaction" for why this
     // notification, unlike the presence one, needs a redacted public version.
     fun build(context: Context, callId: String, displayName: String, number: String): android.app.Notification {
+        // Own the precondition rather than inheriting it from VoxIncomingCallCoordinator's
+        // init block, which is the only other place this channel is created. Posting to a
+        // channel that does not exist is not an exception — AOSP
+        // NotificationManagerService logs "No Channel found for pkg=..." and returns false
+        // — so the whole incoming call would simply never appear, which is exactly the
+        // class of silent failure this path exists to eliminate. Idempotent (ensureChannel
+        // no-ops when the channel is already there); CallForegroundService.buildNotification
+        // already builds its notification the same way.
+        ensureChannel(context)
+
+        // `number` is accepted and deliberately NOT rendered — recorded here because the
+        // opposite is easy to assume. docs §3 justifies VISIBILITY_PRIVATE + the redacted
+        // public version on the grounds that this notification "carries the real caller
+        // number"; it does not, and never has. Nothing here reads `number`, and CallStyle
+        // shows only the Person's name. So the redaction machinery is currently protecting
+        // a caller LABEL, not a phone number. Left as-is on purpose: putting the number on
+        // the Person (e.g. a tel: uri, which would also let the OS match a contact) is a
+        // privacy decision about PII reaching every app with notification-listener access,
+        // not a defect to quietly fix inside a builder. Raised for the owner; if the answer
+        // is "don't show it", drop the parameter instead of leaving the doc claiming it.
         val caller = Person.Builder()
             .setName(displayName.ifBlank { "אורח" })
             .setImportant(true)

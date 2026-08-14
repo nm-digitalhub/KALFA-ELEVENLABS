@@ -5,6 +5,7 @@ import androidx.core.app.NotificationCompat
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -56,5 +57,29 @@ class IncomingCallNotificationBuilderTest {
         assertNotNull(publicVersion)
         val publicTitle = publicVersion.extras?.getCharSequence(NotificationCompat.EXTRA_TITLE)?.toString() ?: ""
         assertTrue(!publicTitle.contains("ששון"))
+    }
+
+    // Deliberately does NOT call ensureChannel first. Until now the channel existed only
+    // because VoxIncomingCallCoordinator's init block created it — a precondition owned by
+    // a different file from the one that depends on it. A notification posted to a channel
+    // that does not exist throws nothing: the platform logs "No Channel found for pkg=..."
+    // and drops it, so the whole incoming call would simply never appear on the device and
+    // nothing anywhere would say why. That is the failure shape this path exists to remove.
+    @Test
+    fun `build creates its own channel, so the call cannot be dropped for lack of one`() {
+        val manager = context.getSystemService(android.app.NotificationManager::class.java)
+        assertNull(
+            "a leftover channel would make this test prove nothing",
+            manager.getNotificationChannel(IncomingCallNotificationBuilder.CHANNEL_ID),
+        )
+
+        IncomingCallNotificationBuilder.build(
+            context,
+            callId = "call-1",
+            displayName = "ששון מנחם",
+            number = "+972500000000",
+        )
+
+        assertNotNull(manager.getNotificationChannel(IncomingCallNotificationBuilder.CHANNEL_ID))
     }
 }
