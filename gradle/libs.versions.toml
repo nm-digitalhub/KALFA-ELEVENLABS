@@ -47,8 +47,14 @@ googleid = "1.1.1"
 # done in the same change as unrelated dependency hygiene.
 supabase = "3.1.4"
 ktor = "3.1.2"
-kotlinxSerializationJson = "1.11.0"
-coil = "3.5.0"
+# HELD at 1.9.0: serialization-json 1.11.0 requires kotlin-stdlib 2.3.20 (Gradle module
+# metadata), and this project compiles with Kotlin 2.2.10, which reads metadata up to
+# 2.3.0. Moves with the Kotlin upgrade, not before it.
+kotlinxSerializationJson = "1.9.0"
+# 3.3.0, not 3.5.0: coil 3.5.0 requires kotlin-stdlib 2.4.0 and 3.4.0 requires 2.3.10 —
+# both past what Kotlin 2.2.10 can read. 3.3.0 requires 2.2.0 and is the newest that
+# fits this compiler.
+coil = "3.3.0"
 firebaseMessaging = "25.1.1"
 # Google Services Gradle plugin — reads app/google-services.json at build time
 # and generates the resources the Firebase SDKs read at runtime. Without it the
