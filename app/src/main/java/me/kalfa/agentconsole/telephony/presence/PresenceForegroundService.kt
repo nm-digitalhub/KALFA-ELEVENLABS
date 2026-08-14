@@ -1,20 +1,24 @@
 package me.kalfa.agentconsole.telephony.presence
 
-import android.app.Notification
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.app.Service
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.dropWhile
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -42,7 +46,21 @@ private data class PresenceNotificationInputs(
 // other path, so it never depends on the Activity being alive to notice.
 class PresenceForegroundService : Service() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // The handler is load-bearing, not decoration. Every launch below can reach
+    // PresenceStateStore, whose WRITE paths (save/recordPushRegistrationOutcome) do not
+    // catch IOException the way its read paths deliberately do — and an uncaught
+    // exception in a `launch` is not contained by the scope: kotlinx's own
+    // exception-handling guide says these builders "treat exceptions as uncaught
+    // exceptions, similar to Java's Thread.uncaughtExceptionHandler", which on Android
+    // means the default handler kills the process. SupervisorJob does NOT change that —
+    // it only stops one child's failure from cancelling its siblings. A failed disk
+    // write, or an SDK object that isn't ready, must degrade this service; it must not
+    // take the whole console down while an agent is on shift.
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, t ->
+            Log.e(TAG, "presence coroutine failed: ${t::class.simpleName}: ${t.message}")
+        },
+    )
     private var heartbeatJob: Job? = null
     private var observerJob: Job? = null
     private var shiftWatcherJob: Job? = null
@@ -82,16 +100,17 @@ class PresenceForegroundService : Service() {
         // it synchronously first, with a best-effort notification, before any branch
         // below that needs a suspend read (persisted-state resume) or write (a
         // notification-action status change) gets a chance to run.
-        val presenceNow = DependencyContainer.agentPresence
-        startForegroundCompat(
-            PresenceNotificationBuilder.build(
-                this,
-                presenceNow.currentStatus.value,
-                presenceNow.syncState.value,
-                PushRegistrationState.lastFailure.value?.failure,
-                RingCapabilityState.current.value,
-            ),
-        )
+        if (!startForegroundCompat()) {
+            // We are not a foreground service and cannot become one. Stop immediately
+            // rather than leave a started-but-not-foreground service behind: AOSP's
+            // ActiveServices.serviceForegroundTimeout() discards the
+            // "Context.startForegroundService() did not then call
+            // Service.startForeground()" ANR once the record is `destroying`, so
+            // stopping here is what prevents a second, unrelated crash on top of the
+            // one already logged.
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         when {
             intent == null -> {
@@ -142,8 +161,14 @@ class PresenceForegroundService : Service() {
                     PresenceNotificationInputs(status, sync, pushFailure?.failure, ringCapability)
                 }.collect { inputs ->
                         if (presence.shiftActive.value) {
-                            updateNotification(inputs)
-                            stateStore?.save(inputs.status, true, currentVoxUsername())
+                            // save() is a DataStore write and DataStore does not swallow
+                            // IOException — an unguarded throw here would end this
+                            // collect for good (the notification would then freeze at
+                            // whatever it last showed) on top of killing the process.
+                            failSoftly("notification update") {
+                                updateNotification(inputs)
+                                stateStore?.save(inputs.status, true, currentVoxUsername())
+                            }
                         }
                     }
             }
@@ -151,7 +176,7 @@ class PresenceForegroundService : Service() {
 
         if (shiftWatcherJob?.isActive != true) {
             shiftWatcherJob = scope.launch {
-                presence.shiftActive.filter { !it }.collect { stopSelfCleanly() }
+                presence.shiftActive.shiftEndedAfterBeingActive().collect { stopSelfCleanly() }
             }
         }
 
@@ -160,28 +185,61 @@ class PresenceForegroundService : Service() {
                 while (isActive) {
                     delay(HEARTBEAT_INTERVAL_MS)
                     if (presence.shiftActive.value) {
-                        // Re-send the CURRENT status — this is a freshness refresh,
-                        // not a status change (docs §1, "What the heartbeat actually
-                        // sends"). Goes through PresenceActions rather than calling
-                        // AgentPresence.setStatus directly: the direct call updates
-                        // syncState (which this notification observes) but never
-                        // AppMessageCenter, so a sync failure that healed itself here
-                        // left the in-app banner insisting it hadn't. See that
-                        // function's kdoc.
-                        PresenceActions.resendCurrentStatus()
-                        // No OS callback for a settings change — piggyback on the
-                        // same cadence so a fix (or a new break) is reflected within
-                        // one heartbeat interval, not only at service (re)start.
-                        PresenceActions.refreshAndReportRingCapability(applicationContext)
-                        // Registration otherwise happens once per transition to READY,
-                        // so a transient failure at that moment (no network, Play
-                        // services still waking) left the device unregistered for the
-                        // whole shift while reporting itself available. No-ops unless
-                        // a failure is actually on record — see its kdoc.
-                        PresenceActions.retryPushRegistrationIfFailed()
+                        // One bad tick must not end the shift's heartbeat. All three
+                        // calls below can throw — PresenceActions.reportPushRegistration
+                        // Result writes to DataStore (no IOException handling on the
+                        // write path), and retryPushRegistrationIfFailed reads the
+                        // Voximplant SDK's Client singleton, which this process may
+                        // never have initialised. Without this guard a single throw
+                        // cancels this coroutine permanently: the notification would go
+                        // on showing "זמין" while nothing reached the server again for
+                        // the rest of the shift, and the agent would look available
+                        // while the 90s gate quietly stopped routing to them. Retrying
+                        // on the next tick is the whole point of a heartbeat.
+                        failSoftly("heartbeat tick") {
+                            // Re-send the CURRENT status — this is a freshness refresh,
+                            // not a status change (docs §1, "What the heartbeat actually
+                            // sends"). Goes through PresenceActions rather than calling
+                            // AgentPresence.setStatus directly: the direct call updates
+                            // syncState (which this notification observes) but never
+                            // AppMessageCenter, so a sync failure that healed itself here
+                            // left the in-app banner insisting it hadn't. See that
+                            // function's kdoc.
+                            PresenceActions.resendCurrentStatus()
+                            // No OS callback for a settings change — piggyback on the
+                            // same cadence so a fix (or a new break) is reflected within
+                            // one heartbeat interval, not only at service (re)start.
+                            PresenceActions.refreshAndReportRingCapability(applicationContext)
+                            // Registration otherwise happens once per transition to
+                            // READY, so a transient failure at that moment (no network,
+                            // Play services still waking) left the device unregistered
+                            // for the whole shift while reporting itself available.
+                            // No-ops unless a failure is actually on record — see its
+                            // kdoc.
+                            PresenceActions.retryPushRegistrationIfFailed()
+                        }
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Runs [block], letting a cancellation through and turning anything else into a log
+     * line. The two callers are long-lived loops whose job is to keep going.
+     *
+     * `CancellationException` is deliberately re-thrown rather than caught: swallowing it
+     * would keep a coroutine alive after its scope was cancelled (`onDestroy`), which is
+     * the opposite of what this service needs at shutdown. That is also why this is not
+     * `runCatching`, which catches it.
+     */
+    private suspend fun failSoftly(what: String, block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            Log.w(TAG, "$what failed, continuing: ${t::class.simpleName}: ${t.message}")
         }
     }
 
@@ -205,12 +263,58 @@ class PresenceForegroundService : Service() {
     private fun stopSelfCleanly() {
         heartbeatJob?.cancel()
         observerJob?.cancel()
-        scope.launch { stateStore?.clear() }
+        // NOT `scope.launch`: stopSelf() below leads to onDestroy(), which cancels
+        // `scope` — most likely before a DataStore write that was only just dispatched
+        // has landed, and a cancelled scope will not even start a coroutine that is
+        // still pending. The record this clears is exactly the one a later
+        // START_STICKY restart resumes from (docs §1, "System kill under memory
+        // pressure"), so losing the write means a device that went off shift can come
+        // back believing it is on shift. The write must outlive the service that asked
+        // for it; the failure is swallowed because there is nothing left to retry with
+        // once we are stopping.
+        val store = stateStore
+        terminalWriteScope.launch {
+            runCatching { store?.clear() }
+                .onFailure { Log.w(TAG, "clearing presence state failed: ${it.message}") }
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
-    private fun startForegroundCompat(notification: Notification) {
+    /**
+     * Becomes a foreground service, or reports that it could not. Returns false instead
+     * of throwing.
+     *
+     * `specialUse` has no runtime prerequisites of its own
+     * (`developer.android.com/develop/background-work/services/fgs/service-types`:
+     * "Runtime prerequisites: None"), and both start paths are documented exemptions
+     * from the Android 12+ background-start rule — MainActivity starts it from a visible
+     * activity, PresenceActionReceiver from a notification action ("The user performs an
+     * action on a UI element related to your app. For example, they might interact with
+     * a bubble, notification, widget, or activity",
+     * `.../fgs/restrictions-bg-start`). So this is not expected to fail.
+     *
+     * It is still guarded, because "not expected" is not "cannot", and the failure modes
+     * that remain are all crashes rather than errors: a user-imposed background
+     * restriction still produces `ForegroundServiceStartNotAllowedException` (an
+     * `IllegalStateException` — AOSP `ServiceStartNotAllowedException extends
+     * IllegalStateException`), a missing FOREGROUND_SERVICE_SPECIAL_USE would produce
+     * `SecurityException`, and `PresenceNotificationBuilder.build` /
+     * `DependencyContainer.agentPresence` are ordinary code that can throw (the latter
+     * calls `error()` by design in a release build with no Supabase configuration).
+     * Losing presence is the documented degradation for all of them — the server's 90s
+     * freshness gate then stops routing to this device, which is exactly what it is for
+     * (docs §1, "Do not defeat the 90-second gate"). Crashing is not.
+     */
+    private fun startForegroundCompat(): Boolean = try {
+        val presenceNow = DependencyContainer.agentPresence
+        val notification = PresenceNotificationBuilder.build(
+            this,
+            presenceNow.currentStatus.value,
+            presenceNow.syncState.value,
+            PushRegistrationState.lastFailure.value?.failure,
+            RingCapabilityState.current.value,
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 PresenceNotificationBuilder.NOTIFICATION_ID,
@@ -220,9 +324,21 @@ class PresenceForegroundService : Service() {
         } else {
             startForeground(PresenceNotificationBuilder.NOTIFICATION_ID, notification)
         }
+        true
+    } catch (t: Throwable) {
+        Log.e(TAG, "presence foreground start refused: ${t::class.simpleName}: ${t.message}")
+        false
     }
 
     companion object {
+        private const val TAG = "PresenceFgs"
+
+        // Deliberately process-scoped rather than service-scoped, and used for exactly
+        // one thing: the terminal "this shift is over" write in stopSelfCleanly(). See
+        // that function for why it must not die with the service. Nothing long-running
+        // is ever launched here, so there is no lifecycle to leak.
+        private val terminalWriteScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
         // See docs/android-presence-and-call-ux.md §1 "Cadence: 30s, not the
         // browser's 60s" for the safety-margin arithmetic against the server's 90s
         // freshness gate (AGENT_STATUS_FRESHNESS_MS, beta/src/lib/console/presence.ts)
@@ -230,14 +346,47 @@ class PresenceForegroundService : Service() {
         const val HEARTBEAT_INTERVAL_MS = 30_000L
 
         fun start(context: Context) {
-            ContextCompat.startForegroundService(context, Intent(context, PresenceForegroundService::class.java))
+            startGuarded(context, Intent(context, PresenceForegroundService::class.java))
         }
 
         fun updateStatus(context: Context, status: AgentStatus) {
             val intent = Intent(context, PresenceForegroundService::class.java)
                 .setAction(PresenceNotificationBuilder.ACTION_SET_STATUS)
                 .putExtra(PresenceNotificationBuilder.EXTRA_STATUS, status.name)
-            ContextCompat.startForegroundService(context, intent)
+            startGuarded(context, intent)
+        }
+
+        /**
+         * Both entry points funnel through here because both are reachable with no
+         * activity on screen — MainActivity's LaunchedEffect can run while the app is
+         * merely started, and PresenceActionReceiver runs with the app fully
+         * backgrounded.
+         *
+         * Both are documented exemptions from the Android 12+ background-start rule (a
+         * user-visible activity; an interaction with a notification —
+         * `developer.android.com/develop/background-work/services/fgs/restrictions-bg-start`),
+         * so this is expected to succeed. The catch exists for the cases the exemption
+         * list does not cover, and each of them would otherwise crash the app from a
+         * BroadcastReceiver: a user-imposed background restriction still yields
+         * `ForegroundServiceStartNotAllowedException`, which extends
+         * `ServiceStartNotAllowedException extends IllegalStateException` (AOSP
+         * `frameworks/base/core/java/android/app/ServiceStartNotAllowedException.java`)
+         * — so catching `IllegalStateException` covers it without naming an API-31-only
+         * class in a catch clause on a minSdk-24 app.
+         *
+         * Degrading here means presence silently stops; that is the same outcome the
+         * 90s server-side freshness gate already handles, and it is logged. It is not
+         * surfaced to the agent — this file has no message channel of its own — which
+         * is a real gap worth closing where the banners live.
+         */
+        private fun startGuarded(context: Context, intent: Intent) {
+            try {
+                ContextCompat.startForegroundService(context, intent)
+            } catch (e: IllegalStateException) {
+                Log.e(TAG, "presence FGS start not allowed: ${e.message}")
+            } catch (e: SecurityException) {
+                Log.e(TAG, "presence FGS start refused: ${e.message}")
+            }
         }
 
         fun stop(context: Context) {
@@ -245,3 +394,32 @@ class PresenceForegroundService : Service() {
         }
     }
 }
+
+/**
+ * "The shift ended" — emissions of `false` that come AFTER a `true` has been seen, and
+ * never the `false` a fresh collector is handed on subscription.
+ *
+ * Pulled to the top level, and kept free of Android and SDK types, so the rule is
+ * directly unit-testable — the same separation used by `shouldResumeFromPersistedState`
+ * in this package and `planSilentLogin`/`canActOnOffer` next door.
+ *
+ * The plain `filter { !it }` this replaces made the documented START_STICKY resume path
+ * unreachable. `AgentPresence.shiftActive` is a `StateFlow` initialised to `false`
+ * (`SupabaseImplementations.kt`, `_shiftActive = MutableStateFlow(false)`), and a
+ * StateFlow replays its current value to every new collector — so on a system-restarted
+ * process the watcher's FIRST emission was the process-start default, not a shift
+ * ending. It ran `stopSelfCleanly()` immediately: the service stopped itself and wiped
+ * the persisted record while `resumeFromPersistedStateOrStop()` was still awaiting the
+ * DataStore read it needed to set the flag. The restart path documented in docs §1
+ * ("System kill under memory pressure") therefore stopped instead of resuming, and took
+ * the evidence with it.
+ *
+ * Known limitation, deliberately not solved here: a shade action that sets NOT_READY or
+ * DND on a cold process never sets `shiftActive`, so the watcher never arms and the
+ * service runs without an in-memory shift until something sets it. That is a
+ * near-theoretical case — the notification carrying those actions only exists while this
+ * service is running — and it is a much better failure than stopping the service the
+ * agent just touched.
+ */
+internal fun Flow<Boolean>.shiftEndedAfterBeingActive(): Flow<Boolean> =
+    dropWhile { !it }.filter { !it }
