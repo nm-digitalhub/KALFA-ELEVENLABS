@@ -8,8 +8,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -244,29 +242,30 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Drawn over whatever AuthGate is showing — see the comment above
-                // the coordinator for why it must not be inside it.
-                // IncomingCallScreen is an opaque, full-size Surface and provides
-                // its own RTL (ui/screens/IncomingCallScreen.kt), so nothing extra
-                // is needed for either.
+                // Drawn over whatever AuthGate is showing — see the comment above the
+                // coordinator for why it must not be inside it. IncomingCallScreen
+                // (ui/screens/IncomingCallScreen.kt) is a full-size Surface and provides
+                // its own RTL, so neither is repeated here.
                 //
-                // The empty clickable is a touch blocker, not dead code: Compose
-                // hit-tests a Box's children front to back, and a child with no
-                // pointer-input modifier is not a hit-test target at all — taps
-                // would fall through the opaque overlay to the dashboard and
-                // navigation bar underneath, letting a ringing agent change their
-                // own status or route by hitting a control they cannot see.
-                // (Material3's Surface may already block this internally; that is
-                // not verifiable from the artifacts available here, so it is not
-                // relied on.)
+                // Nothing blocks touches explicitly, and that IS the considered choice.
+                // Compose hit-tests a Box's children front to back and a child with no
+                // pointer-input modifier is not a hit-test target at all, so taps could
+                // otherwise fall through the opaque ring screen onto the dashboard's
+                // status controls and the nav bar — a ringing agent changing their own
+                // availability by hitting something they cannot see. Material3's Surface
+                // already closes that: verified by notification-owner against
+                // material3-android 1.4.0's own sources (the version compose-bom
+                // 2026.06.01 actually resolves), where blocking touch propagation is
+                // item 5 of Surface's documented responsibilities and is implemented as
+                // a trailing `.pointerInput(Unit) {}` on its Box.
+                //
+                // An extra `clickable` here was tried and removed: even with
+                // `indication = null` it adds onClick SEMANTICS across the whole
+                // overlay, so TalkBack would offer a third, unlabelled, does-nothing
+                // action beside "ענה" and "דחה" — on a locked-screen surface whose
+                // entire design is two labelled buttons.
                 if (pendingOffer != null) {
                     IncomingCallScreen(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                            ) { },
                         displayName = pendingOffer?.displayName.orEmpty(),
                         onAnswer = { pendingOffer?.let { incomingCallCoordinator?.answer(it.callId) } },
                         onDecline = { pendingOffer?.let { incomingCallCoordinator?.decline(it.callId) } }
