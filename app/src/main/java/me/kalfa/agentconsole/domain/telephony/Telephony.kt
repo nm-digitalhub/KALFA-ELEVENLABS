@@ -5,6 +5,7 @@ import me.kalfa.agentconsole.domain.model.CallState
 import me.kalfa.agentconsole.domain.error.AppResult
 import me.kalfa.agentconsole.domain.model.CallDispatchStatus
 import me.kalfa.agentconsole.domain.model.OutboundDispatchReceipt
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 interface CallSession {
@@ -41,8 +42,10 @@ interface CallEngine {
     val currentSession: StateFlow<CallSession?>
     val activeAiCallsCount: StateFlow<Int>
     val queueDepth: StateFlow<Int>
+    // Same shared-default rule as AgentPresence's — see DefaultPresenceFlows. This one
+    // had the identical fresh-flow-per-read defect and is fixed with it.
     val dispatchStatuses: StateFlow<Map<String, CallDispatchStatus>>
-        get() = kotlinx.coroutines.flow.MutableStateFlow(emptyMap())
+        get() = DefaultEngineFlows.noDispatchStatuses
     
     fun startOutboundCall(phone: String, customerName: String): CallSession
     fun monitorCall(callId: String): CallSession
@@ -120,6 +123,32 @@ sealed interface PresenceSyncState {
     data class Failed(val failure: me.kalfa.agentconsole.domain.error.AppFailure) : PresenceSyncState
 }
 
+/**
+ * The constant flows [AgentPresence]'s defaults hand back.
+ *
+ * An interface cannot hold a backing field, so an expression-bodied default getter
+ * re-evaluates its right-hand side on EVERY read. Both defaults below used to be
+ * `get() = MutableStateFlow(...)`, which meant an implementer relying on them returned a
+ * brand-new flow each time: a value that can never change, is never the same object
+ * twice, and quietly defeats any `collect` or `combine` built on it.
+ *
+ * Real builds override both, so this was never a production fault — but `MockCallEngineImpl`
+ * does not override `shiftActive`, so in DEBUG mock mode `shiftActive` was permanently
+ * false: `MainActivity`'s effect never started `PresenceForegroundService`, and had the
+ * service started anyway its `shiftActive.filter { !it }` watcher would have stopped it
+ * immediately. Presence was simply dead there, with nothing to see.
+ *
+ * Shared singletons instead, so a default is a stable value rather than a factory.
+ */
+private object DefaultEngineFlows {
+    val noDispatchStatuses: StateFlow<Map<String, CallDispatchStatus>> = MutableStateFlow(emptyMap())
+}
+
+private object DefaultPresenceFlows {
+    val shiftInactive: StateFlow<Boolean> = MutableStateFlow(false)
+    val synced: StateFlow<PresenceSyncState> = MutableStateFlow(PresenceSyncState.Synced)
+}
+
 interface AgentPresence {
     val currentStatus: StateFlow<AgentStatus>
 
@@ -127,20 +156,22 @@ interface AgentPresence {
      * Readback of the last setShiftActive call, for UI/service code that needs to
      * know whether presence should be running RIGHT NOW (PresenceForegroundService's
      * start/stop trigger — see docs/android-presence-and-call-ux.md §1) rather than
-     * just being able to fire a one-way declaration. Default (a StateFlow(false) that
-     * nothing ever updates) keeps mock mode and any other implementer compiling.
+     * just being able to fire a one-way declaration. Default (a constant false that
+     * nothing ever updates) keeps mock mode and any other implementer compiling — see
+     * DefaultPresenceFlows for why it must be a shared value and not a fresh one.
      */
     val shiftActive: StateFlow<Boolean>
-        get() = kotlinx.coroutines.flow.MutableStateFlow(false)
+        get() = DefaultPresenceFlows.shiftInactive
 
     /**
      * See PresenceSyncState's kdoc. Covers the outcome of the most recent
      * setStatus/setShiftActive call (both write through the same field — see
      * SupabaseImplementations.kt for why one shared signal is the deliberate v1
-     * scope, not an oversight). Default (always Synced) keeps mock mode working.
+     * scope, not an oversight). Default (always Synced) keeps mock mode working — see
+     * DefaultPresenceFlows for why it must be a shared value and not a fresh one.
      */
     val syncState: StateFlow<PresenceSyncState>
-        get() = kotlinx.coroutines.flow.MutableStateFlow(PresenceSyncState.Synced)
+        get() = DefaultPresenceFlows.synced
 
     /**
      * Sets the agent's status, via POST beta.kalfa.me/api/agents/status + a direct
