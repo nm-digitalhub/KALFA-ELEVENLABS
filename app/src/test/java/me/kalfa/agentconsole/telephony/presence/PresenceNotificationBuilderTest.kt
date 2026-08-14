@@ -309,10 +309,12 @@ class PresenceNotificationExpandedTextTest {
         assertTrue(fcmStep.contains(PresenceActions.pushFailureStageSuffix("fcm_token: boom").trim()))
     }
 
-    // An untagged detail must add nothing rather than guess (pushFailureStageSuffix's own
-    // contract), so an unrecognised string cannot make the line longer or stranger.
+    // CONTRACT CHANGED: an untagged detail used to have to leave the text exactly as it
+    // was. That is no longer true and must not be -- rendering identically to "no detail
+    // at all" is what let a device that never started the SDK look like one whose message
+    // we simply had not tagged. Both now say something, and something different.
     @Test
-    fun `an unrecognised detail tag leaves the text exactly as it was`() {
+    fun `an unrecognised detail says so, and does not read as no detail at all`() {
         val untagged = PresenceNotificationBuilder.expandedTextFor(
             AgentStatus.READY,
             PresenceSyncState.Synced,
@@ -325,6 +327,7 @@ class PresenceNotificationExpandedTextTest {
             pushRegistrationFailure = AppFailure.Unknown,
         )
 
-        assertEquals(none, untagged)
+        assertNotEquals(none, untagged)
+        assertTrue(untagged.length > none.length)
     }
 }

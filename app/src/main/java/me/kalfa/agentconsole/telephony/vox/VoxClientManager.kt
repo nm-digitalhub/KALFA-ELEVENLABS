@@ -156,7 +156,26 @@ class VoxClientManager(
     // to call when already logged in (returns success without a second login).
     suspend fun ensureLoggedIn(voxUsername: String): Result<Unit> = loginMutex.withLock {
         runCatching {
-            ensureInitialized()
+            // Tagged, and caught as THROWABLE rather than Exception. That distinction is
+            // the whole point: a failing static initialiser throws
+            // ExceptionInInitializerError, and every access after it throws
+            // NoClassDefFoundError -- both are Errors, not Exceptions, so
+            // `catch (e: Exception)` would miss precisely the failure this tag exists to
+            // name. (It would still reach runCatching, which catches Throwable, but
+            // arrive untagged.)
+            //
+            // This is the step that was failing on the owner's device before
+            // VICore.initialize was added below: ensureInitialized() is the first
+            // statement here, and its throw is what produced a bare banner on every
+            // attempt. If anything in SDK startup breaks again, it now says so by name
+            // instead of costing another night.
+            try {
+                ensureInitialized()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                throw VoxAuthException.Sdk("sdk_init: ${e.message ?: e::class.simpleName}")
+            }
             if (Client.clientState == ClientState.LoggedIn) return@runCatching
             val fullUsername = VoxConfig.fullUsername(voxUsername)
 

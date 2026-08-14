@@ -106,11 +106,20 @@ class PushFailureStageSuffixTest {
 
 
     @Test
-    fun `an unrecognised message still adds nothing rather than guessing`() {
-        // The contract the original two branches were written under, unchanged: the new
-        // branch matches only strings this codebase emits, it is not a catch-all.
-        assertEquals("", PresenceActions.pushFailureStageSuffix("something nobody tagged"))
-        assertEquals("", PresenceActions.pushFailureStageSuffix(null))
-        assertEquals("", PresenceActions.pushFailureStageSuffix(""))
+    fun `an unrecognised message names itself instead of going quiet`() {
+        // CONTRACT CHANGED, deliberately. This used to assert "" -- "adds nothing rather
+        // than guessing" -- and that was right while the alternative was inventing a
+        // cause. It stopped being right once we learned the silence itself was the
+        // problem: a bare banner is indistinguishable from a device that never started
+        // the SDK, which is exactly what the owner was looking at for weeks.
+        //
+        // The new contract keeps the honest half -- it still does not guess a cause --
+        // and drops the harmful half. "unrecognised" IS the truth, and the screenshot
+        // is what makes it useful to whoever reads it next.
+        val unrecognised = PresenceActions.pushFailureStageSuffix("something nobody tagged")
+        assertTrue(unrecognised.isNotBlank())
+        assertEquals(unrecognised, PresenceActions.pushFailureStageSuffix(""))
+        // ...and it must not be mistaken for a cause we actually identified.
+        assertNotEquals(loginStage, unrecognised)
     }
 }

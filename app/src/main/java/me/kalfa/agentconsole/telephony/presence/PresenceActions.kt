@@ -408,7 +408,17 @@ object PresenceActions {
      * front of an agent. Anything untagged adds nothing rather than guessing.
      */
     internal fun pushFailureStageSuffix(detail: String?): String = when {
-        detail == null -> ""
+        // No failure state may render identically to another -- that conflation is what
+        // let the owner's bare banner hide TWO different situations behind one
+        // appearance for weeks, and it is why a device that had never connected looked
+        // the same as one whose message we simply had not tagged.
+        //
+        // Neither of the two sentences below is actionable to the person holding the
+        // phone, so what earns them their place is that the agent learns the SCREENSHOT
+        // is the useful artefact. That is why the unrecognised one carries a next step
+        // and the null one does not: "the system did not report a type" already reads
+        // as a dead end, while "unrecognised" without direction is just a shrug.
+        detail == null -> " סוג התקלה לא דווח על ידי המערכת."
         detail.startsWith("fcm_token:") ->
             " התקלה במכשיר עצמו: לא התקבל מזהה משירותי Google."
         detail.startsWith("vox_register:") || detail.startsWith("registerForPushNotifications:") ->
@@ -424,7 +434,18 @@ object PresenceActions {
         // that resolves it).
         detail.startsWith("no_device_identity:") ->
             " זהות הטלפוניה של המכשיר עדיין לא נקלטה — יש לבחור 'זמין' באפליקציה."
-        else -> ""
+        // A FIFTH domain, and the one the whole investigation turned on: the telephony
+        // SDK could not start on this device at all. Its own sentence rather than the
+        // login one, because the fact and the remedy differ -- "the component did not
+        // come up" is not "the login was rejected", and folding them would put us back
+        // to a banner naming the wrong subsystem.
+        detail.startsWith("sdk_init:") ->
+            " רכיב הטלפוניה לא הצליח לעלות במכשיר הזה."
+        // No longer "" -- see the head of this function. The raw detail is NOT put here:
+        // the collapsed line is what gets photographed, and a developer tag in front of
+        // an agent is the shorthand this function exists to avoid. expandedTextFor is
+        // where the detail belongs, one gesture away.
+        else -> " התקלה אינה מזוהה — יש לצלם את המסך ולשלוח."
     }
 
     /**
