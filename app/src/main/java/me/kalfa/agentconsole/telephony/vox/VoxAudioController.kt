@@ -46,17 +46,26 @@ class VoxAudioController {
     /**
      * What the audio route looks like right now.
      *
-     * [devices] empty and [active] null is the honest "the SDK has not told us yet"
-     * state — it is what you get before the call's audio is up, and the UI must render
-     * it as unavailable rather than inventing a default. Do not collapse the two into a
-     * boolean: "not on speaker" and "we do not know the route" are different claims and
-     * only one of them is ever safe to make.
+     * [active] null is the honest "the SDK has not told us which route is in use" state,
+     * and the UI must render it as unavailable rather than inventing a default. Do not
+     * collapse this into a boolean: "not on speaker" and "we do not know the route" are
+     * different claims and only one of them is ever safe to make.
+     *
+     * [isKnown] keys off [active] ALONE, and the difference is not academic. The two
+     * fields become true at different times: `audioDevices` enumerates what is
+     * *available* (on a bare phone, earpiece and speaker, present from the start) while
+     * `selectedAudioDevice` is documented as null until routing begins — "audio routing
+     * starts automatically when a call or conference is active". An `isKnown` that also
+     * accepted a non-empty device list would therefore go true during the window before
+     * routing starts, and the picker would draw two enabled chips with NEITHER selected,
+     * since nothing matches a null active device. That renders as "you are on no audio
+     * route at all" — a state this screen exists to never claim.
      */
     data class Route(
         val devices: List<AudioDevice> = emptyList(),
         val active: AudioDevice? = null,
     ) {
-        val isKnown: Boolean get() = active != null || devices.isNotEmpty()
+        val isKnown: Boolean get() = active != null
     }
 
     private val _route = MutableStateFlow(Route())
