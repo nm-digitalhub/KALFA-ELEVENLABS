@@ -179,8 +179,14 @@ dependencies {
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.core.ktx)
   // Registers this app as a self-managed calling app (telephony/TelecomRegistration).
-  // Required before a Play upload: Play revokes USE_FULL_SCREEN_INTENT from apps that
-  // are not calling apps, which would kill locked-screen ringing — see AGENTS.md.
+  // Read that file's kdoc before acting on the justification: the claim this comment
+  // used to make on its own — "Play revokes USE_FULL_SCREEN_INTENT from apps that are
+  // not calling apps … see AGENTS.md" — is half wrong and half contested. AOSP's own
+  // full-screen-intent check consults only the permission and its app-op, never a
+  // PhoneAccount, so registering buys nothing from the PLATFORM; and AGENTS.md says in
+  // as many words not to take MANAGE_OWN_CALLS for this reason, which makes it the
+  // wrong citation for this line. What survives is a forward-looking Play-side
+  // argument on an app that has no upload keystore yet.
   implementation(libs.androidx.core.telecom)
   implementation(libs.androidx.lifecycle.runtime.compose)
   implementation(libs.androidx.lifecycle.runtime.ktx)

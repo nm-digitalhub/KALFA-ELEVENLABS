@@ -41,6 +41,20 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!--
+      DO NOT "clean up" the next line. Beyond the locked-screen ring it is named for, it
+      is what stops the incoming-call CallStyle notification from THROWING on Android 14+
+      devices where the full-screen-intent app-op is off. NotificationManagerService's
+      checkDisqualifyingFeatures rejects a CallStyle notification that is neither an
+      FGS/UIJ notification nor carrying a full-screen intent — and this app's is neither
+      (VoxIncomingCallCoordinator posts it with NotificationManagerCompat.notify, not
+      startForeground). When the app-op is off the service strips the fullScreenIntent
+      and substitutes FLAG_FSI_REQUESTED_BUT_DENIED, but only for a package that DECLARED
+      the permission. Declared: FSI-denied degrades to a heads-up notification. Undeclared:
+      IllegalArgumentException and no incoming-call notification at all. (Traced through
+      AOSP NotificationManagerService by notification-owner, 2026-08-14.) Removing it
+      means moving that notification under startForeground in the same change.
+    -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Android 12+ (API 31) Bluetooth headset routing. -->
@@ -49,9 +63,16 @@
     <!--
       Presence foreground service (docs/android-presence-and-call-ux.md §1): required
       alongside the specialUse foreground-service type declared below. No closer-fitting
-      type exists — the heartbeat has no audio/location/bulk-data-transfer, and
-      `phoneCall` requires the self-managed Telecom this app deliberately does not
-      adopt yet (see the doc's "Decision: android.telecom adoption").
+      type exists — the heartbeat has no audio, no location and no bulk data transfer,
+      and it is not a call: it runs while an agent is on shift with no leg in progress.
+
+      This note used to end "and `phoneCall` requires the self-managed Telecom this app
+      deliberately does not adopt yet". That clause is now FALSE — a self-managed
+      PhoneAccount is registered at runtime (telephony/TelecomRegistration.kt) — and it
+      was never the load-bearing half of the argument. The specialUse choice rests on
+      the sentence above it, which is unchanged, plus FOREGROUND_SERVICE_PHONE_CALL
+      still being undeclared. Corrected in place rather than left to be repeated; the
+      FGS type itself is not re-opened by the Telecom registration work.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
@@ -174,10 +195,13 @@
         <!--
           Presence foreground service (docs/android-presence-and-call-ux.md §1) — the
           fix for AgentPresence.setStatus writing once and never again. specialUse: no
-          audio, no location, no bulk data transfer, and phoneCall needs the
-          self-managed Telecom this app doesn't adopt yet (see the doc's Telecom
-          decision). Requires a Play Console justification before any Play
-          distribution (owner action, not blocking today — no upload keystore yet).
+          audio, no location, no bulk data transfer, and not a call — phoneCall would
+          additionally need FOREGROUND_SERVICE_PHONE_CALL, which stays undeclared (see
+          the uses-permission block at the top of this file; the older reason given
+          here, "the self-managed Telecom this app doesn't adopt yet", stopped being
+          true when TelecomRegistration landed). Requires a Play Console justification
+          before any Play distribution (owner action, not blocking today — no upload
+          keystore yet).
         -->
         <service
             android:name=".telephony.presence.PresenceForegroundService"
@@ -213,7 +237,36 @@
 
           Still open, and separate: routing calls through CallsManager.addCall, which
           hands Telecom the call's audio focus and lifecycle and carries a 5s
-          CallControlScope deadline that needs a physical device to verify.
+          CallControlScope deadline that needs a physical device to verify. Note that
+          Google's AEP Telecom guideline treats addCall as mandatory for a VoIP app, so
+          "registered but never adds calls" is a knowingly non-compliant resting state,
+          not a finished one — see telephony/TelecomRegistration.kt's kdoc.
+
+          ── What core-telecom actually merges into the shipped manifest ──
+          Read out of the unpacked AAR's own AndroidManifest.xml, so the merged result is
+          not a surprise at review time. Nothing below is declared by hand here, and
+          nothing below should be tools:node="remove"d without reading why first:
+
+          * uses-permission MANAGE_OWN_CALLS — AOSP protectionLevel="normal" (verified in
+            frameworks/base/core/res/AndroidManifest.xml), granted at install, no dialog.
+            This is the permission AGENTS.md's "Known state" bullet says not to add for
+            the full-screen-intent reason; it arrives via this dependency and the
+            contradiction is unresolved — flagged for the owner, see TelecomRegistration.
+          * uses-permission BLUETOOTH_CONNECT and MODIFY_AUDIO_SETTINGS — both already
+            declared above by this app, so the merge is a no-op.
+          * service androidx.core.telecom.internal.JetpackConnectionService,
+            exported="true", guarded by BIND_TELECOM_CONNECTION_SERVICE (a system
+            permission), intent-filter android.telecom.ConnectionService. Exported is
+            required: Telecom binds it cross-process. It is never bound today — the
+            platform binds a ConnectionService only to create a connection, which is
+            addCall's job.
+          * receiver androidx.core.telecom.internal.MuteStateReceiver, exported="true",
+            intent-filter android.media.action.MICROPHONE_MUTE_CHANGED. Exported without
+            a permission guard looks wrong and is not: that action is listed as a
+            <protected-broadcast> in AOSP frameworks/base/core/res/AndroidManifest.xml,
+            so only the system can send it. Left in place — it backs the library's
+            LocalCallSilence extension, removing it buys nothing measurable, and the
+            consequence of removing it cannot be verified without a device.
         -->
     </application>
 
