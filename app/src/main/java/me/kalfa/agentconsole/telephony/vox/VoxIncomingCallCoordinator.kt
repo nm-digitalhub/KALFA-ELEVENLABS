@@ -70,6 +70,25 @@ class VoxIncomingCallCoordinator(
             displayName = call.remoteDisplayName ?: "",
             number = call.number,
         )
+        // KNOWN GAP, logged rather than fixed: a second offer arriving while one is
+        // still pending REPLACES it. Offer A's SDK Call is still live and still
+        // RINGING, but nothing can reach it any more — canActOnOffer gates on
+        // `pendingCallId == actionCallId`, so decline("A") returns early forever and A
+        // rings on until the platform's own RING_RETRY_WINDOW_MS gives up. The single
+        // NOTIFICATION_ID means B's notification replaced A's too, so the agent never
+        // sees that it happened.
+        //
+        // Not fixed here because every honest option is a design decision this change
+        // has no mandate for — auto-reject the second call, auto-reject the first, or
+        // build a call-waiting surface — and docs/android-presence-and-call-ux.md §3
+        // does not cover concurrent offers at all. Guessing would be worse than
+        // leaving it visible. Whether it can even happen depends on server-side ring
+        // fan-out (beta's route-inbound `ring_order`), which is outside this repo.
+        _pendingOffer.value?.let { superseded ->
+            if (superseded.callId != offer.callId) {
+                Log.w(TAG, "incoming offer ${offer.callId} superseded ${superseded.callId}; the older leg is now unreachable")
+            }
+        }
         _pendingOffer.value = offer
 
         // NO foreground service during the ring phase — a deliberate deviation from
