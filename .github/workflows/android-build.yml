@@ -27,9 +27,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
-    env:
-      GRADLE_VERSION: "9.3.1"
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -43,13 +40,17 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: ${{ env.GRADLE_VERSION }}
+          # No gradle-version pin: the committed wrapper (gradle/wrapper/gradle-wrapper.properties)
+          # is the single source of truth for the Gradle version, same as a local build. A pinned
+          # `gradle-version` here previously ran 9.3.1 in CI while the wrapper (and every local
+          # build) ran 9.6.1 — two different Gradle versions building the same project depending
+          # on where you ran it, with no reason for the split.
           cache-read-only: ${{ github.event_name == 'pull_request' }}
 
       - name: Display Java and Gradle versions
         run: |
           java -version
-          gradle --version
+          ./gradlew --version
 
       - name: Create local environment file
         shell: bash
@@ -88,30 +89,100 @@ jobs:
             -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
 
+      - name: Provide google-services.json
+        id: google_services
+        shell: bash
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          # google-services.json is gitignored on purpose (see .gitignore and AGENTS.md
+          # "Push wake-up"): it names the Firebase project and its API keys, and this repo
+          # is public, so it is stored as a base64 repo secret and decoded here instead of
+          # being committed. It is NOT a hard secret in the classic sense — it ships inside
+          # every distributed APK either way — but publishing it directly in a public repo
+          # is still avoidable, so we don't.
+          #
+          # app/build.gradle.kts applies the google-services plugin CONDITIONALLY on this
+          # file's presence, so a missing secret degrades the debug/test build (no FCM,
+          # loud warning) instead of failing it outright. The release build below is
+          # separately hard-gated on this file's presence — a release artifact is never
+          # produced without real FCM config.
+          if [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
+            echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > app/google-services.json
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "Wrote app/google-services.json from repository secret — FCM push will be configured in this build."
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::GOOGLE_SERVICES_JSON_BASE64 secret is not set — building WITHOUT Firebase/FCM config (push notifications will not work in this build). Add the secret to enable FCM (see AGENTS.md 'Build & CI')."
+            {
+              echo "### ⚠️ Built without FCM (google-services.json)"
+              echo ""
+              echo "\`GOOGLE_SERVICES_JSON_BASE64\` repo secret is not set. This debug build has"
+              echo "no Firebase configuration — push notifications will not register or arrive."
+              echo "The release build below will not run at all until this is added."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Run unit tests
-        run: gradle test --stacktrace
+        run: ./gradlew test --stacktrace
 
       - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace
 
-      - name: Decode release signing key
+      - name: Check release readiness
+        id: release_check
         shell: bash
         env:
           RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
           RELEASE_KEYSTORE_STORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_STORE_PASSWORD }}
           RELEASE_KEYSTORE_KEY_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_KEY_PASSWORD }}
         run: |
-          # Google Play requires the SAME upload key across every release of an
-          # app. Without a real keystore, app/build.gradle.kts's
-          # signingConfigs.release silently falls back to a fresh debug.keystore
-          # generated a few steps above — a DIFFERENT throwaway key every run —
-          # which produces an AAB/APK that LOOKS signed but can never be
-          # uploaded to Play. Rather than let that happen quietly, fail here,
-          # before assembleRelease/bundleRelease ever run.
-          if [ -z "$RELEASE_KEYSTORE_BASE64" ] || [ -z "$RELEASE_KEYSTORE_STORE_PASSWORD" ] || [ -z "$RELEASE_KEYSTORE_KEY_PASSWORD" ]; then
-            echo "::error::RELEASE_KEYSTORE_BASE64 / RELEASE_KEYSTORE_STORE_PASSWORD / RELEASE_KEYSTORE_KEY_PASSWORD repo secrets are not set. Refusing to build a release AAB/APK that would silently fall back to a throwaway debug-signed key and could never be uploaded to Play. Add the three secrets (see AGENTS.md 'Build & CI') to enable release builds."
-            exit 1
+          # Unit tests and the debug APK are useful on every push and have nothing to do
+          # with release signing or FCM — they must always run and be able to pass. The
+          # release build (APK + AAB) is different: Google Play requires the SAME signing
+          # key across every release, and shipping without real FCM config would silently
+          # break push. So release is produced only when BOTH are genuinely present; when
+          # either is missing, every release-only step below is skipped (not failed) and
+          # this is called out loudly in the job summary — never a silent, faked release.
+          missing=()
+          [ -z "$RELEASE_KEYSTORE_BASE64" ] && missing+=("RELEASE_KEYSTORE_BASE64")
+          [ -z "$RELEASE_KEYSTORE_STORE_PASSWORD" ] && missing+=("RELEASE_KEYSTORE_STORE_PASSWORD")
+          [ -z "$RELEASE_KEYSTORE_KEY_PASSWORD" ] && missing+=("RELEASE_KEYSTORE_KEY_PASSWORD")
+          [ ! -f app/google-services.json ] && missing+=("google-services.json (GOOGLE_SERVICES_JSON_BASE64 secret)")
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            list=$(printf '%s\n' "${missing[@]}")
+            echo "::warning::Release APK/AAB skipped — missing: ${missing[*]}"
+            {
+              echo "### ⚠️ Release build skipped"
+              echo ""
+              echo "Missing, in order to produce a real signed release:"
+              echo ""
+              echo "$list" | sed 's/^/- /'
+              echo ""
+              echo "Unit tests and the debug APK above are unaffected and reflect the real result."
+              echo "See AGENTS.md 'Build & CI' for the exact secrets and what each protects against."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "Release signing key and google-services.json are both present — building a real release."
           fi
+
+      - name: Decode release signing key
+        if: steps.release_check.outputs.ready == 'true'
+        shell: bash
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_STORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_STORE_PASSWORD }}
+          RELEASE_KEYSTORE_KEY_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_KEY_PASSWORD }}
+        run: |
+          # Reached only when "Check release readiness" confirmed the real upload key is
+          # present. Without it, app/build.gradle.kts's signingConfigs.release would
+          # silently fall back to a fresh debug.keystore generated a few steps above — a
+          # DIFFERENT throwaway key every run — producing an AAB/APK that LOOKS signed but
+          # can never be uploaded to Play. That case is why this step (and the release
+          # build below) is gated instead of ever running unsigned.
           KEYSTORE_PATH="${RUNNER_TEMP}/release-upload-key.jks"
           echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
           {
@@ -122,10 +193,12 @@ jobs:
           echo "Decoded release upload keystore — release build will be signed with the real upload key (alias 'upload')."
 
       - name: Build release APK
-        run: gradle assembleRelease --stacktrace
+        if: steps.release_check.outputs.ready == 'true'
+        run: ./gradlew assembleRelease --stacktrace
 
       - name: Build release AAB
-        run: gradle bundleRelease --stacktrace
+        if: steps.release_check.outputs.ready == 'true'
+        run: ./gradlew bundleRelease --stacktrace
 
       - name: List generated files
         if: always()
@@ -146,6 +219,7 @@ jobs:
           retention-days: 14
 
       - name: Upload release APK
+        if: steps.release_check.outputs.ready == 'true'
         uses: actions/upload-artifact@v6
         with:
           name: kalfa-release-apk
@@ -154,6 +228,7 @@ jobs:
           retention-days: 30
 
       - name: Upload release AAB
+        if: steps.release_check.outputs.ready == 'true'
         uses: actions/upload-artifact@v6
         with:
           name: kalfa-release-aab

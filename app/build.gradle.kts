@@ -6,10 +6,32 @@ plugins {
   alias(libs.plugins.secrets)
   alias(libs.plugins.kotlin.serialization)
   // Consumes app/google-services.json (gitignored — each developer/CI supplies
-  // their own). This plugin FAILS THE BUILD if the file is missing, which is
-  // deliberate and useful: a silently-absent Firebase config would otherwise
-  // surface much later as pushes that never arrive.
-  alias(libs.plugins.google.services)
+  // their own). Declared `apply false` here and applied conditionally below:
+  // the plugin itself FAILS THE BUILD unconditionally if the file is missing,
+  // which is right for a real build (a silently-absent Firebase config would
+  // otherwise surface much later as pushes that never arrive) but wrong for
+  // `gradle test`/`assembleDebug` on a checkout or CI run that has no FCM
+  // config yet — those need to keep working (see the `if` block below).
+  alias(libs.plugins.google.services) apply false
+}
+
+// google-services.json is gitignored (each developer/CI supplies their own —
+// see AGENTS.md "Push wake-up"). Applying the plugin only when the file is
+// present keeps `gradle test`/`assembleDebug` working on a fresh checkout or
+// a CI run with no Firebase secret configured, while still getting the
+// plugin's hard, loud failure (see the comment above) the moment the file
+// exists but is broken. CI additionally hard-gates the RELEASE build on this
+// file's presence (`.github/workflows/android-build.yml`) so a real release
+// artifact is never produced without working FCM config — this `if` only
+// relaxes the debug/test path, not what ships.
+if (file("google-services.json").exists()) {
+  apply(plugin = "com.google.gms.google-services")
+} else {
+  logger.warn(
+    "app/google-services.json not found — building WITHOUT Firebase/FCM " +
+      "config (com.google.gms.google-services plugin not applied). Push " +
+      "notifications will not work in this build. See AGENTS.md 'Push wake-up'."
+  )
 }
 
 android {
