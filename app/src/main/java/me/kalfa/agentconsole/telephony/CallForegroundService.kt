@@ -22,38 +22,72 @@ import androidx.core.content.ContextCompat
 // answered via VoxIncomingCallCoordinator — and shows the mandatory ongoing
 // notification so Android does not kill an active call in the background.
 //
-// FOREGROUND-SERVICE TYPE — v1 uses `microphone`, deliberately NOT `phoneCall`:
-// `phoneCall` on Android 14+ additionally requires self-managed Telecom
-// (MANAGE_OWN_CALLS + a ConnectionService) OR the default-dialer role, which this app
-// does not adopt yet — that is the option-(a) ConnectionService path deferred to the
-// telephony-wiring step. `microphone` matches the actual media op (two-way call audio)
-// and its runtime prerequisite is RECORD_AUDIO, requested at the live-supervision
-// surface (see CallAudioPermissions). The receive-only monitor leg still opens the
-// audio unit; its send-isolation is enforced server-side, not by this service.
+// FOREGROUND-SERVICE TYPE — phased, and the phase is the whole point. Settled against
+// AOSP source on 2026-08-14 (`core/java/android/app/ForegroundServiceTypePolicy.java`),
+// after a first answer that was confidently wrong in both directions:
 //
-// KNOWN COST OF THAT CHOICE, verified 2026-08-14 against the live docs and deliberately
-// NOT fixed here: RECORD_AUDIO is a while-in-use permission, so a `microphone` FGS
-// cannot be created while the app is in the background — which is exactly the push-wake
-// path this service is started from when a call reaches a pocketed phone. The
-// high-priority-FCM exemption covers the separate background-START restriction, not this
-// one. startForegroundCompat below documents it in full and now degrades instead of
-// crashing. The actual fix is a manifest-side type change (`phoneCall`, whose stated
-// prerequisite — a declared MANAGE_OWN_CALLS — this app already satisfies via
-// core-telecom), which belongs to the manifest's owner and must land in ONE commit with
-// the constant passed to startForeground here.
+//   FGS_TYPE_POLICY_MICROPHONE  — foregroundOnlyPermission = TRUE  (L460-479)
+//   FGS_TYPE_POLICY_PHONE_CALL  — foregroundOnlyPermission = FALSE (L340-355),
+//                                 anyOf{ RegularPermission(MANAGE_OWN_CALLS),
+//                                        RolePermission(ROLE_DIALER) }
 //
-// Started/stopped by VoxIncomingCallCoordinator around an incoming call's ringing and
-// connected phases (docs §3). The monitor/takeover leg described above still has no
-// call site — that phase is unchanged and still OPEN. Foreground/background
+// That one flag is the mechanism behind both halves:
+//
+//  * `microphone` CANNOT be claimed while the app is in the background — which is
+//    exactly the push-wake path a call arrives on when the phone is pocketed. The
+//    high-priority-FCM exemption is on the background-START list, NOT the while-in-use
+//    list ("interacting with a notification" is, which is why answering works). This
+//    was a live SecurityException, not a theoretical one.
+//  * `phoneCall` has no such restriction, and its prerequisite is a plain permission
+//    check — a DECLARED MANAGE_OWN_CALLS satisfies it (protectionLevel="normal", merged
+//    in from androidx.core:core-telecom). No PhoneAccount, no ConnectionService, no
+//    CallsManager.addCall, so none of the deferred Telecom risk is pulled in here.
+//
+// But `phoneCall` ALONE is not the fix either, and that is the trap: OomAdjuster
+// (~L2420-2427) grants PROCESS_CAPABILITY_FOREGROUND_MICROPHONE only when the microphone
+// bit is set in the RUNNING type — per the framework's own comment on
+// CAMERA_MICROPHONE_CAPABILITY_CHANGE_ID (@EnabledAfter targetSdk Q; this app targets
+// 36). A `phoneCall`-only FGS therefore fixes the crash and leaves an answered call with
+// no microphone whenever the app is not visible: the agent answers, the guest hears
+// silence, and it gets blamed on the network. A visible crash traded for an invisible
+// one is not a fix.
+//
+// Hence: `phoneCall` while RINGING (legal from a background push, no mic needed yet),
+// promoted to `phoneCall|microphone` on ANSWER (legal because answering comes from a
+// notification action or the visible ring activity — both while-in-use exempt — and it
+// is this call that actually grants the mic capability). Re-calling startForeground on
+// an already-foreground service updates its type, so the promotion is just the second
+// call. The manifest declares `phoneCall|microphone` as the ceiling; ActiveServices
+// (L2207) only requires the value PASSED to be a subset of it, and validates the
+// prerequisites of the bits passed rather than those declared.
+//
+// Started/stopped by VoxIncomingCallCoordinator. As of crash-hunter's d27cbac the
+// ringing-phase start is GONE from handleIncomingCall — it threw under the old type —
+// so today the only start is the answer, and the ring window runs with no foreground
+// service (a low-memory kill before the agent answers is possible). Phase.RINGING below
+// is what makes restoring it safe; docs §3 step 4 still describes the intended shape.
+// The monitor/takeover leg described above still has no call site — that phase is
+// unchanged and still OPEN. Foreground/background
 // call-continuity MUST still be validated on a real device before release (a known
 // release gate — see docs §3's "What could not be verified").
 class CallForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    // Which half of a call's life this start is for — it selects the foreground-service
+    // type, and the two are not interchangeable (see the type discussion in this file's
+    // header). Not a UI concern: the notification title is passed separately.
+    enum class Phase { RINGING, ACTIVE }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val title = intent?.getStringExtra(EXTRA_TITLE) ?: DEFAULT_TITLE
-        if (!startForegroundCompat(title)) {
+        // Defaults to ACTIVE, deliberately: an unlabelled start is an answered call in
+        // every current call path, and ACTIVE is the phase that asks for the microphone.
+        // Defaulting to RINGING instead would silently mute a call rather than fail.
+        val phase = intent?.getStringExtra(EXTRA_PHASE)
+            ?.let { runCatching { Phase.valueOf(it) }.getOrNull() }
+            ?: Phase.ACTIVE
+        if (!startForegroundCompat(title, phase)) {
             // Not a foreground service and unable to become one. Stop rather than linger:
             // AOSP's ActiveServices.serviceForegroundTimeout() discards the
             // "Context.startForegroundService() did not then call
@@ -68,60 +102,83 @@ class CallForegroundService : Service() {
     }
 
     /**
-     * Claims the `microphone` foreground-service type, or reports that it could not —
-     * this is the one call in this file that can take the whole app down, and it has two
-     * documented ways to do so on Android 14+.
+     * Claims the foreground-service type for [phase], or reports that it could not —
+     * this is the one call in this file that can take the whole app down.
      *
-     * 1. No RECORD_AUDIO. "Runtime prerequisites: Request and be granted the
-     *    `RECORD_AUDIO` runtime permission"
-     *    (`developer.android.com/develop/background-work/services/fgs/service-types`),
-     *    and "If your app doesn't fulfill all of the runtime requirements for starting a
-     *    foreground service, the system throws a `SecurityException` after you call
-     *    `startForeground()`" (`.../about/versions/14/changes/fgs-types-required`).
-     *    Checked up front so the common, recoverable case produces a precise log line
-     *    instead of a stack trace: the caller is expected to have checked already
-     *    (VoxIncomingCallCoordinator does), but a permission can be revoked between that
-     *    check and this service actually starting, and this file must not depend on
-     *    every future caller remembering.
-     * 2. Started while the app is in the background — even WITH the permission granted.
-     *    RECORD_AUDIO is a while-in-use permission: "you cannot create a `microphone`
-     *    foreground service while your app is in the background ... with a few
-     *    exceptions", and a high-priority FCM message is NOT among those while-in-use
-     *    exceptions (it exempts only the separate background-START restriction). That is
-     *    precisely this app's push-wake path, so this is a live crash, not a hypothetical
-     *    one — see the note sent to telecom-owner about `phoneCall`/`shortService`, which
-     *    is the real fix and is not this file's to make.
+     * The RECORD_AUDIO pre-check applies to ACTIVE only, because only ACTIVE asks for the
+     * microphone bit. "Runtime prerequisites: Request and be granted the `RECORD_AUDIO`
+     * runtime permission" (`.../fgs/service-types`) and "If your app doesn't fulfill all
+     * of the runtime requirements for starting a foreground service, the system throws a
+     * `SecurityException` after you call `startForeground()`"
+     * (`.../about/versions/14/changes/fgs-types-required`). Checked up front so the
+     * common, recoverable case produces a precise log line rather than a stack trace.
+     * VoxIncomingCallCoordinator checks too, but a permission can be revoked between its
+     * check and this service starting, and this file must not depend on every future
+     * caller remembering. Note what this check is NOT: it does not make a background
+     * `microphone` start legal — that was the trap in the previous version of this guard,
+     * where the permission was granted, the check passed, and the start threw anyway.
      *
-     * The RECORD_AUDIO pre-check belongs to the `microphone` type specifically. If the
-     * declared type ever changes it must move with it — `phoneCall`'s runtime
-     * prerequisite is a declared MANAGE_OWN_CALLS or the dialer role, not a granted
-     * microphone permission — and the constant below must change in the SAME commit as
-     * the manifest, since the type passed here must be one the manifest declares.
-     *
-     * Notification building is inside the guard too: it is ordinary code that can throw,
-     * and a throw between `startForegroundService()` and `startForeground()` is the
-     * did-not-start-in-time crash on top of whatever actually failed.
+     * Notification building sits inside the guard for the same reason: it is ordinary
+     * code that can throw, and a throw between `startForegroundService()` and
+     * `startForeground()` is the did-not-start-in-time crash on top of whatever actually
+     * failed.
      */
-    private fun startForegroundCompat(title: String): Boolean {
-        if (!hasRecordAudio()) {
+    private fun startForegroundCompat(title: String, phase: Phase): Boolean {
+        if (phase == Phase.ACTIVE && !hasRecordAudio()) {
             Log.w(TAG, "RECORD_AUDIO not granted — refusing to claim the microphone FGS type")
             return false
         }
         return try {
-            val notification = buildNotification(title)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
-                )
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
-            }
+            startTyped(buildNotification(title), typeFor(phase))
             true
         } catch (t: Throwable) {
-            Log.e(TAG, "microphone foreground start refused: ${t::class.simpleName}: ${t.message}")
+            Log.e(TAG, "call foreground start refused: ${t::class.simpleName}: ${t.message}")
             false
+        }
+    }
+
+    private fun typeFor(phase: Phase): Int = when (phase) {
+        // No microphone bit while ringing: nothing is capturing yet, and asking for it
+        // from a push-woken background process is precisely what threw.
+        Phase.RINGING -> ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+        Phase.ACTIVE -> ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+    }
+
+    /**
+     * Starts typed, with one narrow retry for one specific, temporary condition: a
+     * manifest whose `foregroundServiceType` ceiling does not include `phoneCall` yet.
+     *
+     * The type passed must be a subset of the manifest attribute or ActiveServices
+     * (refs/heads/main, L2207) throws IllegalArgumentException — "is not a subset of
+     * foregroundServiceType attribute ... in service element of manifest file". The
+     * manifest widening (`phoneCall|microphone`) and this file are separate commits on
+     * separate branches, and if they merge in the wrong order every answered call would
+     * lose its foreground service. Retrying with the microphone bit alone is exactly the
+     * behaviour that shipped before this change, so a wrong-order merge degrades to the
+     * old, working answer path instead of to nothing.
+     *
+     * Deliberately narrow: only IllegalArgumentException, and only when a microphone bit
+     * is available to fall back TO. A RINGING start has none, so it rethrows rather than
+     * silently retrying with a type that is illegal from the background anyway. This
+     * retry becomes dead code once both commits are in, and should be deleted then.
+     *
+     * The API-level branch lives HERE rather than at the call site so Lint can see the
+     * guard in the same function as the API-29 `startForeground` overload — `NewApi` is
+     * fatal in `lintVitalRelease`, and this project has no lint config to soften it.
+     */
+    private fun startTyped(notification: Notification, type: Int) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification)
+            return
+        }
+        try {
+            startForeground(NOTIFICATION_ID, notification, type)
+        } catch (e: IllegalArgumentException) {
+            val micOnly = type and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            if (micOnly == 0) throw e
+            Log.w(TAG, "manifest ceiling lacks phoneCall — retrying microphone-only: ${e.message}")
+            startForeground(NOTIFICATION_ID, notification, micOnly)
         }
     }
 
@@ -181,13 +238,35 @@ class CallForegroundService : Service() {
         private const val DEFAULT_TITLE = "שיחה פעילה"
         private const val NOTIFICATION_ID = 4711
         private const val EXTRA_TITLE = "title"
+        private const val EXTRA_PHASE = "phase"
 
-        // Called by VoxIncomingCallCoordinator both while a call is still ringing and
-        // once it's answered (different titles); the future monitor/takeover phase
-        // will call this too once it exists.
-        fun start(context: Context, title: String = DEFAULT_TITLE) {
+        /**
+         * Starts (or re-types) the ongoing-call service.
+         *
+         * [phase] selects the foreground-service type and is NOT cosmetic — see this
+         * file's header. Pass [Phase.RINGING] for an offered-but-unanswered call, which
+         * is legal from a push-woken background process; the default [Phase.ACTIVE] adds
+         * the microphone bit and is legal from the two paths an answer arrives on (a
+         * notification action, or the visible ring activity), both of which are
+         * while-in-use exempt.
+         *
+         * Calling this a second time to promote RINGING → ACTIVE is supported and is the
+         * intended way to do it: a repeat `startForeground` updates the running type
+         * (`ActiveServices` L2622), and a while-in-use denial recorded at the first start
+         * is re-evaluated rather than latched (L2504-2515, L8305-8312 — grants are
+         * sticky, denials are retried against current app state).
+         *
+         * The ring-phase call site does not exist right now: it was removed from
+         * VoxIncomingCallCoordinator.handleIncomingCall (crash-hunter, d27cbac) because
+         * under the old `microphone` type it threw, leaving the ring window with no
+         * foreground service and a low-memory kill possible before the agent answers.
+         * This parameter is what lets that start come back safely — it is the missing
+         * half, not speculative API.
+         */
+        fun start(context: Context, title: String = DEFAULT_TITLE, phase: Phase = Phase.ACTIVE) {
             val intent = Intent(context, CallForegroundService::class.java)
                 .putExtra(EXTRA_TITLE, title)
+                .putExtra(EXTRA_PHASE, phase.name)
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     context.startForegroundService(intent)
