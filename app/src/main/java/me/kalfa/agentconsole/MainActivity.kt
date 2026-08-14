@@ -1,6 +1,9 @@
 package me.kalfa.agentconsole
 
+import android.content.Intent
+import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -28,7 +31,11 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import kotlinx.coroutines.flow.collect
+import me.kalfa.agentconsole.di.DependencyContainer
 import me.kalfa.agentconsole.telephony.EnsureCallAudioPermission
+import me.kalfa.agentconsole.telephony.presence.PresenceForegroundService
+import me.kalfa.agentconsole.telephony.vox.IncomingCallNotificationBuilder
+import me.kalfa.agentconsole.telephony.vox.VoxIncomingCallCoordinator
 import me.kalfa.agentconsole.ui.*
 import me.kalfa.agentconsole.ui.message.AppMessageHost
 import me.kalfa.agentconsole.ui.message.AppSnackbarHost
@@ -53,7 +60,8 @@ class MainActivity : ComponentActivity() {
         // Gives DependencyContainer's VoxTokenStore a Context. Also called from
         // VoxFirebaseMessagingService.onCreate for the cold-start-via-push case
         // (AGENTS.md "Push wake-up"); attach() is idempotent either order.
-        me.kalfa.agentconsole.di.DependencyContainer.attach(applicationContext)
+        DependencyContainer.attach(applicationContext)
+        applyIncomingCallWindowFlagsIfNeeded(intent)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
@@ -72,6 +80,53 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    // Presence that survives — starts/stops PresenceForegroundService
+                    // in lockstep with AgentPresence.shiftActive (via ConsoleUiState),
+                    // since starting a Service needs a Context ConsoleViewModel
+                    // deliberately doesn't have. See
+                    // docs/android-presence-and-call-ux.md §1.
+                    LaunchedEffect(state.shiftActive) {
+                        if (state.shiftActive) {
+                            PresenceForegroundService.start(applicationContext)
+                        } else {
+                            PresenceForegroundService.stop(applicationContext)
+                        }
+                    }
+
+                    // Calls can now arrive (and need answering) before the agent ever
+                    // visits the live-calls screen that used to be the only place
+                    // this was requested — see docs §3, "RECORD_AUDIO /
+                    // POST_NOTIFICATIONS must be requested earlier". Its own
+                    // rememberSaveable guard means this is a no-op if the existing
+                    // live-calls-screen call site already asked.
+                    EnsureCallAudioPermission()
+
+                    // The incoming-call ring surface (docs §3) — a top-level overlay,
+                    // independent of the (untouched) DEBUG-only InCallScreen branch
+                    // below. incomingCallCoordinator is null only in mock mode / before
+                    // DependencyContainer.attach() has run, in which case this simply
+                    // never fires.
+                    val incomingCallCoordinator = remember { DependencyContainer.incomingCallCoordinator }
+                    val noOffer = remember {
+                        kotlinx.coroutines.flow.MutableStateFlow<VoxIncomingCallCoordinator.IncomingOffer?>(null)
+                    }
+                    val pendingOffer by (incomingCallCoordinator?.pendingOffer ?: noOffer).collectAsState()
+
+                    // Only the locked-device full-screen-intent launch sets these
+                    // flags (applyIncomingCallWindowFlagsIfNeeded); clear them the
+                    // moment the offer resolves so this activity does not keep
+                    // bypassing the lock screen for ordinary future launches.
+                    LaunchedEffect(pendingOffer) {
+                        if (pendingOffer == null) clearIncomingCallWindowFlags()
+                    }
+
+                    if (pendingOffer != null) {
+                        IncomingCallScreen(
+                            displayName = pendingOffer?.displayName.orEmpty(),
+                            onAnswer = { pendingOffer?.let { incomingCallCoordinator?.answer(it.callId) } },
+                            onDecline = { pendingOffer?.let { incomingCallCoordinator?.decline(it.callId) } }
+                        )
+                    } else {
                     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                         // Adaptive nav: bottom bar on compact, rail on expanded. Hidden entirely during a call.
                         AdaptiveConsoleScaffold(
@@ -152,8 +207,53 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+                    }
                 }
             }
+        }
+    }
+
+    // Delivered when a full-screen-intent-launched call (docs §3) targets this
+    // Activity while it is already running (singleTask — see AndroidManifest.xml) —
+    // Android routes it here instead of a fresh onCreate.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyIncomingCallWindowFlagsIfNeeded(intent)
+    }
+
+    // Bypasses the lock screen ONLY for the locked-device incoming-call
+    // full-screen-intent launch (docs/android-presence-and-call-ux.md §3) — never for
+    // an ordinary app open. setShowWhenLocked/setTurnScreenOn are API 27+; 24-26 falls
+    // back to the equivalent WindowManager flags (spec's version-gating table).
+    private fun applyIncomingCallWindowFlagsIfNeeded(intent: Intent?) {
+        if (intent?.action != IncomingCallNotificationBuilder.ACTION_INCOMING_CALL_UI) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+            )
+        }
+    }
+
+    private fun clearIncomingCallWindowFlags() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(false)
+            setTurnScreenOn(false)
+        } else {
+            @Suppress("DEPRECATION")
+            window.clearFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+            )
         }
     }
 }

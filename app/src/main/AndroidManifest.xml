@@ -34,6 +34,15 @@
     <!-- Android 12+ (API 31) Bluetooth headset routing. -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
+    <!--
+      Presence foreground service (docs/android-presence-and-call-ux.md §1): required
+      alongside the specialUse foreground-service type declared below. No closer-fitting
+      type exists — the heartbeat has no audio/location/bulk-data-transfer, and
+      `phoneCall` requires the self-managed Telecom this app deliberately does not
+      adopt yet (see the doc's "Decision: android.telecom adoption").
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
     <!-- Microphone is required for the console to function; not an optional feature. -->
     <uses-feature
         android:name="android.hardware.microphone"
@@ -52,7 +61,14 @@
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.MyApplication">
+            <!--
+              singleTask (docs/android-presence-and-call-ux.md §3): a locked-device
+              incoming-call full-screen intent re-targets this SAME activity via
+              onNewIntent instead of stacking a second instance. Single-activity app —
+              no back-stack semantics change from this.
+            -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
@@ -85,6 +101,31 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <!--
+          Presence foreground service (docs/android-presence-and-call-ux.md §1) — the
+          fix for AgentPresence.setStatus writing once and never again. specialUse: no
+          audio, no location, no bulk data transfer, and phoneCall needs the
+          self-managed Telecom this app doesn't adopt yet (see the doc's Telecom
+          decision). Requires a Play Console justification before any Play
+          distribution (owner action, not blocking today — no upload keystore yet).
+        -->
+        <service
+            android:name=".telephony.presence.PresenceForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps a call-center agent's on-shift presence heartbeat alive so the server can route inbound and AI-escalated calls to this device while the app is backgrounded" />
+        </service>
+
+        <!--
+          Notification action receivers (docs §1 and §3). Not exported — only this
+          app's own PendingIntents target them.
+        -->
+        <receiver android:name=".telephony.presence.PresenceActionReceiver" android:exported="false" />
+        <receiver android:name=".telephony.vox.IncomingCallActionReceiver" android:exported="false" />
+        <receiver android:name=".telephony.CallHangupActionReceiver" android:exported="false" />
 
         <!--
           Self-managed ConnectionService (AGENTS.md §3). Register the PhoneAccount

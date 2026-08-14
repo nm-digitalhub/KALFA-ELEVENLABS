@@ -5,6 +5,8 @@ import com.voximplant.android.sdk.calls.CallCallback
 import com.voximplant.android.sdk.calls.CallDisconnectReason
 import com.voximplant.android.sdk.calls.CallException
 import com.voximplant.android.sdk.calls.CallListener
+import com.voximplant.android.sdk.calls.CallSettings
+import com.voximplant.android.sdk.calls.RejectMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -125,6 +127,25 @@ class VoxCallSession(
 
     override fun hangup() {
         runCatching { call.hangup(emptyMap()) }
+        finish()
+    }
+
+    // Call.answer throws CallException (e.g. the platform already gave up on this
+    // leg — RING_RETRY_WINDOW_MS elapsed, or the caller hung up first). The caller of
+    // this method (VoxIncomingCallCoordinator) is expected to have already checked
+    // state == RINGING before invoking it; runCatching here is a second, defensive
+    // layer so a race never propagates an uncaught exception into a
+    // BroadcastReceiver's onReceive.
+    override fun answer() {
+        runCatching { call.answer(CallSettings()) }
+    }
+
+    // Reject (not hangup): the SDK distinguishes "never answered" (reject, proper SIP
+    // decline/busy) from "was connected, now ending" (hangup). Using reject here keeps
+    // that distinction correct on the wire instead of relying on hangup's
+    // any-state tolerance.
+    override fun decline() {
+        runCatching { call.reject(RejectMode.Decline, emptyMap()) }
         finish()
     }
 }

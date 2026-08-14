@@ -58,6 +58,11 @@ data class ConsoleUiState(
     val campaigns: List<Campaign> = emptyList(),
     val rsvpResults: List<RsvpResult> = emptyList(),
     val currentSession: CallSession? = null,
+    // Readback of AgentPresence.shiftActive — drives MainActivity's
+    // PresenceForegroundService start/stop LaunchedEffect (see
+    // docs/android-presence-and-call-ux.md §1). NOT the same thing as agentStatus:
+    // shift persists through NOT_READY/DND breaks and only clears on logout.
+    val shiftActive: Boolean = false,
     val currentSessionState: CallState = CallState.DISCONNECTED,
     val currentSessionMuted: Boolean = false,
     val currentSessionHeld: Boolean = false,
@@ -143,7 +148,8 @@ class ConsoleViewModel : ViewModel() {
                 callRepo.callHistory,
                 campaignRepo.campaigns,
                 rsvpRepo.rsvpResults,
-                callEngine.currentSession
+                callEngine.currentSession,
+                agentPresence.shiftActive
             ) { array ->
                 val status = array[0] as AgentStatus
                 val activeCount = array[1] as Int
@@ -157,6 +163,7 @@ class ConsoleViewModel : ViewModel() {
                 @Suppress("UNCHECKED_CAST")
                 val rsvps = array[6] as List<RsvpResult>
                 val session = array[7] as CallSession?
+                val shift = array[8] as Boolean
 
                 val isReal = DependencyContainer.isSupabaseConfigured
                 val realActive = if (isReal) live.count { it.handledBy == "ai" && it.state != CallState.DISCONNECTED } else activeCount
@@ -171,7 +178,8 @@ class ConsoleViewModel : ViewModel() {
                         callHistory = history,
                         campaigns = camps,
                         rsvpResults = rsvps,
-                        currentSession = session
+                        currentSession = session,
+                        shiftActive = shift
                     )
                 }
             }.collect()
@@ -437,19 +445,16 @@ class ConsoleViewModel : ViewModel() {
     // rest of the day; only an explicit logout does (see logout() below).
     // ensureLoggedIn is idempotent/cheap once already logged in, so repeated taps
     // of "Ready" cost nothing extra (MAU discipline — AGENTS.md §1).
+    //
+    // The actual work is in PresenceActions.applyStatus — shared with
+    // PresenceActionReceiver (the presence notification's shade/lock-screen actions),
+    // which has no ViewModel to call this on (docs/android-presence-and-call-ux.md
+    // §1). This method's only remaining job is supplying the voxUsername this
+    // ViewModel already has from ConsoleUiState.me.
     fun setAgentStatus(status: AgentStatus) {
-        agentPresence.setStatus(status)
-        if (status == AgentStatus.READY) {
-            agentPresence.setShiftActive(true)
-            val voxUsername = _uiState.value.me?.voxUsername
-            val vcm = DependencyContainer.voxClientManager
-            if (voxUsername != null && vcm != null) {
-                viewModelScope.launch {
-                    vcm.ensureLoggedIn(voxUsername).onSuccess {
-                        vcm.registerCurrentPushToken()
-                    }
-                }
-            }
+        val voxUsername = _uiState.value.me?.voxUsername
+        viewModelScope.launch {
+            me.kalfa.agentconsole.telephony.presence.PresenceActions.applyStatus(status, voxUsername)
         }
     }
 

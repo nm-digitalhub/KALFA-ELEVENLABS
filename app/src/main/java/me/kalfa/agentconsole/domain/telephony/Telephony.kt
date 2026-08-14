@@ -15,11 +15,26 @@ interface CallSession {
     val isMuted: StateFlow<Boolean>
     val isHeld: StateFlow<Boolean>
     val durationSec: StateFlow<Int>
-    
+
     fun mute(muted: Boolean)
     fun hold(held: Boolean)
     fun sendDtmf(digit: String)
     fun hangup()
+
+    /**
+     * Answers a session that arrived via CallEngine.attachIncomingSession while still
+     * RINGING — an inbound call Voximplant offered directly to this agent's device
+     * (see VoxIncomingCallCoordinator, docs/android-presence-and-call-ux.md §3).
+     * Default no-op: a monitor/takeover leg is already connected by the time it is
+     * exposed here, so it never needs answering.
+     */
+    fun answer() {}
+
+    /**
+     * Declines a still-RINGING inbound offer. Default falls back to hangup() so a
+     * caller that doesn't distinguish the two still tears the leg down.
+     */
+    fun decline() { hangup() }
 }
 
 interface CallEngine {
@@ -68,10 +83,37 @@ interface CallEngine {
     ): AppResult<OutboundDispatchReceipt> = AppResult.Failure(
         me.kalfa.agentconsole.domain.error.AppFailure.Unknown
     )
+
+    /**
+     * Publishes a CallSession that originated from an incoming SDK call — see
+     * VoxIncomingCallCoordinator — into currentSession, so the rest of the app
+     * (ConsoleViewModel/ConsoleUiState) observes it through the SAME abstraction as
+     * any other call, rather than a parallel one. Default no-op keeps mock mode and
+     * any other CallEngine implementation compiling unchanged.
+     */
+    fun attachIncomingSession(session: CallSession) {}
+
+    /**
+     * Clears currentSession once an attached incoming call ends (declined, hung up,
+     * or failed) — called by VoxIncomingCallCoordinator's single cleanup path, not by
+     * each individual answer/decline/hangup call site. Default no-op.
+     */
+    fun clearAttachedSession() {}
 }
 
 interface AgentPresence {
     val currentStatus: StateFlow<AgentStatus>
+
+    /**
+     * Readback of the last setShiftActive call, for UI/service code that needs to
+     * know whether presence should be running RIGHT NOW (PresenceForegroundService's
+     * start/stop trigger — see docs/android-presence-and-call-ux.md §1) rather than
+     * just being able to fire a one-way declaration. Default (a StateFlow(false) that
+     * nothing ever updates) keeps mock mode and any other implementer compiling.
+     */
+    val shiftActive: StateFlow<Boolean>
+        get() = kotlinx.coroutines.flow.MutableStateFlow(false)
+
     fun setStatus(status: AgentStatus)
 
     /**

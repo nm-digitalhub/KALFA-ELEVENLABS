@@ -1,0 +1,484 @@
+# Android presence & incoming-call UX — spec
+
+Status: **implemented 2026-08-14.** Every claim below is tagged **[verified]** (checked
+against the live AAR/Maven artifact, live Android docs, or a file:line in this repo) or
+**[inference]** (reasoning from verified primitives, no device to confirm against).
+Read `AGENTS.md` "Known state" and "Push wake-up" first — this doc assumes that context
+and does not repeat it.
+
+## Scope
+
+Two problems, kept deliberately separate because they have different failure modes and
+different Android mechanisms:
+
+1. **Presence.** `AgentPresence.setStatus` posts once and never again
+   (`data/SupabaseImplementations.kt:738-763`). The server's routing gate needs
+   `agent_status.updated_at` inside 90s (`AGENT_STATUS_FRESHNESS_MS`,
+   `beta/src/lib/console/presence.ts`). No timer anywhere resends it, so an agent is
+   routable for at most ~90s after tapping "זמין". Fix: a foreground service that
+   re-sends the status on a cadence that survives the screen turning off.
+2. **Incoming call.** `VoxClientManager.onIncomingCall` is declared and forwarded to by
+   the SDK's `IncomingCallListener`, but nothing in this repo ever assigns it
+   (`grep onIncomingCall` — the only assignment is the SDK-facing one *inside*
+   `VoxClientManager` itself, `VoxClientManager.kt:87-95`). A push-woken app logs in and
+   registers for push but a delivered call has nowhere to go. Fix: wire it to a
+   notification-driven answer/decline surface, through `CallEngine`/`CallSession`.
+
+Both are additive: no change to `beta`, no change to the DTMF `OutCall` rule, no change
+to the `RSVPAgent` bridge scenario. **`CallEngine.monitorCall`/`.takeoverCall`/
+`.startOutboundCall` still throw `UnsupportedOperationException` on purpose** — that
+phase (full Voximplant SDK wiring for agent-initiated/monitor/takeover legs) is
+unchanged and still open. This change gives the *inbound-to-human* path (retry-wave
+`callUser` → FCM push → answered call) a place to land; it does not touch the other
+three call-initiation paths.
+
+## Decision: `android.telecom` adoption — recommended, but not implemented this change
+
+The brief asked which is currently recommended for a self-managed VoIP app: framework
+`ConnectionService` or the Jetpack `androidx.core:core-telecom` `CallsManager` API.
+
+**[verified, from the live docs and the live artifact, not memory]:**
+- `developer.android.com/guide/topics/connectivity/telecom/voip-app` states plainly:
+  *"Use the Telecom Jetpack library to offer the best video and audio experiences to
+  your users... The new Jetpack library adds support for call streaming and transfer,
+  Android Auto and Wear OS integration, backward compatibility."* Google's own current
+  guidance is the Jetpack library, not raw `ConnectionService`.
+- `core-telecom` is stable at **1.0.1** (Maven metadata,
+  `dl.google.com/android/maven2/androidx/core/core-telecom/maven-metadata.xml`;
+  1.1.0-alpha06 is the newest prerelease, so 1.0.1 is the correct pin, not a stale one).
+- **minSdk 23** — read directly out of the shipped AAR's own manifest
+  (`core-telecom-1.0.1.aar!/AndroidManifest.xml`: `<uses-sdk android:minSdkVersion="23"/>`),
+  not inferred from the general "AndroidX default is 23" policy text. This app's
+  `minSdk 24` is comfortably above it — minSdk is not a blocker.
+- The AAR **declares its own internal service**,
+  `androidx.core.telecom.internal.JetpackConnectionService`, wired via manifest merger
+  with `BIND_TELECOM_CONNECTION_SERVICE`. Adopting `core-telecom` therefore does **not**
+  mean writing `ConsoleConnectionService` by hand — the library supplies the
+  `ConnectionService` internally for API ≤ 33 and uses the platform's native
+  foreground-service-type path on API 34+. This directly answers the "do not default to
+  the old framework `ConnectionService`" steer: there would be nothing to hand-write.
+- It still declares `MANAGE_OWN_CALLS`, `BLUETOOTH_CONNECT`, `MODIFY_AUDIO_SETTINGS` in
+  its own manifest, and `CallsManager.addCall(...)` requires posting a notification
+  within 5 seconds and answering the platform's `CallControlScope` callbacks within a
+  5-second deadline per call
+  (`developer.android.com/guide/topics/connectivity/telecom/voip-app/telecom`).
+
+**Recommendation: adopt `core-telecom` when this app takes on self-managed Telecom** —
+not raw `ConnectionService`. **Not implemented in this change**, for reasons tied
+directly to what is already decided in `AGENTS.md` hard rule 4 and the phase table:
+
+- Telecom adoption is already scoped as its own deferred phase in this repo
+  (`ConsoleConnectionService` commented out in the manifest with a `TODO(voximplant-phase)`;
+  `MANAGE_OWN_CALLS`/`FOREGROUND_SERVICE_PHONE_CALL` deliberately undeclared — "declaring
+  them with nothing behind them is a Play-review risk, not a shortcut"). Adopting
+  `core-telecom` means declaring `MANAGE_OWN_CALLS` for real, which is exactly the
+  bundled-permission-with-working-backing discipline that section already commits to —
+  it belongs in the same change as the rest of that phase, not bolted onto presence work.
+- The 5-second `CallControlScope` callback deadline and the `phoneCall` FGS type's
+  Android 14+ requirement are real correctness risks that need a physical device to
+  verify (see "What could not be verified"). This change has none.
+- `CallForegroundService` already exists as a `microphone`-typed FGS
+  (`telephony/CallForegroundService.kt`) and does not need Telecom to keep an answered
+  leg's process alive — see "Incoming call" below. The incoming-call surface required by
+  this task (notification, FSI, answer/decline, working two-way audio) is fully
+  deliverable without Telecom.
+
+Net effect: this change answers the "which one" question with evidence and leaves a
+clean adoption point (`attachIncomingSession`/`clearAttachedSession` on `CallEngine`,
+below) for whichever change implements Telecom next.
+
+## Part 1 — presence foreground service
+
+### Foreground service type: `specialUse`, not `phoneCall`, not `dataSync`
+
+**[verified, `developer.android.com/develop/background-work/services/fg-service-types`]**
+The presence heartbeat has no audio, no location, no data transfer in the "bulk
+sync/backup" sense `dataSync` is meant for (and `dataSync`-typed FGS carries execution
+time limits unsuited to an all-shift service). `phoneCall` requires exactly the Telecom
+backing this change deliberately does not add (previous section). `specialUse` is
+Android's designated escape hatch for "a real use case with no closer-fitting type," and
+is what this service declares:
+
+```xml
+<service
+    android:name=".telephony.presence.PresenceForegroundService"
+    android:exported="false"
+    android:foregroundServiceType="specialUse">
+    <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="Keeps a call-center agent's on-shift presence heartbeat alive so the server can route inbound and AI-escalated calls to this device while the app is backgrounded" />
+</service>
+```
+
+**Owner action required, not done by this change:** Google Play requires a
+`specialUse`-typed FGS to be justified in the Play Console's **Policy → App content**
+review before a build using it can be distributed
+(`developer.android.com/about/versions/14/changes/fgs-types-required`). This app is not
+on Play yet (`AGENTS.md` "Build & CI" — no upload keystore provisioned), so this is not
+a blocker today, but it is required before any Play release, internal testing track
+included, once `specialUse` code ships.
+
+### Cadence: 30s, not the browser's 60s — deliberate, not an oversight
+
+Server gate is 90s. One missed beat at a 30s cadence is a 60s gap — still under the
+gate with margin; two consecutive missed beats (90s gap) sits exactly on the boundary.
+The browser console's 60s cadence is a *foreground tab* on a *wired/Wi-Fi-typical*
+connection; a backgrounded phone on cellular is a strictly less reliable delivery
+environment, so this deliberately runs tighter than the browser, not the same. If a
+future reader is tempted to "align" it back to 60s, don't — the safety math above is why
+it isn't.
+`PresenceForegroundService.HEARTBEAT_INTERVAL_MS = 30_000L`.
+
+### What the heartbeat actually sends: the existing dual-write `setStatus`, on purpose
+
+`AgentPresence.setStatus` does two writes per call — `POST /api/agents/status` **and** a
+direct `postgrest` upsert into `agent_status` (`SupabaseImplementations.kt:738-763`).
+The heartbeat re-invokes this same method (`setStatus(currentStatus.value)`) every 30s
+rather than adding a POST-only heartbeat path, which doubles that write rate for the
+life of a shift. This is a deliberate choice, not an oversight: the two writes go
+through different layers (server route vs. RLS-scoped client upsert) and nothing in this
+repo establishes which one the routing gate actually reads, so reusing the existing,
+already-correct dual-write is the conservative option — a single new code path is one
+fewer thing to get subtly wrong. If the extra write is ever shown to be meaningful load,
+a POST-only heartbeat variant is a small, separate, measurable change — not bundled here.
+
+### Lifecycle: what starts it, what stops it, what survives what
+
+- **Starts** when `AgentPresence.shiftActive` (new `StateFlow<Boolean>`, mirrors the
+  `dispatchStatuses`-style default-getter pattern already used on `CallEngine`) becomes
+  `true` — i.e. the first time the agent taps "זמין" in a session, since
+  `ConsoleViewModel.setAgentStatus(READY)` already calls `setShiftActive(true)`.
+  Watched from `MainActivity` via `LaunchedEffect(state.shiftActive)`, because starting
+  a `Service` needs a `Context` and `ConsoleViewModel` deliberately has none (it is a
+  plain `ViewModel`, not `AndroidViewModel` — not changing that base class for this).
+- **Stops** when `shiftActive` becomes `false` — today that is only explicit
+  `ConsoleViewModel.logout()`. DND/NOT_READY do **not** stop it (existing comment on
+  `setAgentStatus`: "a short break mid-shift should not drop push-wake coverage for the
+  rest of the day") — the service keeps heartbeating through breaks, matching what
+  `console_agent_shift`/the retry-wave audience already assumes.
+- **Network loss:** each tick's `setStatus` call already catches and swallows its own
+  exceptions (existing code); the loop does not back off or stop — it just tries again
+  in `HEARTBEAT_INTERVAL_MS`. A prolonged outage self-heals the moment connectivity
+  returns, and the server-side 90s gate is exactly the mechanism that should degrade the
+  agent's routability in the meantime — this service does not try to hide that from the
+  server, by design (see "Do not defeat the 90-second gate" below).
+- **Doze:** a running foreground service is exempt from Doze's CPU/network deferral for
+  its own process **[inference — standard documented Android FGS behavior, not
+  device-verified here]**. It is *not* exempt from OEM battery-management killers
+  (Xiaomi/Huawei/Samsung aggressive modes, which kill processes FGS status does not
+  protect against on some skins) — **[unverifiable without the specific device/OEM
+  build; flagged, not solved]**. Requesting
+  `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` would help but is a Play-policy-sensitive
+  permission requiring its own justification and is **left as an owner decision**, not
+  added here — see "Owner actions."
+- **Force-stop:** Android kills the process and does not restart force-stopped
+  components until the user manually reopens the app — this is correct, desired
+  behavior (`agent_status.updated_at` ages past 90s on its own and the agent correctly
+  stops being routed). Nothing in this change works around it.
+- **System kill under memory pressure (not force-stop):** the service returns
+  `START_STICKY`. On a system-initiated restart (`onStartCommand` with a `null` intent),
+  it reads a small persisted record — `PresenceStateStore` (DataStore Preferences,
+  same pattern as `VoxTokenStore`) holding the last known `AgentStatus`, `shiftActive`,
+  and `voxUsername` — and resumes heartbeating **only if** that record says
+  `shiftActive == true`. If the record is missing or says `false`, the service calls
+  `stopSelf()` rather than guessing — fail-closed, matching the rest of this app's
+  fail-closed conventions. A resumed service also re-runs
+  `PresenceActions.applyStatus(...)`, which re-triggers the Voximplant silent-login
+  chain — necessary because process death also killed the SDK's `Client` session, not
+  optional.
+
+**Do not defeat the 90-second gate.** Nothing here tries to keep the server believing a
+dead device is live. The service's only job is to make a *genuinely alive, on-shift*
+device *stay* reflected as such; every failure path above resolves to "stop trying and
+let the gate do its job," never to fabricating freshness.
+
+### Notification (Part 2): status + shade/lock-screen actions
+
+Channel `kalfa_agent_presence`, `IMPORTANCE_LOW` (ongoing/informational, no sound —
+matches the existing `CallForegroundService` channel's choice, not a new convention).
+Content updates reactively from `AgentPresence.currentStatus`, so it reflects a change
+made from *either* the Dashboard status control or a notification action — both paths
+go through the same `PresenceActions.applyStatus` (below), so there is exactly one
+place "what happens when status changes" is implemented.
+
+Three actions, exactly mirroring `AgentStatus` — **no new states invented**:
+זמין (READY) / לא זמין (NOT_READY) / נא לא להפריע (DND). `IN_CALL` is never offered as an
+action — the interface comment on `AgentPresence.setStatus` already says the app must
+never write it; a notification button is user input, same rule applies. Each action is
+a `PendingIntent.getBroadcast` into `PresenceActionReceiver`, which calls
+`PresenceActions.applyStatus(status, voxUsername)` directly — chosen over routing
+through the (possibly-absent) `MainActivity`/`ConsoleViewModel` specifically so the
+action works with the app fully backgrounded or the Activity destroyed.
+
+**Lock-screen visibility:** `VISIBILITY_PUBLIC`. The presence notification carries only
+the agent's own status label — no guest name, phone, or call content ever reaches it —
+so there is nothing here that "leaking customer information" could mean. (Contrast with
+the incoming-call notification below, which does carry a real phone number and is
+handled differently for exactly that reason.)
+
+**What if `POST_NOTIFICATIONS` is denied?** **[verified,
+`developer.android.com/develop/ui/views/notifications/notification-permission`]**: *"Apps
+don't need to request the `POST_NOTIFICATIONS` permission in order to launch a
+foreground service."* The heartbeat keeps running either way — denial only means the
+agent loses the shade/lock-screen status control and sees the FGS notice in the system
+Task Manager instead of the drawer. Not a silent failure of the thing that actually
+matters (staying routable); documented so it doesn't get mistaken for one.
+
+## Part 3 — incoming call
+
+### End-to-end flow
+
+1. Guest calls; primary ring excludes this agent (stale/no heartbeat) or this **is**
+   the retry wave. Voximplant's `callUser` (already deployed with
+   `require(Modules.PushService)` per `AGENTS.md`) sends the FCM data push because the
+   device is backgrounded/killed.
+2. `VoxFirebaseMessagingService.onMessageReceived` → `VoxWakePushHandler.handle` runs
+   the existing three steps (silent login → `handlePushNotification` → re-register push
+   token) — **unchanged by this work.**
+3. `handlePushNotification` causes the SDK to fire `IncomingCallListener.onIncomingCall`
+   → forwarded to `VoxClientManager.onIncomingCall`, which **this change assigns for the
+   first time**, in `DependencyContainer`, to `VoxIncomingCallCoordinator::handleIncomingCall`.
+4. The coordinator wraps the SDK `Call` in the **existing** `VoxCallSession` immediately
+   (state starts `RINGING`), so a caller-abandons-before-answer disconnect is observed
+   through the same `CallListener` path that already exists — no separate "is this offer
+   still live" bookkeeping. It starts `CallForegroundService` (already-built,
+   `microphone`-typed — retitled "שיחה נכנסת..."; this is the *only* FGS involved here,
+   nothing new-typed is added) and posts a `CallStyle` notification (below).
+5. **Answer**, from either the notification action or the on-screen ring surface (below),
+   calls `session.answer()` — a new default method on `CallSession` (default no-op, so
+   every other implementer is unaffected) — which `VoxCallSession` implements as
+   `call.answer(CallSettings())`. On success the coordinator calls the new
+   `CallEngine.attachIncomingSession(session)`, which `SupabaseCallEngineImpl` overrides
+   to set `_currentSession.value = session` — the **same** `StateFlow` `ConsoleViewModel`
+   already merges into `ConsoleUiState.currentSession` (`ConsoleViewModel.kt` combine
+   block, unchanged). **`InCallScreen` and its `BuildConfig.DEBUG` gate in
+   `MainActivity` are deliberately untouched by this change** — see "What this change
+   does not do" below for why, and what that means for what an answered call looks
+   like today.
+6. **Decline**, from either surface, calls `session.decline()` (new default method,
+   `VoxCallSession` implements as `call.reject(RejectMode.Decline, emptyMap())`).
+7. Whichever way the leg ends — declined, hung up after answer, remote party hangs up,
+   SDK failure — `VoxCallSession.state` reaches `DISCONNECTED` through its **existing**
+   `CallListener`. The coordinator observes that single transition once and does all
+   cleanup from it (cancel notification, stop `CallForegroundService`,
+   `CallEngine.clearAttachedSession()`) — one cleanup path regardless of which of the
+   four ways the call ended, instead of four separate teardown call sites.
+
+### Why a (minimal) new screen is added here, and `InCallScreen` is not touched
+
+The brief's own constraint allows a new screen "if a full-screen incoming-call surface
+genuinely requires one." It does, for a reason specific to **locked-device** full-screen
+intents: `setFullScreenIntent`'s locked-device behavior does not draw a system-provided
+call UI on your behalf — **[verified against
+`source.android.com/docs/core/permissions/fsi-limits` and the FSI implementation
+guidance surveyed for this change]** it launches *your* `PendingIntent`'s target
+`Activity` full-screen over the keyguard, and *that activity's own content* is what the
+agent sees. If the FSI target is `MainActivity` showing its ordinary nav/dashboard
+content, a locked phone that starts ringing shows the wrong thing — normal app UI, not
+an answer/decline prompt — which is worse than not wiring FSI at all.
+
+So: **`ui/screens/IncomingCallScreen.kt`** is new, and deliberately minimal — caller
+label + Answer/Decline, nothing else. No mute/hold/DTMF/keypad, no RSVP-capture form.
+It is rendered by `MainActivity` as a top-level overlay when
+`VoxIncomingCallCoordinator.pendingOffer` is non-null — a new, separate condition from
+the existing `state.currentSession != null && BuildConfig.DEBUG` branch, which this
+change does not modify.
+
+**This is a deliberate, narrower choice than reusing `InCallScreen`, made after
+reconsidering a first draft of this plan that would have extended `InCallScreen` with a
+RINGING/answer-decline branch and removed its `BuildConfig.DEBUG` gate.** That direction
+was dropped because (a) it would make `InCallScreen` — and the RSVP-capture "שמור ונתק"
+button that `AGENTS.md` "Known state" #3 documents as an intentional no-op
+(`saveRsvpResult` is an empty body by design) — reachable in production for the first
+time, which is a materially bigger, production-visible change than "presence and
+incoming-call UX" asks for; and (b) the brief is explicit that "the owner has been
+explicit that they do not want the app's visible UI growing" and "the notification IS
+the UI for presence" — the same discipline should default to *not* growing the call
+surface either, and a minimal purpose-built ring screen satisfies the FSI requirement
+without inheriting either of those two costs. **Consequence, stated plainly: this change
+delivers working two-way audio and full notification-based control (answer, decline,
+and — once answered — hang up, via an action added to `CallForegroundService`'s
+notification) for an incoming call, but no in-app "connected call" screen.** The
+`attachIncomingSession`/`clearAttachedSession` pair on `CallEngine` exists so that the
+next phase (full `CallEngine` wiring, already tracked as **OPEN** in `AGENTS.md`) has
+a real `CallSession` to render against when it decides what that screen should be —
+this change does not make that decision for it.
+
+### Incoming-call notification: `CallStyle`, and lock-screen redaction
+
+`NotificationCompat.CallStyle.forIncomingCall(person, declineIntent, answerIntent)`
+**[verified, `developer.android.com/develop/ui/compose/notifications/call-style`]**,
+API 31+ native, compat-emulated below that via the same `NotificationCompat` builder —
+no version branch needed in this app's code, `NotificationCompat` handles it. Channel
+`kalfa_incoming_call`, `IMPORTANCE_HIGH`, ringtone + vibration
+(`AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_REQUEST`), category `CATEGORY_CALL`.
+Answer/decline are `PendingIntent.getBroadcast` into `IncomingCallActionReceiver` (not
+`getActivity`) — deliberately, so both actions execute directly against the coordinator
+without depending on any Activity existing or being resumed; the `Call` object and its
+`answer()`/`reject()` are pure SDK-and-network operations that need no UI. Each intent
+carries the offering call's `id` as an extra; the receiver and the coordinator both
+check it against the *current* `pendingOffer` before acting, so a stale action (the
+offer already disconnected, or a second call replaced it) is a no-op instead of calling
+`answer()`/`reject()` on a dead or wrong `Call` — `Call.answer` is declared
+`throws CallException` in the SDK precisely for the dead-call case, and the guard avoids
+ever hitting that from a `BroadcastReceiver`.
+
+**Lock-screen redaction — the one place this differs from presence.** Unlike
+`console_call_feed` (deliberately PII-free per `AGENTS.md` #4), an SDK `Call` delivered
+directly by Voximplant carries the real caller number (`Call.number`,
+`VoxCallSession.customerPhone`) — this is genuine PII reaching the device outside the
+app's own PII-free views. The notification is built `VISIBILITY_PRIVATE` with
+`.setPublicVersion(...)` set to a redacted notification carrying no name or number
+("שיחה נכנסת למסוף KALFA") — so a locked screen a bystander can see shows only that a
+call is incoming, never who it's from, while the full `CallStyle` presentation (caller
+label) is available once unlocked or in-app.
+
+**Full-screen intent — always set, OS decides when to use it.**
+`setFullScreenIntent(contentIntent, true)` is set unconditionally; the OS shows it
+full-screen only on a locked/off device and otherwise treats it as the heads-up
+banner's tap target — this app does not need to detect lock state itself.
+`USE_FULL_SCREEN_INTENT` is already declared (`AndroidManifest.xml`, present since
+before this change). **Android 14 nuance, verified against
+`developer.android.com/develop/ui/compose/notifications/call-style`:** apps installed
+*after* a device is already on Android 14 do not get this permission auto-granted and
+must be pointed at Settings (`ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT` /
+`NotificationManagerCompat.canUseFullScreenIntent()`); this app was already declaring
+the permission before this change (for the pre-existing `USE_FULL_SCREEN_INTENT`
+manifest entry), so existing installs are unaffected, but a **fresh install on an
+Android 14+ device may have it silently withheld**. Not handled defensively in this
+change (no settings-deeplink UI added, to keep the "no new screens" scope) — **flagged
+as an owner-visible risk**: if FSI silently doesn't fire on a specific Android 14+
+device, this is the first thing to check (`canUseFullScreenIntent()`), and the fallback
+(heads-up banner with working Answer/Decline buttons) still functions either way.
+
+### RECORD_AUDIO / POST_NOTIFICATIONS must be requested earlier than they are today
+
+`EnsureCallAudioPermission()` (`telephony/CallAudioPermissions.kt`) was only composed on
+the live-calls screen — a screen an agent might never visit before their first inbound
+call now arrives via push. This change also composes it once at the top level of
+`MainActivity`'s authenticated content (its own `rememberSaveable` guard already
+prevents a duplicate prompt at the existing call site), so the prompt fires as soon as
+the agent is signed in, not only once they navigate somewhere specific. Without
+`RECORD_AUDIO` granted, `CallForegroundService.start()` would throw `SecurityException`
+when claiming the `microphone` FGS type — the coordinator checks
+`ContextCompat.checkSelfPermission(RECORD_AUDIO)` before starting it and before calling
+`session.answer()`; if not granted, the notification still shows (so the agent sees the
+call and can open the app, which now prompts immediately) but the service is not
+started and `answer()` is refused with a clear failure rather than crashing.
+
+## Manifest changes, each with its justification
+
+```xml
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+```
+Required alongside the `specialUse` service type (Part 1).
+
+```xml
+<service
+    android:name=".telephony.presence.PresenceForegroundService"
+    android:exported="false"
+    android:foregroundServiceType="specialUse">
+    <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="…"/>
+</service>
+
+<receiver android:name=".telephony.presence.PresenceActionReceiver" android:exported="false" />
+<receiver android:name=".telephony.vox.IncomingCallActionReceiver" android:exported="false" />
+```
+Not exported — only this app's own `PendingIntent`s target them; no external caller
+should be able to flip agent status or answer/decline a call.
+
+```xml
+<activity android:name=".MainActivity" android:launchMode="singleTask" ...>
+```
+Added so a full-screen-intent launch while the app is already backgrounded (not
+destroyed) is delivered to the same instance via `onNewIntent` instead of stacking a
+second `MainActivity`. Single-activity app — no back-stack semantics change from this.
+
+No new **runtime-dangerous** permissions. `RECORD_AUDIO`/`POST_NOTIFICATIONS` were
+already declared; this change only moves *when* they're requested (previous section).
+`MANAGE_OWN_CALLS`/`FOREGROUND_SERVICE_PHONE_CALL` remain deliberately undeclared — see
+the Telecom decision above.
+
+## Version-gating (minSdk 24 → targetSdk 36)
+
+| Concern | Below 26 (O) | 26–30 | 31+ (S, CallStyle) | 33+ (Notif. permission) | 34+ (FGS types required) |
+|---|---|---|---|---|---|
+| Notification channels | N/A, no channels — `NotificationCompat` degrades gracefully | required | required | required | required |
+| `startForeground` type param | ignored pre-Q; passed unconditionally, matches existing `CallForegroundService` pattern | `ServiceInfo.FOREGROUND_SERVICE_TYPE_*` from Q (29) | same | same | **mandatory** — `MissingForegroundServiceTypeException` if absent, already declared for both new services |
+| `CallStyle` | compat-emulated by `NotificationCompat` (custom action layout) | same | native platform `CallStyle` | same | same |
+| `setShowWhenLocked`/`setTurnScreenOn` on the FSI target | not available (API 27+ only) — falls back to `WindowManager.LayoutParams` flags (`FLAG_SHOW_WHEN_LOCKED`, `FLAG_TURN_SCREEN_ON`, `FLAG_DISMISS_KEYGUARD`) for 24–26, version-gated in `MainActivity` | native APIs (27+) | same | same | same |
+| `POST_NOTIFICATIONS` | N/A, always shown | N/A | N/A | **runtime permission**; FGS still runs if denied (Part 1) | same |
+| FSI auto-grant | N/A | N/A | granted at install | same | **withheld for fresh installs on an already-14+ device** (flagged above) |
+
+## Files changed / added
+
+- New: `docs/android-presence-and-call-ux.md` (this file)
+- New: `app/src/main/java/me/kalfa/agentconsole/telephony/presence/PresenceForegroundService.kt`
+- New: `.../telephony/presence/PresenceActions.kt`
+- New: `.../telephony/presence/PresenceStateStore.kt`
+- New: `.../telephony/presence/PresenceActionReceiver.kt`
+- New: `.../telephony/presence/PresenceNotificationBuilder.kt`
+- New: `.../telephony/vox/VoxIncomingCallCoordinator.kt`
+- New: `.../telephony/vox/IncomingCallNotificationBuilder.kt`
+- New: `.../telephony/vox/IncomingCallActionReceiver.kt`
+- New: `.../ui/screens/IncomingCallScreen.kt`
+- Changed: `domain/telephony/Telephony.kt` — `CallSession.answer()`/`.decline()` default
+  methods; `CallEngine.attachIncomingSession()`/`.clearAttachedSession()` default
+  methods; `AgentPresence.shiftActive: StateFlow<Boolean>` default property.
+- Changed: `telephony/vox/VoxCallSession.kt` — implements `answer()`/`decline()`.
+- Changed: `data/SupabaseImplementations.kt` (`SupabaseCallEngineImpl`) — implements the
+  three new methods/property above; `setAgentStatus`'s READY-path logic (declare shift +
+  Voximplant login + push-token registration) is extracted to `PresenceActions` so both
+  `ConsoleViewModel` and `PresenceActionReceiver` call the same code.
+- Changed: `telephony/CallForegroundService.kt` — adds a "נתק" (hang up) notification
+  action for an answered incoming leg (the only in-shade control for an active call,
+  consistent with "the notification IS the UI" for this change's scope).
+- Changed: `telephony/CallAudioPermissions.kt` — no logic change; composed from an
+  additional call site (previous section).
+- Changed: `di/DependencyContainer.kt` — constructs `VoxIncomingCallCoordinator` and
+  `PresenceStateStore`, assigns `VoxClientManager.onIncomingCall`.
+- Changed: `ui/viewmodel/ConsoleViewModel.kt` — `ConsoleUiState.shiftActive`; delegates
+  to `PresenceActions`.
+- Changed: `MainActivity.kt` — `LaunchedEffect` starting/stopping
+  `PresenceForegroundService`; renders `IncomingCallScreen` overlay; FSI lock-bypass
+  window flags; top-level `EnsureCallAudioPermission()`.
+- Changed: `AndroidManifest.xml` — see "Manifest changes" above.
+- Changed: `AGENTS.md` — phase table + a new subsection recording this change,
+  superseding the "onIncomingCall has no listener" statements it previously made.
+
+## What could not be verified (no physical device in this environment)
+
+- Actual notification rendering (`CallStyle` layout, action button placement, redaction
+  in practice) on a real device or a specific OEM skin.
+- Lock-screen behavior end to end: does the FSI actually bypass the keyguard on a real
+  locked device, is the screen turned on, does `setShowWhenLocked` behave identically
+  across OEMs.
+- Full-screen intent on Android 14+ specifically for a **fresh install** — whether it is
+  silently withheld as documented, and whether `canUseFullScreenIntent()` correctly
+  reports it.
+- Doze and OEM battery-manager behavior for the `specialUse` FGS over a multi-hour real
+  shift — whether Xiaomi/Huawei/Samsung aggressive battery modes kill the process despite
+  FGS status.
+- Whether audio is actually audible/two-way once `session.answer()` succeeds — this
+  change wires the same `VoxCallSession`/`CallForegroundService` path the existing
+  (unwired) monitor/takeover code already relied on, but that path itself has never been
+  exercised against a live call in this repo either.
+- The cold-start timing budget flagged in `AGENTS.md` "Push wake-up" (FCM delivery →
+  connect → silent login → `onIncomingCall` → answer, inside `RING_RETRY_WINDOW_MS`,
+  15s) remains unmeasured; this change adds work (notification build + FGS start) inside
+  that same window and does not shrink the risk — if anything, it is one more reason a
+  live-device timing test is needed before this path is trusted in the primary ring.
+
+## Owner actions required
+
+1. **Play Console `specialUse` justification** (Policy → App content) before any Play
+   distribution — not blocking today (no upload keystore provisioned yet), but required
+   before it is.
+2. **Decide on `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`.** Not added by this change
+   (Play-policy-sensitive, needs its own justification); OEM battery killers are a real,
+   unverified risk to the presence heartbeat without it.
+3. **A physical device (ideally two OEMs) for the verification list above** before this
+   path is trusted for a real inbound call, per `AGENTS.md`'s own standing rule that a
+   feature isn't verified until live-call audio is checked.
+4. Everything already listed as owner-side in `AGENTS.md` "Push wake-up" (the cold-start
+   timing test) is unchanged and still outstanding — this change does not resolve it.

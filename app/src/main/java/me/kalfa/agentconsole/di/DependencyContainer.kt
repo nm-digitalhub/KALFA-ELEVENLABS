@@ -8,6 +8,7 @@ import me.kalfa.agentconsole.data.mock.*
 import me.kalfa.agentconsole.domain.repository.*
 import me.kalfa.agentconsole.domain.telephony.*
 import me.kalfa.agentconsole.telephony.vox.VoxClientManager
+import me.kalfa.agentconsole.telephony.vox.VoxIncomingCallCoordinator
 import me.kalfa.agentconsole.telephony.vox.VoxSdkAuthClient
 import me.kalfa.agentconsole.telephony.vox.VoxTokenStore
 import io.github.jan.supabase.createSupabaseClient
@@ -145,9 +146,35 @@ object DependencyContainer {
                 if (client != null && store != null) {
                     val http = HttpClient(OkHttp)
                     val authClient = VoxSdkAuthClient(http, getJwt = { client.auth.currentAccessTokenOrNull() })
-                    _voxClientManager = VoxClientManager(authClient, store)
+                    val manager = VoxClientManager(authClient, store)
+                    // THE missing link (AGENTS.md "Push wake-up" / "Known state" #1):
+                    // wire onIncomingCall the moment a real VoxClientManager exists, so
+                    // a delivered call always has somewhere to go — see
+                    // docs/android-presence-and-call-ux.md §3. incomingCallCoordinator
+                    // is safe to read here: it only needs a Context (already attached
+                    // by this point in every real call path) and callEngine, not this
+                    // property itself.
+                    incomingCallCoordinator?.let { coordinator ->
+                        manager.onIncomingCall = coordinator::handleIncomingCall
+                    }
+                    _voxClientManager = manager
                 }
             }
             return _voxClientManager
+        }
+
+    // Coordinates a delivered incoming SDK call end to end (notification, FSI,
+    // answer/decline) — see docs/android-presence-and-call-ux.md §3. Needs a Context
+    // (for notifications/CallForegroundService) and CallEngine (to publish an
+    // answered leg via attachIncomingSession) — null until attach() has run.
+    private var _incomingCallCoordinator: VoxIncomingCallCoordinator? = null
+    val incomingCallCoordinator: VoxIncomingCallCoordinator?
+        get() {
+            if (_incomingCallCoordinator == null) {
+                applicationContext?.let { ctx ->
+                    _incomingCallCoordinator = VoxIncomingCallCoordinator(ctx, callEngine)
+                }
+            }
+            return _incomingCallCoordinator
         }
 }

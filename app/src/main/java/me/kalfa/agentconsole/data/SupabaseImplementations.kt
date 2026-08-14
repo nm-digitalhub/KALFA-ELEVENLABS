@@ -633,6 +633,9 @@ class SupabaseCallEngineImpl(
     private val _currentStatus = MutableStateFlow(AgentStatus.NOT_READY)
     override val currentStatus: StateFlow<AgentStatus> = _currentStatus.asStateFlow()
 
+    private val _shiftActive = MutableStateFlow(false)
+    override val shiftActive: StateFlow<Boolean> = _shiftActive.asStateFlow()
+
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     init {
@@ -767,6 +770,7 @@ class SupabaseCallEngineImpl(
     // forget like setStatus: a lost write here is not user-visible, and the caller
     // (ConsoleViewModel) doesn't block UI on it.
     override fun setShiftActive(active: Boolean) {
+        _shiftActive.value = active
         scope.launch(Dispatchers.IO) {
             try {
                 val jwt = getJwt()
@@ -779,6 +783,17 @@ class SupabaseCallEngineImpl(
                 e.printStackTrace()
             }
         }
+    }
+
+    // See docs/android-presence-and-call-ux.md §3. Both are UI-thread-cheap
+    // StateFlow writes; the FGS/UI observers of currentSession pick these up through
+    // the existing ConsoleViewModel wiring, unchanged.
+    override fun attachIncomingSession(session: CallSession) {
+        _currentSession.value = session
+    }
+
+    override fun clearAttachedSession() {
+        _currentSession.value = null
     }
 
     override suspend fun sendAgentCommand(
