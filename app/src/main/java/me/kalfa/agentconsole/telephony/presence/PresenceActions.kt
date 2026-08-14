@@ -76,6 +76,23 @@ object PresenceActions {
                     },
                     onFailure = { e -> reportPushRegistrationResult(Result.failure(e)) },
                 )
+            } else {
+                // This `else` did not exist, and its absence is the reason the defect
+                // above it survived: with no identity the app skipped login,
+                // registration AND the reporting, so a device that could not be woken
+                // said nothing at all — no banner, no PushRegistrationState, no
+                // persisted record. "Whatever it cannot do, it must say" is the whole
+                // lesson of this class of bug, and it belongs in the code rather than
+                // in a doc.
+                //
+                // Reachable in two ways, distinguished in the detail so the banner can
+                // tell them apart: no identity known for this device yet (the common
+                // one), or no VoxClientManager, which means DependencyContainer has no
+                // Context or Supabase is unconfigured.
+                val reason =
+                    if (voxUsername == null) "no_device_identity: vox username unknown"
+                    else "no_device_identity: telephony client unavailable"
+                reportPushRegistrationResult(Result.failure(VoxAuthException.Sdk(reason)))
             }
 
             // A device-configuration check, not a request that failed — deliberately
@@ -280,6 +297,15 @@ object PresenceActions {
             " המכשיר קיבל מזהה, אך מערכת הטלפוניה דחתה את הרישום."
         isLoginStageFailure(detail) ->
             " ההתחברות למערכת הטלפוניה נכשלה, ולכן הרישום כלל לא בוצע."
+        // A FOURTH domain, and the only sentence here I wrote rather than was given.
+        // It is not a login failure — nothing was attempted, because the device does
+        // not yet know which Voximplant identity it is. Reusing the login sentence
+        // would assert an attempt that never happened, which is the "asserting a cause
+        // it does not know" this function is supposed to avoid. Flagged for a wording
+        // ruling; the register follows the two above it (cause, then the one action
+        // that resolves it).
+        detail.startsWith("no_device_identity:") ->
+            " זהות הטלפוניה של המכשיר עדיין לא נקלטה — יש לבחור 'זמין' באפליקציה."
         else -> ""
     }
 

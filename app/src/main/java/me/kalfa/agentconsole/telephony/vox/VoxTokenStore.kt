@@ -68,9 +68,43 @@ class VoxTokenStore(private val context: Context) {
         )
     }
 
+    /**
+     * Records WHICH Voximplant identity this device belongs to, independently of
+     * whether it has ever managed to log in as that identity.
+     *
+     * This exists because the identity used to be obtainable only as a by-product of
+     * the login it is needed FOR. [save] is called exclusively after a successful
+     * login step (all four call sites in VoxClientManager), [load] returns null unless
+     * a full token pair is present, and `PresenceForegroundService.currentVoxUsername`
+     * read `load()?.voxUsername`. So before the first successful login the service had
+     * no username, and `PresenceActions.applyStatus`'s `voxUsername != null` guard
+     * skipped login, registration AND the reporting — silently, on every
+     * service-driven path, forever. Measured: across 2724 Voximplant sessions in three
+     * days, no Android client has ever connected to this account.
+     *
+     * Written from `console_me.vox_username` when ConsoleViewModel reads identity, so
+     * the source is the server's record of who the agent is rather than the residue of
+     * a login. Deliberately a SEPARATE key pair from [load]/[save] rather than a
+     * relaxation of them: `StoredVoxTokens` means "a complete, usable session", and
+     * `planSilentLogin` depends on that meaning — a username with no tokens must still
+     * plan `FallBackToInteractive`, which it does, because [load] still returns null.
+     */
+    suspend fun saveUsername(voxUsername: String) {
+        context.voxAuthDataStore.edit { prefs ->
+            prefs[Keys.VOX_USERNAME] = voxUsername
+        }
+    }
+
+    /** The identity recorded by [saveUsername] or [save]. See [saveUsername]. */
+    suspend fun loadUsername(): String? =
+        context.voxAuthDataStore.data
+            .catch { e -> if (e is IOException) emit(emptyPreferences()) else throw e }
+            .first()[Keys.VOX_USERNAME]
+
     // Explicit sign-out (ConsoleViewModel.logout): a signed-out device must not
     // remain silently loggable-in via a leftover Voximplant token, and must not
     // keep being included in the push-wake audience for an agent who signed out.
+    // Clears the identity from saveUsername too — a different agent may sign in next.
     suspend fun clear() {
         context.voxAuthDataStore.edit { it.clear() }
     }

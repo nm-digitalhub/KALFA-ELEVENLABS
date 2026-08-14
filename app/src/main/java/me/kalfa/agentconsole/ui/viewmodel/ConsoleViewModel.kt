@@ -351,6 +351,18 @@ class ConsoleViewModel : ViewModel() {
                         agentEmail = user.email ?: ""
                     )
                 }
+                // Hand the device's Voximplant identity to durable storage the moment
+                // the server tells us what it is. This is the ONLY place the app learns
+                // it from a source that does not already require a Voximplant login:
+                // VoxTokenStore.save is called only AFTER a successful login step, so
+                // PresenceForegroundService.currentVoxUsername had nothing to read until
+                // a login had happened, and PresenceActions.applyStatus's
+                // `voxUsername != null` guard therefore skipped login, registration and
+                // reporting on every service-driven path — the deadlock that kept this
+                // device out of the push audience entirely. See VoxTokenStore.saveUsername.
+                me?.voxUsername?.let { username ->
+                    DependencyContainer.voxTokenStore?.saveUsername(username)
+                }
             } catch (e: Exception) { e.printStackTrace() }
         }
     }

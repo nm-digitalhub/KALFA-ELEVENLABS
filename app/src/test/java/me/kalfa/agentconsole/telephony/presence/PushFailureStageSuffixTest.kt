@@ -2,6 +2,7 @@ package me.kalfa.agentconsole.telephony.presence
 
 import me.kalfa.agentconsole.telephony.vox.VoxAuthException
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -73,8 +74,30 @@ class PushFailureStageSuffixTest {
         assertEquals(vox, alsoVox)
         // The whole point is that an agent (and whoever they relay to) can tell the three
         // domains apart. Any two of them collapsing would defeat it.
-        assertEquals(3, setOf(fcm, vox, loginStage).size)
+        val noIdentity =
+            PresenceActions.pushFailureStageSuffix("no_device_identity: vox username unknown")
+        assertEquals(4, setOf(fcm, vox, loginStage, noIdentity).size)
     }
+
+
+    @Test
+    fun `a device with no known identity is named as such, not as a login failure`() {
+        // The fourth domain: nothing was attempted, because the device does not yet
+        // know which Voximplant identity it is. PresenceActions.applyStatus emits these
+        // two details from its else-branch — the branch that did not exist, and whose
+        // absence made the whole defect silent.
+        val noIdentity =
+            PresenceActions.pushFailureStageSuffix("no_device_identity: vox username unknown")
+        val noClient =
+            PresenceActions.pushFailureStageSuffix("no_device_identity: telephony client unavailable")
+
+        assertTrue(noIdentity.isNotBlank())
+        assertEquals(noIdentity, noClient)
+        // Must NOT collapse into the login sentence: claiming a login failed when none
+        // was attempted is exactly the guess this function refuses to make.
+        assertNotEquals(loginStage, noIdentity)
+    }
+
 
     @Test
     fun `an unrecognised message still adds nothing rather than guessing`() {

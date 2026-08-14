@@ -290,8 +290,13 @@ class PresenceForegroundService : Service() {
         )
     }
 
+    // loadUsername(), not load()?.voxUsername: load() returns null unless a complete
+    // token pair is stored, and those are only ever written after a successful
+    // Voximplant login — so this used to be null on exactly the devices that had never
+    // managed to log in, which is precisely when the service needed it. See
+    // VoxTokenStore.saveUsername for the deadlock that created.
     private suspend fun currentVoxUsername(): String? =
-        DependencyContainer.voxTokenStore?.load()?.voxUsername
+        DependencyContainer.voxTokenStore?.loadUsername()
 
     private fun stopSelfCleanly() {
         heartbeatJob?.cancel()
