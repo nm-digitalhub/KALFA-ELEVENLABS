@@ -69,15 +69,22 @@
       SecurityException straight back. The manifest may hold both; the ring-phase
       startForeground() call may not.
 
-      ⚠ STATUS AS OF THIS COMMIT: THE CRASH IS STILL LIVE. The paragraph above describes
-      what the service MUST do, not what it does. CallForegroundService.startForegroundCompat
-      still hardcodes ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE as its startForeground
-      argument, and that single passed value is the ONLY thing the permission policy is
-      evaluated against — the declaration below is never consulted for permissions, only as
-      the subset ceiling. So the push-woken ring still throws until the service side lands.
-      Widening this manifest is half a fix, and it is the half that LOOKS complete: it also
-      tests clean on an unlocked device, because an unlocked device satisfies while-in-use
-      and never exercises the failing path. Do not read a green manual test as proof.
+      ⚠ THIS DECLARATION ALONE FIXES NOTHING, WHENEVER YOU ARE READING IT. Stated as a
+      standing check rather than a status, because a status line goes stale the moment the
+      other half merges and then misleads in the opposite direction.
+
+      The check: open telephony/CallForegroundService.kt and read the value passed to
+      startForeground(). THAT is what the permission policy is evaluated against; this
+      attribute is consulted only as the subset ceiling, never for permissions. If the
+      ring-phase call passes FOREGROUND_SERVICE_TYPE_MICROPHONE, the push-woken locked-screen
+      ring throws SecurityException no matter what this line says.
+
+      Why this is worth a standing warning rather than a one-off note: a manifest-only
+      widening LOOKS complete and TESTS CLEAN on an unlocked device, because an unlocked
+      device satisfies while-in-use and never exercises the failing path. The bug lives
+      exactly where it cannot be seen from a desk. Do not read a green manual test as proof
+      unless the device was locked and the app was not running.
+
       Owner of the other half: fgs-owner (telephony/CallForegroundService.kt) — not this file.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
