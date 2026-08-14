@@ -762,6 +762,25 @@ class SupabaseCallEngineImpl(
         }
     }
 
+    // Standing "on shift" intent, POSTed to /api/agents/shift — separate write from
+    // setStatus/agent_status above (see AgentPresence.setShiftActive kdoc). Fire and
+    // forget like setStatus: a lost write here is not user-visible, and the caller
+    // (ConsoleViewModel) doesn't block UI on it.
+    override fun setShiftActive(active: Boolean) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val jwt = getJwt()
+                httpClient.post("https://beta.kalfa.me/api/agents/shift") {
+                    header(HttpHeaders.Authorization, "Bearer $jwt")
+                    contentType(ContentType.Application.Json)
+                    setBody("{\"active\":$active}")
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
     override suspend fun sendAgentCommand(
         callId: String,
         command: String,

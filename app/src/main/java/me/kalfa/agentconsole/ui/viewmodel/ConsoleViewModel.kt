@@ -376,7 +376,16 @@ class ConsoleViewModel : ViewModel() {
 
     fun logout() {
         val client = DependencyContainer.supabaseClient ?: return
+        // Withdraw shift + the Voximplant session together: a signed-out device
+        // must not remain in the push-wake audience (route-inbound-retry) or stay
+        // silently loggable-in to Voximplant via a leftover persisted token.
+        agentPresence.setShiftActive(false)
         viewModelScope.launch {
+            DependencyContainer.voxClientManager?.let { vcm ->
+                runCatching { vcm.unregisterCurrentPushToken() }
+                runCatching { vcm.forgetPersistedSession() }
+                vcm.logout()
+            }
             try { client.auth.signOut() } catch (e: Exception) { e.printStackTrace() }
         }
     }
@@ -417,8 +426,31 @@ class ConsoleViewModel : ViewModel() {
         viewModelScope.launch { handleCallOperation(callEngine.endCall(callId)) }
     }
 
+    // Going READY is the one human-initiated "I'm working now" signal this app has
+    // today, so it is also the trigger for the push-wake-up chain (AGENTS.md "Push
+    // wake-up"): declare on-shift (POST /api/agents/shift — without this the agent
+    // is never in route-inbound-retry's audience and no push is ever sent, however
+    // well the rest is wired), then log in to Voximplant (interactive one-time-key
+    // on first use; silent on every call after, via VoxClientManager's persisted
+    // tokens) and register the current FCM token. DND/NOT_READY do NOT withdraw
+    // shift — a short break mid-shift should not drop push-wake coverage for the
+    // rest of the day; only an explicit logout does (see logout() below).
+    // ensureLoggedIn is idempotent/cheap once already logged in, so repeated taps
+    // of "Ready" cost nothing extra (MAU discipline — AGENTS.md §1).
     fun setAgentStatus(status: AgentStatus) {
         agentPresence.setStatus(status)
+        if (status == AgentStatus.READY) {
+            agentPresence.setShiftActive(true)
+            val voxUsername = _uiState.value.me?.voxUsername
+            val vcm = DependencyContainer.voxClientManager
+            if (voxUsername != null && vcm != null) {
+                viewModelScope.launch {
+                    vcm.ensureLoggedIn(voxUsername).onSuccess {
+                        vcm.registerCurrentPushToken()
+                    }
+                }
+            }
+        }
     }
 
     // Live-listen (monitor), takeover, and app-initiated outbound dialing are NOT

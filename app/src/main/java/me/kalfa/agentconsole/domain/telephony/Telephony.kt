@@ -73,4 +73,14 @@ interface CallEngine {
 interface AgentPresence {
     val currentStatus: StateFlow<AgentStatus>
     fun setStatus(status: AgentStatus)
+
+    /**
+     * Declares (or withdraws) a standing "on shift" intent, via POST
+     * beta.kalfa.me/api/agents/shift {active}. Deliberately separate from
+     * setStatus/agent_status (its own table, its own 12h freshness window,
+     * server-side): route-inbound-retry reads it to decide who gets woken by an
+     * inbound-call push even while nobody is currently connected (AGENTS.md "Push
+     * wake-up"). Default no-op keeps mock mode working.
+     */
+    fun setShiftActive(active: Boolean) {}
 }

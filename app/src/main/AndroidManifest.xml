@@ -73,6 +73,20 @@
             android:foregroundServiceType="microphone" />
 
         <!--
+          Push wake-up (AGENTS.md "Push wake-up"): Voximplant sends a Firebase
+          data-message push when callUser is invoked for an agent whose device is
+          backgrounded or killed. Not exported — only the FCM system component
+          delivers to it, gated by the standard MESSAGING_EVENT action.
+        -->
+        <service
+            android:name=".telephony.vox.VoxFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!--
           Self-managed ConnectionService (AGENTS.md §3). Register the PhoneAccount
           with CAPABILITY_SELF_MANAGED at runtime; Telecom owns audio focus and
           routing during a call, so this must exist before real audio is wired.

@@ -50,6 +50,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Gives DependencyContainer's VoxTokenStore a Context. Also called from
+        // VoxFirebaseMessagingService.onCreate for the cold-start-via-push case
+        // (AGENTS.md "Push wake-up"); attach() is idempotent either order.
+        me.kalfa.agentconsole.di.DependencyContainer.attach(applicationContext)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {

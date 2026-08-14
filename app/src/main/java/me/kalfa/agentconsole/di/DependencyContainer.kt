@@ -1,5 +1,6 @@
 package me.kalfa.agentconsole.di
 
+import android.content.Context
 import me.kalfa.agentconsole.BuildConfig
 import me.kalfa.agentconsole.data.LiveTranscriptManager
 import me.kalfa.agentconsole.data.*
@@ -8,6 +9,7 @@ import me.kalfa.agentconsole.domain.repository.*
 import me.kalfa.agentconsole.domain.telephony.*
 import me.kalfa.agentconsole.telephony.vox.VoxClientManager
 import me.kalfa.agentconsole.telephony.vox.VoxSdkAuthClient
+import me.kalfa.agentconsole.telephony.vox.VoxTokenStore
 import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.realtime.Realtime
@@ -17,6 +19,16 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 
 object DependencyContainer {
+    // Needed only for VoxTokenStore's DataStore. Set from BOTH MainActivity.onCreate
+    // (normal launch) and VoxFirebaseMessagingService.onCreate — a push can
+    // cold-start the process straight into the FCM service, with MainActivity never
+    // running (AGENTS.md "Push wake-up"). Idempotent: the second caller is a no-op.
+    @Volatile private var applicationContext: Context? = null
+
+    fun attach(context: Context) {
+        if (applicationContext == null) applicationContext = context.applicationContext
+    }
+
     val isSupabaseConfigured: Boolean by lazy {
         try {
             val url = BuildConfig.SUPABASE_URL
@@ -95,15 +107,47 @@ object DependencyContainer {
         supabaseClient?.let { LiveTranscriptManager(it) }
     }
 
-    // Voximplant v3 human-agent SDK client (login/connect for monitor/takeover legs).
-    // Created lazily but DELIBERATELY NOT logged in here — a login costs Voximplant
-    // MAU quota, so ensureLoggedIn(me.voxUsername) is called only when a real leg must
-    // be handled (that flow ships with monitor/takeover, gated on the backend
-    // Conference). null when Supabase isn't configured.
-    val voxClientManager: VoxClientManager? by lazy {
-        val client = supabaseClient ?: return@lazy null
-        val http = HttpClient(OkHttp)
-        val authClient = VoxSdkAuthClient(http, getJwt = { client.auth.currentAccessTokenOrNull() })
-        VoxClientManager(authClient)
-    }
+    // Persisted Voximplant AuthParams (access/refresh token pair), so a push-woken
+    // app can log in silently with no human present. null until attach() has run.
+    //
+    // DELIBERATELY NOT `by lazy`: Kotlin's `lazy` caches the FIRST evaluation
+    // permanently, including a null one. Any code path that reads this property
+    // before attach() has run (a real risk: attach() is called first thing in both
+    // MainActivity.onCreate and VoxFirebaseMessagingService.onCreate today, but
+    // nothing enforces that ordering for a future call site) would pin this to null
+    // for the rest of the process, and since a null store also nulls out
+    // voxClientManager below, that failure is exactly "push wake-up silently stops
+    // working" — the one failure mode this class exists to prevent. A plain nullable
+    // backing field that is only WRITTEN when non-null lets a later attach() still
+    // be picked up by the next read.
+    private var _voxTokenStore: VoxTokenStore? = null
+    val voxTokenStore: VoxTokenStore?
+        get() {
+            if (_voxTokenStore == null) {
+                _voxTokenStore = applicationContext?.let { VoxTokenStore(it) }
+            }
+            return _voxTokenStore
+        }
+
+    // Voximplant v3 human-agent SDK client (login/connect for monitor/takeover legs,
+    // and now push wake-up). Created lazily but a LOGIN is never triggered here — a
+    // login costs Voximplant MAU quota, so ensureLoggedIn(me.voxUsername) is called
+    // only when a real leg must be handled: interactively when the agent declares
+    // "Ready" (ConsoleViewModel.setAgentStatus), or from a push
+    // (VoxFirebaseMessagingService). null when Supabase isn't configured or attach()
+    // hasn't run yet — same non-sticky-null reasoning as voxTokenStore above.
+    private var _voxClientManager: VoxClientManager? = null
+    val voxClientManager: VoxClientManager?
+        get() {
+            if (_voxClientManager == null) {
+                val client = supabaseClient
+                val store = voxTokenStore
+                if (client != null && store != null) {
+                    val http = HttpClient(OkHttp)
+                    val authClient = VoxSdkAuthClient(http, getJwt = { client.auth.currentAccessTokenOrNull() })
+                    _voxClientManager = VoxClientManager(authClient, store)
+                }
+            }
+            return _voxClientManager
+        }
 }

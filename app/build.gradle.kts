@@ -96,12 +96,23 @@ secrets {
 //   - server: route-inbound-retry's second audience now includes on-shift
 //     agents who are not heartbeat-fresh, so a sleeping app actually gets rung
 //     (which is what makes the platform send the push at all).
-// The ONLY remaining link is in this repo, and the plugin alone sends nothing:
-// a FirebaseMessagingService forwarding onMessageReceived into
-// Client.handlePushNotification, registerForPushNotifications after login,
-// persisted-token silent login, and a call to POST /api/agents/shift — without
-// that last one this agent is never in the retry audience and no push is ever
-// sent, however well the rest is wired. See AGENTS.md → "Push wake-up".
+// In-repo app-side work: DONE 2026-08-14 — telephony/vox/VoxFirebaseMessagingService
+// (onMessageReceived -> Client.handlePushNotification, onNewToken), persisted-token
+// silent login (VoxClientManager.ensureLoggedIn's loginWithAccessToken/refreshToken
+// chain + VoxTokenStore), registerForPushNotifications wired after every successful
+// login, and POST /api/agents/shift called from ConsoleViewModel.setAgentStatus(READY)
+// (without that call this agent is never in the retry audience and no push is ever
+// sent, however well the rest is wired). See AGENTS.md → "Push wake-up".
+// STILL OPEN, and load-bearing: VoxClientManager.onIncomingCall has no listener
+// assigned anywhere — that lands with the separate "Voximplant v3 SDK wired into
+// CallEngine" phase (AGENTS.md phase table). Until then, a woken app gets the SDK
+// logged in and registered, but a delivered call has nowhere to go. Also open: a
+// live-device cold-start timing test against the server's 15s RING_RETRY_WINDOW_MS
+// (unmeasured; see the push-wake handoff report), and the loginWithAccessToken /
+// refreshToken parameter order, which is inferred from this SDK's internal
+// consistency (byte-verified via javap; NOT confirmed against a rendered docs page —
+// voximplant.com's docs app returned an empty client-side search shell to automated
+// fetches during this change).
 
 // Some unused dependencies are commented out below instead of being removed.
 // This makes it easy to add them back in the future if needed.
@@ -141,6 +152,10 @@ dependencies {
   implementation(libs.coil.compose)
   implementation(libs.coil.network.okhttp)
   implementation(libs.firebase.messaging)
+  // Persists the Voximplant AuthParams token pair for silent (push-woken) login —
+  // see VoxTokenStore's kdoc for why plain DataStore, not androidx.security. Already
+  // in the version catalog, unused until this change.
+  implementation(libs.androidx.datastore.preferences)
 
   // Telephony — Voximplant Android SDK v3 (modular, Kotlin/coroutines, stable since
   // 3.0.0; 3.2.0 as of 2026-07). Chosen over the legacy monolithic v2 because this
