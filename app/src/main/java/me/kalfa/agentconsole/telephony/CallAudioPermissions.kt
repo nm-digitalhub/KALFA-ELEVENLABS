@@ -101,13 +101,19 @@ internal sealed class CallAudioPermissionAction {
     data class ShowPermanentDenial(val permissions: List<String>) : CallAudioPermissionAction()
 
     /**
-     * Something in the group could still produce a dialog — but this process already
-     * asked for it and the user has not said yes. Do nothing at all: not a request
-     * (that is the re-prompt loop [CallAudioRequestSession] exists to stop) and not
-     * the permanent-denial banner (which would be a lie — the dialog CAN still
-     * appear, just not now). The next process launch asks again, once.
+     * These could still produce a dialog — but this process already asked, and the
+     * user declined. Do not request again (that is the loop [CallAudioRequestSession]
+     * exists to stop) and do not claim permanent denial (a lie: the dialog CAN still
+     * appear, just not now). Say what is not working, once, and leave it to the agent.
+     *
+     * Not silent, deliberately. A postponed denial is invisible to every other surface
+     * in the app for RECORD_AUDIO — `RingCapability` never looks at the microphone —
+     * and `PresenceActions.refreshAndReportRingCapability`'s notification banner only
+     * runs while the presence service does, i.e. on shift. Off shift, with the request
+     * suppressed for this process, silence here would mean an agent who tapped Deny by
+     * reflex has no way to learn what it cost them until a call is already silent.
      */
-    data object AwaitNextLaunch : CallAudioPermissionAction()
+    data class AwaitNextLaunch(val permissions: List<String>) : CallAudioPermissionAction()
 }
 
 /**
@@ -185,16 +191,17 @@ internal fun decideCallAudioPermissionAction(
     return when {
         notYetAskedThisProcess.isNotEmpty() ->
             CallAudioPermissionAction.Request(notYetAskedThisProcess)
-        // Still requestable, but this process already asked. Wait rather than nag.
+        // Still requestable, but this process already asked. Report rather than nag.
         //
         // Known, accepted gap: if a PERMANENTLY denied permission is sitting next to
-        // one in this state, its banner is delayed until the sibling resolves — at
-        // most one more app launch, since the next launch asks once and the answer
-        // settles it either way. Reporting the permanent denial here instead would
-        // mean returning "request AND banner" together, which this sealed type cannot
-        // express and which is not worth widening it for; the pre-change code had the
-        // same gap (it returned Request and said nothing about the denied sibling).
-        requestable.isNotEmpty() -> CallAudioPermissionAction.AwaitNextLaunch
+        // one in this state, this names only the postponed ones, and the harder
+        // "cannot be asked again" wording waits until the sibling resolves — at most
+        // one more app launch, since the next launch asks once and the answer settles
+        // it either way. Saying both at once would mean returning two messages
+        // together, which this sealed type cannot express and which is not worth
+        // widening it for; the pre-change code had the same gap (it returned Request
+        // and said nothing at all about the denied sibling).
+        requestable.isNotEmpty() -> CallAudioPermissionAction.AwaitNextLaunch(requestable)
         else -> CallAudioPermissionAction.ShowPermanentDenial(classified.map { it.first })
     }
 }
@@ -228,8 +235,18 @@ internal fun decideCallAudioPermissionAction(
  * refreshes the status from the request's own result callback), so without
  * [CallAudioRequestSession] it re-launched the request the instant the user declined
  * — nagging that reached permanent denial in two taps and left the app with no dialog
- * it could ever show again. Now a denial ends the attempt for this process, and the
- * next launch asks once more.
+ * it could ever show again. Now a denial ends the ASKING for this process — it does
+ * not end the telling: the agent gets a dismissible warning naming what will not work
+ * and where to change it, and the next process launch asks once more.
+ *
+ * What re-triggers a legitimate request, stated because it is easy to assume more
+ * happens than does: only a new composition — a process start, or a sign-in. Returning
+ * to a backgrounded app does NOT re-ask, and did not before this change either: the
+ * effect is keyed on `granted`/`revoked`, accompanist's ON_RESUME check writes the
+ * status through `mutableStateOf` (`MutablePermissionState.status`), and re-writing an
+ * equal `PermissionStatus.Denied` under Compose's default structural-equality policy
+ * recomposes nothing. So the in-app warning above, plus the device's own settings, are
+ * the routes back for an agent who only meant to postpone — not a later prompt.
  */
 @OptIn(ExperimentalPermissionsApi::class)
 @Composable
@@ -280,16 +297,52 @@ fun EnsureCallAudioPermission() {
                 ),
             )
 
-            // Already asked this process and not yet answered yes. Saying nothing is
-            // the entire point — the alternative is re-launching on top of the user's
-            // "Deny", which is what turned two taps into a permanent denial.
-            CallAudioPermissionAction.AwaitNextLaunch -> Unit
+            // Declined, but still askable. WARNING rather than ERROR, and dismissible
+            // rather than pinned, because unlike the permanent case this IS reversible
+            // and the agent has just told us they do not want to deal with it now.
+            // Same deduplicationKey as the permanent message, so whichever is true
+            // last is the one on screen and a later grant clears either.
+            is CallAudioPermissionAction.AwaitNextLaunch -> AppMessageCenter.publish(
+                UiMessage(
+                    id = CALL_AUDIO_PERMISSION_MESSAGE_ID,
+                    severity = MessageSeverity.WARNING,
+                    title = permanentDenialTitle(action.permissions),
+                    body = postponedDenialBody(action.permissions),
+                    dismissible = true,
+                    deduplicationKey = CALL_AUDIO_PERMISSION_MESSAGE_ID,
+                ),
+            )
         }
     }
 }
 
+/**
+ * Same consequence as [permanentDenialBody], different ending — and the ending is the
+ * whole point.
+ *
+ * This is the state where the agent declined but CAN still change their mind, so the
+ * text must not borrow the permanent version's "ולא ניתן לבקש אותה שוב" (which would be
+ * false and would teach them the app lies), and must not nag either. It names what is
+ * broken, says the device's own settings can fix it whenever they like, and states
+ * plainly that the app will not ask again this session — so a "Deny" reads as accepted
+ * rather than as something that will be argued with.
+ */
+internal fun postponedDenialBody(missing: List<String>): String {
+    val mic = Manifest.permission.RECORD_AUDIO in missing
+    val notifications = Manifest.permission.POST_NOTIFICATIONS in missing
+    val consequence = when {
+        mic && notifications -> "לא תישמע בשיחות ולא תקבל התראה עליהן."
+        mic -> "שיחה שתענה תהיה חד-צדדית — הצד השני לא ישמע אותך."
+        else -> "לא תקבל התראה על שיחה נכנסת."
+    }
+    return "$consequence אפשר לאשר בכל שלב בהגדרות המכשיר. לא נבקש שוב בהפעלה הזו."
+}
+
 // Names the capability that is actually lost, not the permission that is missing —
-// an agent needs to know they cannot be heard, not that a string was denied.
+// an agent needs to know they cannot be heard, not that a string was denied. Kept
+// under its original name though it now titles the postponed message too: the
+// capability lost is identical in both states, and only the body differs. Renaming it
+// would touch three test files to say nothing new.
 internal fun permanentDenialTitle(missing: List<String>): String =
     if (Manifest.permission.RECORD_AUDIO in missing) "אין גישה למיקרופון" else "התראות חסומות"
 

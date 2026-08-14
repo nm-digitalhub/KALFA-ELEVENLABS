@@ -1,6 +1,8 @@
 package me.kalfa.agentconsole.telephony
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 // decideCallAudioPermissionAction replaces logic that classified an entire group of
@@ -66,15 +68,31 @@ class CallAudioPermissionActionTest {
     // reflex taps then reach permanent denial, after which no dialog can ever appear.
 
     @Test
-    fun `a denial does not re-request in the same process`() {
+    fun `a denial does not re-request in the same process, and is not silent either`() {
         // Exactly the reading the system gives the instant both dialogs are declined.
+        // It must name both permissions: this is the app's only in-app signal for a
+        // postponed RECORD_AUDIO denial, which no other surface reports at all.
         val action = decideCallAudioPermissionAction(
             revoked = listOf(MIC to true, NOTIFS to true),
             everRequested = { true },
             requestedThisProcess = { true },
         )
 
-        assertEquals(CallAudioPermissionAction.AwaitNextLaunch, action)
+        assertEquals(CallAudioPermissionAction.AwaitNextLaunch(listOf(MIC, NOTIFS)), action)
+    }
+
+    @Test
+    fun `the postponed message says the denial is reversible, the permanent one does not`() {
+        // The two states differ by exactly one fact — whether asking again can still
+        // work — and the wording is the only place an agent learns which one they are
+        // in. Getting these the same way round is what makes a "Deny" feel accepted
+        // rather than final.
+        val postponed = postponedDenialBody(listOf(MIC))
+        val permanent = permanentDenialBody(listOf(MIC))
+
+        assertTrue(postponed, postponed.contains("אפשר לאשר בכל שלב בהגדרות המכשיר"))
+        assertFalse(postponed, postponed.contains("לא ניתן לבקש"))
+        assertTrue(permanent, permanent.contains("לא ניתן לבקש"))
     }
 
     @Test

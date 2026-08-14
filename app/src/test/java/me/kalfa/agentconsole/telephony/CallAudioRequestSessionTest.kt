@@ -86,6 +86,6 @@ class CallAudioRequestSessionTest {
             requestedThisProcess = CallAudioRequestSession::hasRequested,
         )
 
-        assertEquals(CallAudioPermissionAction.AwaitNextLaunch, action)
+        assertEquals(CallAudioPermissionAction.AwaitNextLaunch(listOf(MIC)), action)
     }
 }
