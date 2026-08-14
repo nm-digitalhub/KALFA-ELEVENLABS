@@ -130,13 +130,34 @@ object DependencyContainer {
     // working" — the one failure mode this class exists to prevent. A plain nullable
     // backing field that is only WRITTEN when non-null lets a later attach() still
     // be picked up by the next read.
-    private var _voxTokenStore: VoxTokenStore? = null
+    //
+    // ---- Applies to this property and the three below it ----
+    //
+    // @Volatile + synchronized, NOT a bare check-then-assign. All four are read from at
+    // least three threads with no happens-before between them:
+    // the main thread (MainActivity's composition), the FCM service's delivery thread
+    // (VoxFirebaseMessagingService — which can be the FIRST reader, on a push
+    // cold-start), and PresenceForegroundService's Dispatchers.IO scope. Without
+    // synchronization two threads can each observe null and each construct their own
+    // instance, and the loser's writes are not even guaranteed to become visible.
+    //
+    // That is not a benign extra allocation here. Two VoxIncomingCallCoordinators mean
+    // MainActivity collects instance A's pendingOffer while VoxClientManager.onIncomingCall
+    // is bound to instance B's handleIncomingCall — the ring screen simply never
+    // appears, with nothing logged. Two VoxClientManagers mean two independent
+    // loginMutexes and two `initialized` flags, so VICalls.initialize() runs twice and
+    // registers a second signaling message listener.
+    //
+    // The lock nests over the `by lazy` engine fields (callEngine, read while building
+    // incomingCallCoordinator). Verified deadlock-free: neither SupabaseCallEngineImpl
+    // nor MockCallEngineImpl nor VoxSdkAuthClient references DependencyContainer, so no
+    // thread can hold a lazy initializer's lock while waiting on this monitor.
+    @Volatile private var _voxTokenStore: VoxTokenStore? = null
     val voxTokenStore: VoxTokenStore?
-        get() {
-            if (_voxTokenStore == null) {
-                _voxTokenStore = applicationContext?.let { VoxTokenStore(it) }
+        get() = _voxTokenStore ?: synchronized(this) {
+            _voxTokenStore ?: applicationContext?.let { ctx ->
+                VoxTokenStore(ctx).also { _voxTokenStore = it }
             }
-            return _voxTokenStore
         }
 
     // Voximplant v3 human-agent SDK client (login/connect for monitor/takeover legs,
@@ -146,10 +167,10 @@ object DependencyContainer {
     // "Ready" (ConsoleViewModel.setAgentStatus), or from a push
     // (VoxFirebaseMessagingService). null when Supabase isn't configured or attach()
     // hasn't run yet — same non-sticky-null reasoning as voxTokenStore above.
-    private var _voxClientManager: VoxClientManager? = null
+    @Volatile private var _voxClientManager: VoxClientManager? = null
     val voxClientManager: VoxClientManager?
-        get() {
-            if (_voxClientManager == null) {
+        get() = _voxClientManager ?: synchronized(this) {
+            _voxClientManager ?: run {
                 val client = supabaseClient
                 val store = voxTokenStore
                 if (client != null && store != null) {
@@ -166,10 +187,11 @@ object DependencyContainer {
                     incomingCallCoordinator?.let { coordinator ->
                         manager.onIncomingCall = coordinator::handleIncomingCall
                     }
-                    _voxClientManager = manager
+                    manager.also { _voxClientManager = it }
+                } else {
+                    null
                 }
             }
-            return _voxClientManager
         }
 
     // Durable "was this agent on shift" + "did push registration last succeed"
@@ -177,27 +199,23 @@ object DependencyContainer {
     // constructor call) so PresenceForegroundService and PresenceActions read/write
     // the exact same underlying DataStore file through one canonical handle, same
     // non-sticky-null reasoning as voxTokenStore above.
-    private var _presenceStateStore: PresenceStateStore? = null
+    @Volatile private var _presenceStateStore: PresenceStateStore? = null
     val presenceStateStore: PresenceStateStore?
-        get() {
-            if (_presenceStateStore == null) {
-                _presenceStateStore = applicationContext?.let { PresenceStateStore(it) }
+        get() = _presenceStateStore ?: synchronized(this) {
+            _presenceStateStore ?: applicationContext?.let { ctx ->
+                PresenceStateStore(ctx).also { _presenceStateStore = it }
             }
-            return _presenceStateStore
         }
 
     // Coordinates a delivered incoming SDK call end to end (notification, FSI,
     // answer/decline) — see docs/android-presence-and-call-ux.md §3. Needs a Context
     // (for notifications/CallForegroundService) and CallEngine (to publish an
     // answered leg via attachIncomingSession) — null until attach() has run.
-    private var _incomingCallCoordinator: VoxIncomingCallCoordinator? = null
+    @Volatile private var _incomingCallCoordinator: VoxIncomingCallCoordinator? = null
     val incomingCallCoordinator: VoxIncomingCallCoordinator?
-        get() {
-            if (_incomingCallCoordinator == null) {
-                applicationContext?.let { ctx ->
-                    _incomingCallCoordinator = VoxIncomingCallCoordinator(ctx, callEngine)
-                }
+        get() = _incomingCallCoordinator ?: synchronized(this) {
+            _incomingCallCoordinator ?: applicationContext?.let { ctx ->
+                VoxIncomingCallCoordinator(ctx, callEngine).also { _incomingCallCoordinator = it }
             }
-            return _incomingCallCoordinator
         }
 }

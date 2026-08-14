@@ -1,6 +1,7 @@
 package me.kalfa.agentconsole.telephony.vox
 
 import me.kalfa.agentconsole.domain.model.CallState
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -34,6 +35,110 @@ class VoxIncomingCallCoordinatorTest {
         assertFalse(canActOnOffer(pendingCallId = "call-1", actionCallId = "call-1", sessionState = CallState.ACTIVE))
         assertFalse(
             canActOnOffer(pendingCallId = "call-1", actionCallId = "call-1", sessionState = CallState.DISCONNECTED),
+        )
+    }
+
+    // planIncomingCallCleanup — the second guard in this file, and the one that stops a
+    // finished call from tearing down a DIFFERENT call's resources. The regression to
+    // catch is the original unconditional teardown: every one of these fields except
+    // clearPendingOffer used to be `true` no matter which leg ended.
+
+    @Test
+    fun `the answered call releases the session and the service when nothing is ringing`() {
+        val plan = planIncomingCallCleanup(
+            endedCallId = "call-1",
+            pendingCallId = null,
+            answeredCallId = "call-1",
+        )
+        assertEquals(
+            IncomingCallCleanup(
+                clearPendingOffer = false,
+                cancelRingNotification = false,
+                clearAttachedSession = true,
+                stopForegroundService = true,
+            ),
+            plan,
+        )
+    }
+
+    @Test
+    fun `a declined second call must not stop the foreground service the answered call is using`() {
+        // Call A answered (owns CallForegroundService + CallEngine.currentSession),
+        // call B arrives and is declined. B may cancel its own ring notification and
+        // nothing else — stopping the microphone FGS here is how a live call loses its
+        // audio, and on API 34+ how the process gets reclaimed mid-call.
+        val plan = planIncomingCallCleanup(
+            endedCallId = "call-B",
+            pendingCallId = "call-B",
+            answeredCallId = "call-A",
+        )
+        assertEquals(
+            IncomingCallCleanup(
+                clearPendingOffer = true,
+                cancelRingNotification = true,
+                clearAttachedSession = false,
+                stopForegroundService = false,
+            ),
+            plan,
+        )
+    }
+
+    @Test
+    fun `an answered call ending while another is ringing leaves the ringing one intact`() {
+        val plan = planIncomingCallCleanup(
+            endedCallId = "call-A",
+            pendingCallId = "call-B",
+            answeredCallId = "call-A",
+        )
+        assertEquals(
+            IncomingCallCleanup(
+                clearPendingOffer = false,
+                cancelRingNotification = false,
+                clearAttachedSession = true,
+                stopForegroundService = false,
+            ),
+            plan,
+        )
+    }
+
+    @Test
+    fun `a superseded offer that dies later releases nothing`() {
+        // Offer A was replaced by offer B before A's own disconnect arrived. A owns
+        // nothing any more, so its teardown must be a complete no-op.
+        val plan = planIncomingCallCleanup(
+            endedCallId = "call-A",
+            pendingCallId = "call-B",
+            answeredCallId = null,
+        )
+        assertEquals(
+            IncomingCallCleanup(
+                clearPendingOffer = false,
+                cancelRingNotification = false,
+                clearAttachedSession = false,
+                stopForegroundService = false,
+            ),
+            plan,
+        )
+    }
+
+    @Test
+    fun `a declined-before-answer call with nothing else live releases everything`() {
+        // stopForegroundService is true even though the ring phase no longer starts one
+        // (see handleIncomingCall): the rule is "nobody is left who needs it", and
+        // Context.stopService on a service that never started is a no-op.
+        val plan = planIncomingCallCleanup(
+            endedCallId = "call-1",
+            pendingCallId = "call-1",
+            answeredCallId = null,
+        )
+        assertEquals(
+            IncomingCallCleanup(
+                clearPendingOffer = true,
+                cancelRingNotification = true,
+                clearAttachedSession = false,
+                stopForegroundService = true,
+            ),
+            plan,
         )
     }
 }

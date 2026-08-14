@@ -1,6 +1,8 @@
 package me.kalfa.agentconsole.telephony.presence
 
 import android.content.Context
+import android.util.Log
+import kotlinx.coroutines.CancellationException
 import me.kalfa.agentconsole.data.toAppFailure
 import me.kalfa.agentconsole.di.DependencyContainer
 import me.kalfa.agentconsole.domain.error.AppResult
@@ -28,6 +30,7 @@ import me.kalfa.agentconsole.ui.message.toHebrewMessage
 // specific, actionable failure (owner requirement, see the two AppFailure/
 // FailureContext members this uses: PRESENCE and PUSH_REGISTRATION).
 object PresenceActions {
+    private const val TAG = "PresenceActions"
     private const val PRESENCE_MESSAGE_ID = "presence_sync"
     private const val PUSH_REGISTRATION_MESSAGE_ID = "push_registration"
     private const val RING_CAPABILITY_MESSAGE_ID = "ring_capability"
@@ -151,17 +154,39 @@ object PresenceActions {
         }
     }
 
-    // Persists the outcome (PresenceStateStore) before touching anything in-memory:
-    // PresenceForegroundService runs with no Activity/ViewModel alive, and
-    // AppMessageCenter is an in-memory-only StateFlow — a process death between a
-    // failed registration and the agent next opening the app would otherwise lose
-    // the record entirely (the live incident this exists to close — see
-    // docs/android-presence-and-call-ux.md's "Update 2026-08-14 (later)").
+    /**
+     * Persists the outcome (PresenceStateStore) before touching anything in-memory:
+     * PresenceForegroundService runs with no Activity/ViewModel alive, and
+     * AppMessageCenter is an in-memory-only StateFlow — a process death between a
+     * failed registration and the agent next opening the app would otherwise lose
+     * the record entirely (the live incident this exists to close — see
+     * docs/android-presence-and-call-ux.md's "Update 2026-08-14 (later)").
+     *
+     * The persist is BEST-EFFORT, via [persistPushRegistrationOutcome], and that is
+     * load-bearing in two ways.
+     *
+     * `PresenceStateStore`'s reads guard IOException (`.catch { if (e is IOException) …`)
+     * and its writes — `DataStore.edit` — do not, which reads as an oversight rather
+     * than a decision. An IOException from that write used to escape this function
+     * into `ConsoleViewModel.setAgentStatus`'s `viewModelScope.launch` and
+     * `PresenceForegroundService`'s scope, neither of which installs a
+     * CoroutineExceptionHandler, so it reached the thread's default handler and took
+     * the process down — on the READY path, the single most-used action in the app,
+     * and again on every 30s heartbeat via [retryPushRegistrationIfFailed].
+     *
+     * Worse than the crash: because the write ran FIRST, a failing write also skipped
+     * `PushRegistrationState` and `AppMessageCenter` below — so the one code path
+     * whose entire purpose is to stop a push-registration failure being silently
+     * discarded would itself silently discard it, then crash. A durable record is a
+     * strengthening of the in-memory report, never a precondition for it, so the
+     * ordering stays (the process-death argument above still holds) and only the
+     * failure mode changes.
+     */
     private suspend fun reportPushRegistrationResult(result: Result<Unit>) {
         val nowMs = System.currentTimeMillis()
         result.fold(
             onSuccess = {
-                DependencyContainer.presenceStateStore?.recordPushRegistrationOutcome(null, nowMs)
+                persistPushRegistrationOutcome(null, nowMs, null)
                 PushRegistrationState.recordSuccess()
                 AppMessageCenter.resolve(PUSH_REGISTRATION_MESSAGE_ID)
             },
@@ -173,7 +198,7 @@ object PresenceActions {
                 // coarse, reused-everywhere taxonomy (see PersistedPushRegistrationFailure's
                 // kdoc for why this travels as a separate raw string).
                 val detail = e.message
-                DependencyContainer.presenceStateStore?.recordPushRegistrationOutcome(failure, nowMs, detail)
+                persistPushRegistrationOutcome(failure, nowMs, detail)
                 PushRegistrationState.recordFailure(failure, detail)
                 AppMessageCenter.publish(
                     UiMessage(
@@ -188,6 +213,29 @@ object PresenceActions {
                 )
             },
         )
+    }
+
+    // Best-effort by design — see reportPushRegistrationResult's kdoc. Logged rather
+    // than surfaced: an agent cannot act on "the device could not write a diagnostic
+    // record", and the fact this record was going to carry is already on its way to
+    // them through PushRegistrationState + AppMessageCenter, which is what the
+    // caller runs next precisely because this one may not have landed.
+    private suspend fun persistPushRegistrationOutcome(
+        failure: me.kalfa.agentconsole.domain.error.AppFailure?,
+        nowMs: Long,
+        detail: String?,
+    ) {
+        try {
+            DependencyContainer.presenceStateStore?.recordPushRegistrationOutcome(failure, nowMs, detail)
+        } catch (e: CancellationException) {
+            // Not a storage failure. kotlinx's CancellationException is a subclass of
+            // Exception, so a bare `catch (Exception)` here would swallow the
+            // cancellation PresenceForegroundService.onDestroy's scope.cancel() sends,
+            // and this coroutine would keep running after its scope was torn down.
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "could not persist push-registration outcome: ${e.javaClass.simpleName}: ${e.message}")
+        }
     }
 
     /**
