@@ -124,13 +124,38 @@ object PresenceActions {
                         id = PUSH_REGISTRATION_MESSAGE_ID,
                         severity = MessageSeverity.WARNING,
                         title = "המכשיר לא נרשם לקבלת שיחות",
-                        body = failure.toHebrewMessage(FailureContext.PUSH_REGISTRATION),
+                        body = failure.toHebrewMessage(FailureContext.PUSH_REGISTRATION) +
+                            pushFailureStageSuffix(detail),
                         dismissible = false,
                         deduplicationKey = PUSH_REGISTRATION_MESSAGE_ID,
                     ),
                 )
             },
         )
+    }
+
+    /**
+     * Names WHICH half of push registration failed, in the agent-visible message.
+     *
+     * The distinction was already captured and persisted and then never shown, so the
+     * owner saw one generic sentence for two unrelated faults. That gap cost real
+     * time: the platform reported `push_results: []` and "No push notifications has
+     * been sent" while the device could not say which step produced it, and the
+     * answer had to be chased through telephony logs instead.
+     *
+     * The two halves fail for different reasons and are fixed by different people —
+     * a device-local Google Play services problem versus the telephony platform
+     * rejecting a token we did obtain — so the text separates them by CAUSE rather
+     * than quoting the tag, which is developer shorthand and not something to put in
+     * front of an agent. Anything untagged adds nothing rather than guessing.
+     */
+    internal fun pushFailureStageSuffix(detail: String?): String = when {
+        detail == null -> ""
+        detail.startsWith("fcm_token:") ->
+            " התקלה במכשיר עצמו: לא התקבל מזהה משירותי Google."
+        detail.startsWith("vox_register:") || detail.startsWith("registerForPushNotifications:") ->
+            " המכשיר קיבל מזהה, אך מערכת הטלפוניה דחתה את הרישום."
+        else -> ""
     }
 
     // Two distinct messages because the consequences differ (RingCapability's kdoc):
