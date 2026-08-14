@@ -1,30 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  KALFA adaptive-icon foreground: the "K" mark.
+
+  The pathData below is copied VERBATIM from the web app's PWA icon
+  (KALFA beta repo: public/icons/icon.svg) and is therefore still expressed in
+  that file's 512x512 coordinate space. The <group> maps it onto Android's
+  108x108dp canvas instead of re-typing the coordinates, so the shape stays
+  provably identical to the source - diff the two strings to confirm.
+
+  Geometry (all figures from the adaptive-icon spec):
+    glyph bounding box in 512-space is x[130,400] y[136,376] = 270 x 240,
+    centred on (265,256).
+
+    scaleX/Y = 60 / 270 = 0.2222222  -> renders 60 x 53.33dp, inside the
+                                        documented 48-66dp logo range.
+    translateX = 54 - 265 * 0.2222222 = -4.888889
+    translateY = 54 - 256 * 0.2222222 = -2.888889
+
+  A group's matrix applies scale before translate (pivot defaults to 0,0), so a
+  point maps to s*p + t. That puts the mark at x[24,84] y[27.33,80.67] - fully
+  inside the 66x66dp safe zone (x,y in [21,87]) that no OEM mask ever clips,
+  and centred on the canvas so circular and squircle masks both read straight.
+
+  ic_launcher.xml also references this drawable as the <monochrome> layer: the
+  system replaces the fill when theming icons on Android 13+, and the shape is
+  already sized for the safe zone, so a separate silhouette would be redundant.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path android:pathData="M31,63.928c0,0 6.4,-11 12.1,-13.1c7.2,-2.6 26,-1.4 26,-1.4l38.1,38.1L107,108.928l-32,-1L31,63.928z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:endX="85.84757"
-                android:endY="92.4963"
-                android:startX="42.9492"
-                android:startY="49.59793"
-                android:type="linear">
-                <item
-                    android:color="#44000000"
-                    android:offset="0.0" />
-                <item
-                    android:color="#00000000"
-                    android:offset="1.0" />
-            </gradient>
-        </aapt:attr>
-    </path>
-    <path
-        android:fillColor="#FFFFFF"
-        android:fillType="nonZero"
-        android:pathData="M65.3,45.828l3.8,-6.6c0.2,-0.4 0.1,-0.9 -0.3,-1.1c-0.4,-0.2 -0.9,-0.1 -1.1,0.3l-3.9,6.7c-6.3,-2.8 -13.4,-2.8 -19.7,0l-3.9,-6.7c-0.2,-0.4 -0.7,-0.5 -1.1,-0.3C38.8,38.328 38.7,38.828 38.9,39.228l3.8,6.6C36.2,49.428 31.7,56.028 31,63.928h46C76.3,56.028 71.8,49.428 65.3,45.828zM43.4,57.328c-0.8,0 -1.5,-0.5 -1.8,-1.2c-0.3,-0.7 -0.1,-1.5 0.4,-2.1c0.5,-0.5 1.4,-0.7 2.1,-0.4c0.7,0.3 1.2,1 1.2,1.8C45.3,56.528 44.5,57.328 43.4,57.328L43.4,57.328zM64.6,57.328c-0.8,0 -1.5,-0.5 -1.8,-1.2s-0.1,-1.5 0.4,-2.1c0.5,-0.5 1.4,-0.7 2.1,-0.4c0.7,0.3 1.2,1 1.2,1.8C66.5,56.528 65.6,57.328 64.6,57.328L64.6,57.328z"
-        android:strokeWidth="1"
-        android:strokeColor="#00000000" />
+    <group
+        android:scaleX="0.2222222"
+        android:scaleY="0.2222222"
+        android:translateX="-4.888889"
+        android:translateY="-2.888889">
+        <path
+            android:fillColor="#FFFDF8"
+            android:pathData="M130 136h74v103l100-103h91L281 250l119 126h-96l-100-111v111h-74V136Z" />
+    </group>
 </vector>

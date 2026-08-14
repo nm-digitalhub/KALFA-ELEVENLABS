@@ -1,13 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  KALFA adaptive-icon background: solid brand orange.
+
+  Source of truth for the mark is the web app's PWA icon
+  (KALFA beta repo: public/icons/icon.svg), whose field is #FF5A3C -
+  the same value the PWA manifest publishes as theme_color.
+
+  The whole 108x108dp canvas is painted deliberately. Only the inner 66x66dp
+  is guaranteed to survive an OEM mask; the outer 18dp on each side exists to
+  be cropped and to drive parallax, so the background has to bleed to the edge
+  or a circular mask would expose bare corners.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
-        android:fillColor="#1B1A24"
+        android:fillColor="#FF5A3C"
         android:pathData="M0,0h108v108h-108z" />
-    <path
-        android:fillColor="#6C4CF1"
-        android:pathData="M9,0L108,99L99,108L0,9L9,0Z" />
 </vector>
