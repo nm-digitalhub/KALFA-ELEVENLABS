@@ -34,6 +34,12 @@ class PushFailureStageSuffixTest {
             "loginWithOneTimeKey: LoginError.InvalidPassword",
             "loginWithAccessToken: LoginError.TokenExpired",
             "refreshToken: LoginError.TokenExpired",
+            // A login that never returned. PresenceActions bounds the heartbeat's
+            // attempt with withTimeoutOrNull and reports the timeout rather than letting
+            // it unwind silently -- a hung SDK callback would otherwise park the
+            // heartbeat loop and freeze agent_status.updated_at, which is the exact
+            // symptom the whole presence effort exists to prevent.
+            "login_timeout: no SDK response in 15000ms",
         ).forEach { detail ->
             assertEquals(
                 "expected a login-stage sentence for: $detail",

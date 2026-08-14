@@ -3,6 +3,7 @@ package me.kalfa.agentconsole.telephony.presence
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 import me.kalfa.agentconsole.data.toAppFailure
 import me.kalfa.agentconsole.di.DependencyContainer
 import me.kalfa.agentconsole.domain.error.AppResult
@@ -200,8 +201,58 @@ object PresenceActions {
             reportPushRegistrationResult(vcm.registerCurrentPushToken())
             return
         }
-        loginAndRegisterForPush(DependencyContainer.voxTokenStore?.loadUsername())
+        // BOUNDED, and this bound is the difference between fixing the push bug and
+        // reintroducing the presence one.
+        //
+        // Nothing in VoxClientManager's login path has a timeout: eight bare
+        // suspendCancellableCoroutine blocks (connect, requestOneTimeKey, both logins,
+        // refreshToken, register/unregister push, the FCM token task), all under
+        // ensureLoggedIn's loginMutex. If the SDK never invokes a callback — a network
+        // black hole, which is exactly the pocketed-phone case this feature exists for —
+        // the coroutine parks forever. PresenceForegroundService's heartbeat calls this
+        // LAST in a sequential tick inside `while (isActive) { delay(30s); … }`, so a
+        // park here means the loop never reaches its next delay and agent_status
+        // .updated_at stops advancing: the precise symptom of 2026-08-14, re-entered
+        // through a new door. failSoftly cannot catch it either — a coroutine parked on
+        // a callback that never fires throws nothing.
+        //
+        // Precedent rather than invention: VoxFirebaseMessagingService already wraps the
+        // same chain in withTimeoutOrNull(9_000), because someone had already concluded
+        // this call can outlive its budget.
+        //
+        // 15s keeps the worst-case tick under the 30s period once resendCurrentStatus's
+        // own auth-settle (3s) and POST are accounted for, so ticks stay regular instead
+        // of drifting.
+        //
+        // Bounding HERE rather than inside VoxClientManager's wrappers is deliberate: the
+        // FCM path already has its own 9s budget, and a foreground READY tap has a human
+        // waiting on it who may legitimately want a longer wait. The regression is the
+        // heartbeat's, so the bound is the heartbeat's. Pushing timeouts down into the
+        // SDK wrappers so every caller inherits one is the better long-term shape and is
+        // NOT done here.
+        val finished = withTimeoutOrNull(LOGIN_ATTEMPT_TIMEOUT_MS) {
+            loginAndRegisterForPush(DependencyContainer.voxTokenStore?.loadUsername())
+            true
+        }
+        // Reported, not swallowed. withTimeoutOrNull cancels only its own child, so this
+        // coroutine is still live and CAN publish — which matters, because the
+        // cancellation itself cannot: ensureLoggedIn's `runCatching` catches Throwable
+        // including CancellationException, so a timed-out attempt unwinds without ever
+        // reaching reportPushRegistrationResult. Without this line a hung login would be
+        // silent, which is the failure mode this whole file has been correcting.
+        //
+        // (The mutex does release: Mutex.withLock unlocks in a `finally`, which runs
+        // whether the block returns normally or unwinds — so a timed-out attempt does not
+        // wedge the next one, or a foreground READY tap waiting behind it.)
+        if (finished == null) {
+            reportPushRegistrationResult(
+                Result.failure(VoxAuthException.Sdk("login_timeout: no SDK response in ${LOGIN_ATTEMPT_TIMEOUT_MS}ms")),
+            )
+        }
     }
+
+    // See ensurePushRegistration for why this exists and why 15s.
+    private const val LOGIN_ATTEMPT_TIMEOUT_MS = 15_000L
 
     /**
      * Log in to Voximplant if needed, then bind this device's push token — the one place
@@ -400,6 +451,9 @@ object PresenceActions {
             detail.contains("sdk-auth")
 
     private val LOGIN_STAGE_TAGS = listOf(
+        // A login that never returned is a login that failed — the approved login-stage
+        // sentence is accurate for it, so this adds no new agent-facing copy.
+        "login_timeout:",
         "connect:",
         "requestOneTimeKey:",
         "loginWithOneTimeKey:",
