@@ -42,6 +42,19 @@ google-services.json
 *.jks
 *.keystore
 
+# Claude Code session data — EXCEPT project agents/skills/settings, which are
+# team-shared and belong in the repo. Same shape as beta's .gitignore
+# deliberately: two repos that treat .claude/ oppositely is a trap of its own.
+#
+# The concrete hazard this closes is .claude/worktrees/ — an agent worktree is
+# a full second copy of the app (1.6M when this was written), registered with
+# git and showing up untracked on main, one `git add -A` from being committed
+# by whoever runs one next.
+.claude/*
+!.claude/agents/
+!.claude/skills/
+!.claude/settings.json
+
 # Voximplant session logs. `npm run voximplant -- log --session <id>` is run
 # from whichever repo happens to be the working directory, and it drops
 # `session-<id>.log` at that root. Two of them landed here untracked and were
