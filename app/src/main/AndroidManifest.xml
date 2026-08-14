@@ -16,31 +16,61 @@
       (telephony/CallAudioPermissions); the console genuinely carries two-way voice on
       takeover, not for convenience.
 
-      Foreground service: v1 keeps an active call alive with a `microphone`-typed FGS
-      (telephony/CallForegroundService) — deliberately NOT a `phoneCall` FGS.
-      `phoneCall` on Android 14+ additionally requires self-managed Telecom
-      (MANAGE_OWN_CALLS + a ConnectionService) OR the default-dialer role.
-
       MANAGE_OWN_CALLS is no longer absent, and is no longer declared by hand: the
       androidx.core:core-telecom AAR declares it in its own manifest and merges it in
       (verified by unpacking core-telecom-1.0.1.aar, not read from docs), together with
-      androidx.core.telecom.internal.JetpackConnectionService. This note used to say the
-      permission was withheld because declaring it with no matching service is a
-      Play-review risk — correct at the time, and that dependency is precisely what
-      removes the premise. AOSP gives MANAGE_OWN_CALLS protectionLevel="normal", so it
-      needs no runtime request. See telephony/TelecomRegistration.kt for WHY this had to
-      land before the first Play upload rather than with the later Telecom phase: Play
-      revokes USE_FULL_SCREEN_INTENT from apps that are not calling apps, and losing it
-      kills locked-screen ringing with no symptom other than missed calls.
+      androidx.core.telecom.internal.JetpackConnectionService. AOSP gives
+      MANAGE_OWN_CALLS protectionLevel="normal", so it needs no runtime request.
 
-      FOREGROUND_SERVICE_PHONE_CALL stays undeclared: the FGS is still microphone-typed,
-      and that permission belongs with the CallsManager.addCall migration (which hands
-      Telecom the call lifecycle) rather than with registration.
+      A CORRECTION THIS BLOCK USED TO GET WRONG, because the wrong version is load-bearing
+      for the FGS types below: it said `phoneCall` "additionally requires self-managed
+      Telecom (MANAGE_OWN_CALLS + a ConnectionService) OR the default-dialer role". It
+      does not. AOSP's own policy table, android.app.ForegroundServiceTypePolicy,
+      FGS_TYPE_POLICY_PHONE_CALL, requires FOREGROUND_SERVICE_PHONE_CALL plus ANY ONE of
+      { RegularPermission(MANAGE_OWN_CALLS), RolePermission(ROLE_DIALER) }. MANAGE_OWN_CALLS
+      is a plain permission check, satisfied by the manifest declaration alone at
+      protectionLevel="normal" — no registered PhoneAccount, no ConnectionService, no
+      CallsManager.addCall. So the core-telecom dependency, not TelecomRegistration's
+      runtime call, is what unblocks `phoneCall` here.
     -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!--
+      BOTH call FGS types are declared, and the pair is deliberate. Read this before
+      dropping either one — the two types are not alternatives, they cover different
+      phases of one call, and each alone produces a different failure.
+
+      * `microphone` alone (what shipped before this) CRASHES the push-woken ring.
+        FGS_TYPE_POLICY_MICROPHONE carries foregroundOnlyPermission=true, i.e. its
+        RECORD_AUDIO prerequisite is while-in-use, so a background start throws
+        SecurityException. VoxIncomingCallCoordinator starts the FGS during ringing,
+        BEFORE it posts the notification, from a process FCM has just woken — no
+        while-in-use exemption applies (high-priority FCM exempts the background START,
+        which is a different list from the while-in-use one). That is precisely the
+        pocketed-and-locked case this app exists for.
+      * `phoneCall` alone fixes that crash and SILENTLY KILLS CALL AUDIO. OomAdjuster
+        grants PROCESS_CAPABILITY_FOREGROUND_MICROPHONE only when the microphone bit is
+        set in the RUNNING service type; the framework's own comment on
+        CAMERA_MICROPHONE_CAPABILITY_CHANGE_ID (@EnabledAfter targetSdk Q, and this app
+        targets 36) says a FGS has microphone while-in-use capability "only when the
+        foregroundServiceType is configured as ... FOREGROUND_SERVICE_TYPE_MICROPHONE".
+        An answered call would run with no microphone whenever the app is not visible.
+
+      Declaring both is safe because the manifest attribute is only a CEILING: ActiveServices
+      checks that the value passed to startForeground() is a subset of it, and runs each
+      type's prerequisite policy over the bits actually PASSED, not over everything declared.
+      So the service picks per phase — `phoneCall` while ringing (legal from the background,
+      and no microphone is needed yet), then `phoneCall|microphone` on answer, which is
+      reached either by a notification action or by the full-screen-intent activity being
+      visible, both of which satisfy while-in-use.
+
+      NEVER pass the pair during the ring phase: that re-validates microphone and brings the
+      SecurityException straight back. The manifest may hold both; the ring-phase
+      startForeground() call may not.
+    -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <!--
       DO NOT "clean up" the next line. Beyond the locked-screen ring it is named for, it
       is what stops the incoming-call CallStyle notification from THROWING on Android 14+
@@ -67,12 +97,14 @@
       and it is not a call: it runs while an agent is on shift with no leg in progress.
 
       This note used to end "and `phoneCall` requires the self-managed Telecom this app
-      deliberately does not adopt yet". That clause is now FALSE — a self-managed
-      PhoneAccount is registered at runtime (telephony/TelecomRegistration.kt) — and it
-      was never the load-bearing half of the argument. The specialUse choice rests on
-      the sentence above it, which is unchanged, plus FOREGROUND_SERVICE_PHONE_CALL
-      still being undeclared. Corrected in place rather than left to be repeated; the
-      FGS type itself is not re-opened by the Telecom registration work.
+      deliberately does not adopt yet". That clause is FALSE twice over now, so it is
+      gone rather than left to be repeated: a self-managed PhoneAccount is registered
+      (telephony/TelecomRegistration.kt), and `phoneCall` IS now declared and used — by
+      CallForegroundService, for actual calls. The presence heartbeat is a different
+      service with a different job, and the only argument that ever mattered for it is
+      the one above: it is not a call. It runs while an agent is on shift with no leg in
+      progress, so `phoneCall` would be a false description of it regardless of what is
+      declared. specialUse stands on that alone.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
@@ -167,16 +199,26 @@
         </activity>
 
         <!--
-          Ongoing-call foreground service (v1, option-b). Keeps an active monitor/
-          takeover leg alive with a `microphone`-typed FGS + ongoing notification.
-          Not exported; started only in-process by the telephony-wiring step. Switches
-          to (or is complemented by) the ConnectionService below when self-managed
-          Telecom is adopted.
+          Ongoing-call foreground service. Keeps a ringing or answered agent leg alive
+          with an ongoing notification. Not exported; started only in-process.
+
+          foregroundServiceType is the CEILING, not the choice — see the long note on the
+          two FOREGROUND_SERVICE_* permissions at the top of this file for why both types
+          are listed and which phase may pass which. Short version: `phoneCall` while
+          ringing (a background start of a `microphone` FGS throws SecurityException on
+          Android 14+), then `phoneCall|microphone` on answer (a `phoneCall`-only FGS is
+          granted no microphone capability at all).
+
+          Widening this attribute is safe on its own and in any merge order: ActiveServices
+          only requires that the value passed to startForeground() be a SUBSET of what is
+          declared here, so a service still passing FOREGROUND_SERVICE_TYPE_MICROPHONE keeps
+          working against this exactly as before. Narrowing it is what breaks — dropping a
+          type the service still passes throws IllegalArgumentException on every call.
         -->
         <service
             android:name=".telephony.CallForegroundService"
             android:exported="false"
-            android:foregroundServiceType="microphone" />
+            android:foregroundServiceType="phoneCall|microphone" />
 
         <!--
           Push wake-up (AGENTS.md "Push wake-up"): Voximplant sends a Firebase
@@ -195,13 +237,14 @@
         <!--
           Presence foreground service (docs/android-presence-and-call-ux.md §1) — the
           fix for AgentPresence.setStatus writing once and never again. specialUse: no
-          audio, no location, no bulk data transfer, and not a call — phoneCall would
-          additionally need FOREGROUND_SERVICE_PHONE_CALL, which stays undeclared (see
-          the uses-permission block at the top of this file; the older reason given
-          here, "the self-managed Telecom this app doesn't adopt yet", stopped being
-          true when TelecomRegistration landed). Requires a Play Console justification
-          before any Play distribution (owner action, not blocking today — no upload
-          keystore yet).
+          audio, no location, no bulk data transfer, and — the only ground that still
+          matters — not a call. This heartbeat runs while an agent is on shift with NO
+          leg in progress, so `phoneCall` would misdescribe it even though that type is
+          now declared and used by CallForegroundService next door. The older reason
+          given here, "phoneCall needs the self-managed Telecom this app doesn't adopt
+          yet", stopped being true when TelecomRegistration landed and is removed rather
+          than reworded. Requires a Play Console justification before any Play
+          distribution (owner action, not blocking today — no upload keystore yet).
         -->
         <service
             android:name=".telephony.presence.PresenceForegroundService"

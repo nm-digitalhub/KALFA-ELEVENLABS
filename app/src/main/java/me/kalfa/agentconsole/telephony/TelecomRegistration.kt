@@ -29,11 +29,28 @@ import kotlin.concurrent.thread
  * nothing else — it never consults `TelecomManager`, a `PhoneAccount`, or
  * `MANAGE_OWN_CALLS`. That agrees with the two independent AOSP reads already recorded
  * in `AGENTS.md` (the permission is `protectionLevel="normal|appop"`, and the app-op sets
- * no default mode). The only surviving argument for this file is the *Play-side* app-op
- * revocation quoted below — forward-looking, since this app has no upload keystore and
- * has never been distributed through Play.
+ * no default mode).
  *
- * What does stand is the *mechanism*: `AGENTS.md`'s own Telecom row recommends
+ * The Play-side half does not survive either, which is the part worth reading twice.
+ * play-policy-owner checked the policy pages: Play's pre-grant eligibility keys on a
+ * **Play Console declaration form**, not on anything observable on the device — *"Submit a
+ * declaration form in your Play Console to establish pre-grant eligibility for the
+ * full-screen intent permission"*. `registerAppWithTelecom` runs after install; Play's
+ * review pipeline never sees it. So the commit's stated reason is wrong on BOTH sides, and
+ * this file does not earn its place by the argument it was written with.
+ *
+ * It earns its place by two reasons that commit never named:
+ *  1. The `androidx.core:core-telecom` dependency merges in `MANAGE_OWN_CALLS`, and that
+ *     declaration is the prerequisite for the `phoneCall` foreground-service type — which
+ *     is what fixes a real crash on the push-woken incoming-call path. See the FGS notes in
+ *     `AndroidManifest.xml`. Note carefully that this reason justifies the DEPENDENCY, not
+ *     the runtime call in this file: AOSP's `ForegroundServiceTypePolicy` checks
+ *     `MANAGE_OWN_CALLS` as a plain permission, so a manifest declaration satisfies it and
+ *     a registered `PhoneAccount` is not consulted.
+ *  2. It is supporting evidence for that Play Console declaration, which the policy page
+ *     says is *"subject to review"* — a discretionary human decision, not a mechanism.
+ *
+ * What also stands is the *mechanism*: `AGENTS.md`'s own Telecom row recommends
  * `androidx.core:core-telecom` (`CallsManager`) over hand-writing a `ConnectionService`
  * when that phase starts, and the AAR is verified compatible with this build
  * (`minCompileSdk=34` ≤ this app's `compileSdk` 36, read from its own
