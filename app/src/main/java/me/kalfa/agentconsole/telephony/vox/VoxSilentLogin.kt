@@ -70,6 +70,36 @@ fun planSilentLogin(
     }
 }
 
+/**
+ * Whether a failed silent-login attempt has actually learned that the stored tokens
+ * are dead, and may therefore throw them away.
+ *
+ * `runCatching { … }.onFailure { … }` cannot tell the two apart on its own, and they
+ * are not the same fact. A `LoginError` from the platform is evidence: the refresh
+ * token was presented and rejected, so keeping it only buys a re-failure on every
+ * future call. A cancellation is the absence of evidence — `PresenceActions
+ * .ensurePushRegistration` bounds the whole login at 15s and
+ * `VoxFirebaseMessagingService` at 9s, so a pocketed phone on a slow network unwinds
+ * here having never heard back. The tokens may be perfectly good; nothing asked them.
+ *
+ * MEASURED, so the guard is not mistaken for the thing that fixes the timeout case:
+ * a cancellation does NOT currently reach the store anyway. `onFailure`'s handler is
+ * entered and its non-suspending statements run, but `VoxTokenStore.clearTokens` is a
+ * suspend function whose body is a DataStore `edit`, and suspending on an
+ * already-cancelling Job throws before the write lands. Verified with a JVM probe of
+ * this exact shape (`withTimeoutOrNull` around `runCatching { delay } .onFailure {
+ * withContext { … } }`): handler entered true, plain statement ran true, suspending
+ * statement ran FALSE.
+ *
+ * So this guard changes no behaviour today. It is written anyway because the thing
+ * making the timeout case safe is an accident of where the suspension point falls —
+ * one non-suspending line added to the top of a cleanup function, or a cancellation
+ * arriving a moment later, and it silently starts discarding live credentials on
+ * every slow tick. Depending on that is not the same as deciding it.
+ */
+fun refreshFailureProvesTokensDead(error: Throwable): Boolean =
+    error !is kotlin.coroutines.cancellation.CancellationException
+
 // The FCM data-message signature the SDK itself checks — BYTE-VERIFIED against
 // android-sdk-core 3.2.0's PushManager.handlePushNotification$lambda$9 (javap -c on
 // the shipped AAR): the exact bytecode is `map.get("voximplant")` cast to String,

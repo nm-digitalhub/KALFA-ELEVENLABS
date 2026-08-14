@@ -79,6 +79,41 @@ class VoxSilentLoginTest {
         )
     }
 
+    // A rejected token pair and a login that ran out of time reach the SAME
+    // `runCatching { … }.onFailure { … }` in VoxClientManager.tryRefreshThenAccessToken,
+    // and only one of them is evidence about the tokens. Both bounded callers
+    // (PresenceActions' 15s heartbeat budget, VoxFirebaseMessagingService's 9s) unwind
+    // through the cancellation branch on a slow network.
+    @Test
+    fun `a platform rejection proves the stored tokens are dead`() {
+        assertTrue(refreshFailureProvesTokensDead(VoxAuthException.Sdk("refreshToken: TokenExpired")))
+        assertTrue(refreshFailureProvesTokensDead(IllegalStateException("anything else")))
+    }
+
+    @Test
+    fun `a cancelled login attempt proves nothing and must not discard the tokens`() {
+        assertFalse(
+            refreshFailureProvesTokensDead(
+                kotlin.coroutines.cancellation.CancellationException("timed out"),
+            ),
+        )
+    }
+
+    // TimeoutCancellationException is what withTimeoutOrNull actually throws, and it is
+    // a SUBCLASS of CancellationException — pinned separately because an `==`-style
+    // check, or a guard written against the wrong type, would pass the test above and
+    // still discard live credentials on every slow heartbeat tick.
+    @Test
+    fun `the concrete exception withTimeoutOrNull throws is treated as a cancellation`() {
+        val thrown = runCatching {
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeout(1) { kotlinx.coroutines.delay(10_000) }
+            }
+        }.exceptionOrNull()
+        assertTrue("expected withTimeout to throw", thrown != null)
+        assertFalse(refreshFailureProvesTokensDead(thrown!!))
+    }
+
     @Test
     fun `isVoximplantPush matches only the SDK's own signature key`() {
         assertTrue(isVoximplantPush(mapOf("voximplant" to "1")))

@@ -302,9 +302,22 @@ class VoxClientManager(
         if (authParams != null) tokenStore.save(voxUsername, authParams)
     }.onFailure {
         // Both tokens are apparently unusable (refresh rejected, or the freshly
-        // refreshed access token was itself rejected) — clear rather than leave a
+        // refreshed access token was itself rejected) — discard rather than leave a
         // dead pair that would just be re-tried and re-fail on every future call.
-        tokenStore.clear()
+        //
+        // clearTokens(), NOT clear(). This used to call clear(), which wipes the whole
+        // DataStore including the vox username — and that key has exactly one writer,
+        // ConsoleViewModel, on a path that needs the app open. A refresh the platform
+        // turned down therefore cost the device its IDENTITY, after which
+        // PresenceActions.loginAndRegisterForPush gets null from loadUsername() and
+        // reports `no_device_identity` forever instead of logging in. A dead session is
+        // a reason to log in again; it is not a reason to forget who you are.
+        //
+        // Guarded on top of that, because `onFailure` fires for a cancellation too and
+        // a bounded caller that ran out of time has learned nothing about the tokens.
+        // See refreshFailureProvesTokensDead — including the measurement showing that
+        // this guard is belt-and-braces TODAY and why it is still worth writing.
+        if (refreshFailureProvesTokensDead(it)) tokenStore.clearTokens()
     }.isSuccess
 
     private suspend fun loginInteractively(fullUsername: String, voxUsername: String) {

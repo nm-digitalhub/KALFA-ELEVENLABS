@@ -101,10 +101,41 @@ class VoxTokenStore(private val context: Context) {
             .catch { e -> if (e is IOException) emit(emptyPreferences()) else throw e }
             .first()[Keys.VOX_USERNAME]
 
+    /**
+     * Drops the saved SESSION but keeps the device's identity.
+     *
+     * The distinction [clear] does not make, and the reason this exists. A rejected
+     * token pair is a fact about one expired session; it says nothing about WHICH agent
+     * this device belongs to. `clear()` wiped both, so a refresh the platform turned
+     * down also erased [Keys.VOX_USERNAME] — and that key is written from exactly one
+     * place, `ConsoleViewModel`, when the app reads identity. Nothing on the background
+     * or push-woken path rewrites it. `PresenceActions.loginAndRegisterForPush` then
+     * receives null from [loadUsername] and reports `no_device_identity` instead of
+     * logging in, so the device stops being reachable for calls — the same silent
+     * presence failure [saveUsername] was written to end, re-entered through the
+     * token path.
+     *
+     * Removing only the four token keys still makes [load] return null (it requires a
+     * complete pair), so `planSilentLogin` correctly plans `FallBackToInteractive` and
+     * the next login pays one one-time-key round trip. That is the intended cost of a
+     * dead session. Losing the identity is not.
+     */
+    suspend fun clearTokens() {
+        context.voxAuthDataStore.edit { prefs ->
+            prefs.remove(Keys.ACCESS_TOKEN)
+            prefs.remove(Keys.ACCESS_EXPIRES_AT_MS)
+            prefs.remove(Keys.REFRESH_TOKEN)
+            prefs.remove(Keys.REFRESH_EXPIRES_AT_MS)
+        }
+    }
+
     // Explicit sign-out (ConsoleViewModel.logout): a signed-out device must not
     // remain silently loggable-in via a leftover Voximplant token, and must not
     // keep being included in the push-wake audience for an agent who signed out.
     // Clears the identity from saveUsername too — a different agent may sign in next.
+    //
+    // That identity wipe is correct HERE and only here: a human chose to sign out. For
+    // the involuntary case — the platform rejecting a stored token — use [clearTokens].
     suspend fun clear() {
         context.voxAuthDataStore.edit { it.clear() }
     }
