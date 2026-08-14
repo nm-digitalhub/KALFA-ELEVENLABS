@@ -96,9 +96,21 @@ class MainActivity : ComponentActivity() {
                     // Calls can now arrive (and need answering) before the agent ever
                     // visits the live-calls screen that used to be the only place
                     // this was requested — see docs §3, "RECORD_AUDIO /
-                    // POST_NOTIFICATIONS must be requested earlier". Its own
-                    // rememberSaveable guard means this is a no-op if the existing
-                    // live-calls-screen call site already asked.
+                    // POST_NOTIFICATIONS must be requested earlier".
+                    //
+                    // THE ONLY call site, deliberately. It used to say a
+                    // `rememberSaveable` guard made a second mount a harmless no-op;
+                    // that guard no longer exists (it was replaced by the durable
+                    // PermissionRequestLog, which survives process death — the whole
+                    // point), and the live-calls screen carried a second
+                    // EnsureCallAudioPermission() until this change. Two mounts meant
+                    // two independent MultiplePermissionsState objects, each with its
+                    // own ActivityResultLauncher and its own LaunchedEffect, both able
+                    // to fire while the other's dialog was still pending — and Android
+                    // resolves that by dropping one, silently. This composable sits
+                    // inside AuthGate at the root, so it covers every authenticated
+                    // screen including live-calls; nothing needs a second one, and a
+                    // second one can only take the dialog away.
                     EnsureCallAudioPermission()
 
                     // The incoming-call ring surface (docs §3) — a top-level overlay,
@@ -407,9 +419,11 @@ private fun ConsoleNavHost(
                     modifier = contentModifier
                 )
             } else {
-                // Obtain mic + notification permissions at the live-supervision surface, so
-                // the grant is in hand before the telephony-wiring step attaches a real leg.
-                EnsureCallAudioPermission()
+                // Permissions are NOT requested here. The root call site inside
+                // AuthGate already covers this screen, and mounting a second
+                // EnsureCallAudioPermission() gave this route its own competing
+                // permission launcher — see that comment for why that suppresses the
+                // dialog instead of adding one.
                 LiveCallsScreen(
                     eventOptions = eventOptions,
                     selectedEventId = filterId,
