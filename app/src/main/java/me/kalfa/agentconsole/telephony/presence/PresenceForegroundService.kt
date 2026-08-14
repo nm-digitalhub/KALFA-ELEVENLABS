@@ -214,9 +214,9 @@ class PresenceForegroundService : Service() {
                         // One bad tick must not end the shift's heartbeat. All three
                         // calls below can throw — PresenceActions.reportPushRegistration
                         // Result writes to DataStore (no IOException handling on the
-                        // write path), and retryPushRegistrationIfFailed reads the
-                        // Voximplant SDK's Client singleton, which this process may
-                        // never have initialised. Without this guard a single throw
+                        // write path), and ensurePushRegistration reaches the
+                        // Voximplant SDK's Client singleton — and now also its login
+                        // path — which this process may never have initialised. Without this guard a single throw
                         // cancels this coroutine permanently: the notification would go
                         // on showing "זמין" while nothing reached the server again for
                         // the rest of the shift, and the agent would look available
@@ -240,9 +240,15 @@ class PresenceForegroundService : Service() {
                             // READY, so a transient failure at that moment (no network,
                             // Play services still waking) left the device unregistered
                             // for the whole shift while reporting itself available.
-                            // No-ops unless a failure is actually on record — see its
-                            // kdoc.
-                            PresenceActions.retryPushRegistrationIfFailed()
+                            //
+                            // Renamed from retryPushRegistrationIfFailed: it no longer
+                            // returns early when the SDK is logged out — which is what
+                            // made it unable to run in the one case it existed for,
+                            // since Client.clientState is process-local and false after
+                            // every process death. It now logs in and registers. Free in
+                            // the steady state; see its kdoc for the measured MAU cost
+                            // (1 credential per month, not per login).
+                            PresenceActions.ensurePushRegistration()
                         }
                     }
                 }

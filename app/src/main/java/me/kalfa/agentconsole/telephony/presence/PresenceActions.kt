@@ -68,32 +68,7 @@ object PresenceActions {
         if (status == AgentStatus.READY) {
             reportPresenceResult(presence.setShiftActive(true))
 
-            val vcm = DependencyContainer.voxClientManager
-            if (voxUsername != null && vcm != null) {
-                vcm.ensureLoggedIn(voxUsername).fold(
-                    onSuccess = {
-                        reportPushRegistrationResult(vcm.registerCurrentPushToken())
-                    },
-                    onFailure = { e -> reportPushRegistrationResult(Result.failure(e)) },
-                )
-            } else {
-                // This `else` did not exist, and its absence is the reason the defect
-                // above it survived: with no identity the app skipped login,
-                // registration AND the reporting, so a device that could not be woken
-                // said nothing at all — no banner, no PushRegistrationState, no
-                // persisted record. "Whatever it cannot do, it must say" is the whole
-                // lesson of this class of bug, and it belongs in the code rather than
-                // in a doc.
-                //
-                // Reachable in two ways, distinguished in the detail so the banner can
-                // tell them apart: no identity known for this device yet (the common
-                // one), or no VoxClientManager, which means DependencyContainer has no
-                // Context or Supabase is unconfigured.
-                val reason =
-                    if (voxUsername == null) "no_device_identity: vox username unknown"
-                    else "no_device_identity: telephony client unavailable"
-                reportPushRegistrationResult(Result.failure(VoxAuthException.Sdk(reason)))
-            }
+            loginAndRegisterForPush(voxUsername)
 
             // A device-configuration check, not a request that failed — deliberately
             // NOT run through AppFailure/FailureMapping (there is no operation here
@@ -145,8 +120,8 @@ object PresenceActions {
     }
 
     /**
-     * Re-attempts push-token registration on the heartbeat, but ONLY when the last
-     * attempt is on record as having failed.
+     * Makes sure this device is actually registered for push, on every heartbeat —
+     * logging in first if the SDK is logged out, rather than giving up when it is.
      *
      * Registration otherwise happens exactly once per transition to READY, so a device
      * whose registration failed for a transient reason — no network at the moment the
@@ -155,19 +130,103 @@ object PresenceActions {
      * it and Voximplant would have no token to push to, which is the precise shape of the
      * incident this file's push handling keeps orbiting.
      *
-     * Gated three ways so it costs nothing in the normal case: no retry unless
-     * [PushRegistrationState] holds a failure, none without a client, and none unless the
-     * SDK is genuinely logged in — `ensureLoggedIn` needs a vox username this service does
-     * not have, and `registerCurrentPushToken` only binds a token to an identity once the
-     * client is logged in anyway (Voximplant's Android push guide: *"the token is
-     * registered only after the client logs in"*). A logged-out client is a job for the
-     * next READY, not for the heartbeat.
+     * THE ORIGINAL DESIGN, kept because the next section is an argument against it and
+     * an argument needs its opponent stated fairly. It was gated three ways so it cost
+     * nothing in the normal case: no retry unless [PushRegistrationState] held a failure,
+     * none without a client, and none unless the SDK was genuinely logged in —
+     * `ensureLoggedIn` needs a vox username this service did not have, and
+     * `registerCurrentPushToken` only binds a token to an identity once the client is
+     * logged in anyway (Voximplant's Android push guide: *"the token is registered only
+     * after the client logs in"*). A logged-out client was "a job for the next READY, not
+     * for the heartbeat".
+     *
+     * Two of those three are gone. The guide's claim still holds and is still respected —
+     * registration happens only after a successful login; what changed is that the
+     * heartbeat now PERFORMS that login instead of waiting for someone else to.
+     *
+     * ---- Why the last of those three gates is gone, and the name with it ----
+     *
+     * `if (!vcm.isLoggedIn) return` could not fire in the one situation this function
+     * exists for. `isLoggedIn` reads `Client.clientState`, which is PROCESS-LOCAL, so it
+     * is false after every process death — and nothing on the heartbeat path could make
+     * it true, because `ensureLoggedIn`'s only callers were a status change,
+     * `VoxWakePushHandler` and the FCM service. A retry that structurally cannot run when
+     * the thing it retries is broken is not a retry. The comment above ("a job for the
+     * next READY") assumed a next READY would come; nothing prompts one, and the
+     * dashboard tells the agent they are already available.
+     *
+     * The first gate is gone too, and for the reason that mattered more: a device that
+     * has NEVER registered holds no failure, so `lastFailure == null` skipped exactly the
+     * case the owner was in. `null` conflates "succeeded" with "never attempted", which
+     * is the same nullable-as-tri-state mistake as the missing `else` next door.
+     *
+     * Two things had to exist before this was fixable, and both landed tonight: the
+     * service can now obtain a vox username without a prior login (VoxTokenStore
+     * .saveUsername), and it can obtain a Supabase JWT while backgrounded (the auth
+     * lifecycle-callback change in DependencyContainer). Before either, a heartbeat login
+     * would have failed at `fetchHash` every time.
+     *
+     * MAU cost, the reason the gate was defensible when it was written — MEASURED against
+     * the live docs rather than this file's own kdoc (`getDoc` on
+     * `getting-started.billing`, fetched 2026-08-14). Voximplant: *"An active user is
+     * defined by a unique credential logging in at least once a month. One user logging in
+     * from multiple devices counts as one MAU."* Free tier: 1,000 MAU/month, and exceeding
+     * it blocks NEW user logins (`LoginMauAccessDeniedError`). So MAU counts CREDENTIALS
+     * PER MONTH, not logins — this console has one agent, so the entire app costs 1 MAU a
+     * month whether it logs in once or every thirty seconds. The quota argument against a
+     * heartbeat login is void, and it was void when the gate was written.
+     *
+     * What the loop does cost, stated because it is the real risk: when login genuinely
+     * fails, this attempts a connect+login every 30s for as long as the shift lasts.
+     * That is the same cadence the presence heartbeat already runs at, so it is not a new
+     * order of magnitude, and `ensureLoggedIn` early-returns once the client is logged in
+     * so the normal case is free. If the field shows a device stuck in a failing login,
+     * the answer is a backoff here — not restoring a gate that made the failure permanent
+     * and silent.
      */
-    suspend fun retryPushRegistrationIfFailed() {
-        if (PushRegistrationState.lastFailure.value == null) return
-        val vcm = DependencyContainer.voxClientManager ?: return
-        if (!vcm.isLoggedIn) return
-        reportPushRegistrationResult(vcm.registerCurrentPushToken())
+    suspend fun ensurePushRegistration() {
+        val vcm = DependencyContainer.voxClientManager ?: run {
+            reportPushRegistrationResult(
+                Result.failure(
+                    VoxAuthException.Sdk("no_device_identity: telephony client unavailable"),
+                ),
+            )
+            return
+        }
+        // Already logged in AND nothing on record to fix — the normal steady state, and
+        // the only path that must stay free.
+        if (vcm.isLoggedIn && PushRegistrationState.lastFailure.value == null) return
+        if (vcm.isLoggedIn) {
+            reportPushRegistrationResult(vcm.registerCurrentPushToken())
+            return
+        }
+        loginAndRegisterForPush(DependencyContainer.voxTokenStore?.loadUsername())
+    }
+
+    /**
+     * Log in to Voximplant if needed, then bind this device's push token — the one place
+     * that sequence lives, so the READY path and the heartbeat cannot report it
+     * differently.
+     *
+     * A null [voxUsername] is REPORTED rather than skipped. The `if (voxUsername != null
+     * && vcm != null)` this replaces had no `else`, so a device that could not register
+     * said nothing at all — no banner, no [PushRegistrationState], no persisted record.
+     * "Whatever it cannot do, it must say" is the lesson of this whole class of bug, and
+     * it belongs in the code rather than in a doc.
+     */
+    private suspend fun loginAndRegisterForPush(voxUsername: String?) {
+        val vcm = DependencyContainer.voxClientManager
+        if (voxUsername == null || vcm == null) {
+            val reason =
+                if (voxUsername == null) "no_device_identity: vox username unknown"
+                else "no_device_identity: telephony client unavailable"
+            reportPushRegistrationResult(Result.failure(VoxAuthException.Sdk(reason)))
+            return
+        }
+        vcm.ensureLoggedIn(voxUsername).fold(
+            onSuccess = { reportPushRegistrationResult(vcm.registerCurrentPushToken()) },
+            onFailure = { e -> reportPushRegistrationResult(Result.failure(e)) },
+        )
     }
 
     private fun reportPresenceResult(result: AppResult<Unit>) {
@@ -208,7 +267,7 @@ object PresenceActions {
      * `PresenceForegroundService`'s scope, neither of which installs a
      * CoroutineExceptionHandler, so it reached the thread's default handler and took
      * the process down — on the READY path, the single most-used action in the app,
-     * and again on every 30s heartbeat via [retryPushRegistrationIfFailed].
+     * and again on every 30s heartbeat via [ensurePushRegistration].
      *
      * Worse than the crash: because the write ran FIRST, a failing write also skipped
      * `PushRegistrationState` and `AppMessageCenter` below — so the one code path
