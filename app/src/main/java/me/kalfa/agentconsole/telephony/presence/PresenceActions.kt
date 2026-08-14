@@ -9,6 +9,7 @@ import me.kalfa.agentconsole.domain.error.AppResult
 import me.kalfa.agentconsole.domain.model.AgentStatus
 import me.kalfa.agentconsole.telephony.vox.RingCapability
 import me.kalfa.agentconsole.telephony.vox.RingCapabilityState
+import me.kalfa.agentconsole.telephony.vox.VoxAuthException
 import me.kalfa.agentconsole.ui.message.AppMessageCenter
 import me.kalfa.agentconsole.ui.message.FailureContext
 import me.kalfa.agentconsole.ui.message.MessageAction
@@ -277,8 +278,49 @@ object PresenceActions {
             " התקלה במכשיר עצמו: לא התקבל מזהה משירותי Google."
         detail.startsWith("vox_register:") || detail.startsWith("registerForPushNotifications:") ->
             " המכשיר קיבל מזהה, אך מערכת הטלפוניה דחתה את הרישום."
+        isLoginStageFailure(detail) ->
+            " ההתחברות למערכת הטלפוניה נכשלה, ולכן הרישום כלל לא בוצע."
         else -> ""
     }
+
+    /**
+     * A THIRD failure domain the two branches above cannot express: the registration was
+     * never attempted, because logging in to Voximplant failed first.
+     *
+     * This is not a hypothetical gap. `PresenceActions.applyStatus` reports an
+     * `ensureLoggedIn` failure through `reportPushRegistrationResult` — the same banner,
+     * titled "המכשיר לא נרשם לקבלת שיחות" — so a login failure has always been shown to the
+     * agent as a registration failure, with the one field that would distinguish them
+     * silently dropped by the `else -> ""` above. The banner the owner photographed on
+     * 2026-08-14 was bare, and a bare banner is exactly what this produces.
+     *
+     * Deliberately NOT folded into the `else`: the contract that an unrecognised message
+     * adds nothing rather than guessing still holds, and is still tested. This branch
+     * matches only strings this codebase itself produces, enumerated below.
+     */
+    private fun isLoginStageFailure(detail: String): Boolean =
+        // VoxClientManager tags every SDK-boundary step it wraps. All five verified
+        // against the literals there: "connect: $error" (connectSuspend),
+        // "requestOneTimeKey: $error", "loginWithOneTimeKey: $error",
+        // "loginWithAccessToken: $error" and "refreshToken: $error".
+        LOGIN_STAGE_TAGS.any { detail.startsWith(it) } ||
+            // The sdk-auth exchange, which fails BEFORE the SDK is touched at all and
+            // carries no prefix. Referenced through the object rather than copied as a
+            // literal so a change to the message cannot silently unmatch it.
+            detail == VoxAuthException.NoSession.message ||
+            // The remaining VoxAuthException cases all name the route they came from:
+            // "sdk-auth HTTP $code", "sdk-auth 200 without a hash",
+            // "not a console agent (sdk-auth 401)" and
+            // "agent has no Voximplant identity (sdk-auth 409)" — see VoxTelephony.kt.
+            detail.contains("sdk-auth")
+
+    private val LOGIN_STAGE_TAGS = listOf(
+        "connect:",
+        "requestOneTimeKey:",
+        "loginWithOneTimeKey:",
+        "loginWithAccessToken:",
+        "refreshToken:",
+    )
 
     /**
      * Re-reads the device's ring capability AND republishes the agent-visible banner

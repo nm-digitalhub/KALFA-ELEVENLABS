@@ -29,13 +29,25 @@ import me.kalfa.agentconsole.domain.telephony.PresenceSyncState
 import me.kalfa.agentconsole.telephony.vox.RingCapability
 import me.kalfa.agentconsole.telephony.vox.RingCapabilityState
 
-// The four independent signals PresenceNotificationBuilder.build needs — grouped so
-// the combine() below doesn't have to thread an unlabeled 4-tuple through collect.
+// The signals PresenceNotificationBuilder.build needs — grouped so the combine() below
+// doesn't have to thread an unlabeled tuple through collect.
+//
+// pushRegistrationDetail was the missing one, and its absence is why the notification
+// could never say which push step failed. PresenceNotificationBuilder.build and
+// expandedTextFor have taken a `pushRegistrationDetail` since the day the stage
+// sentences were added, and PushRegistrationState.lastFailure has always carried it —
+// but this class kept only `pushFailure?.failure` and dropped `.detail` on the floor, so
+// every build() call fell back to the parameter's null default and
+// pushFailureStageSuffix(null) returned "" for EVERY failure, correctly tagged or not.
+// The notification was therefore structurally incapable of carrying the one field the
+// whole push investigation turned on, and its silence was repeatedly read as evidence
+// that the failure was untagged. It was not evidence of anything.
 private data class PresenceNotificationInputs(
     val status: AgentStatus,
     val syncState: PresenceSyncState,
     val pushRegistrationFailure: AppFailure?,
     val ringCapability: RingCapability?,
+    val pushRegistrationDetail: String?,
 )
 
 // The AOSP claims in this file are cited by SYMBOL — `ActiveServices
@@ -166,7 +178,13 @@ class PresenceForegroundService : Service() {
                     PushRegistrationState.lastFailure,
                     RingCapabilityState.current,
                 ) { status, sync, pushFailure, ringCapability ->
-                    PresenceNotificationInputs(status, sync, pushFailure?.failure, ringCapability)
+                    PresenceNotificationInputs(
+                        status,
+                        sync,
+                        pushFailure?.failure,
+                        ringCapability,
+                        pushFailure?.detail,
+                    )
                 }.collect { inputs ->
                         if (presence.shiftActive.value) {
                             // save() is a DataStore write and DataStore does not swallow
@@ -255,12 +273,19 @@ class PresenceForegroundService : Service() {
         val mgr = ContextCompat.getSystemService(this, android.app.NotificationManager::class.java)
         mgr?.notify(
             PresenceNotificationBuilder.NOTIFICATION_ID,
+            // Named arguments from here on. build()'s own kdoc warns that
+            // pushRegistrationDetail sits last "because PresenceForegroundService calls
+            // this positionally, and inserting a parameter mid-signature would silently
+            // rebind ringCapability to a String?" — the parameter was then added and this
+            // call was never updated, so it silently took the null default instead.
+            // Naming them removes the hazard the comment was written about.
             PresenceNotificationBuilder.build(
-                this,
-                inputs.status,
-                inputs.syncState,
-                inputs.pushRegistrationFailure,
-                inputs.ringCapability,
+                context = this,
+                status = inputs.status,
+                syncState = inputs.syncState,
+                pushRegistrationFailure = inputs.pushRegistrationFailure,
+                ringCapability = inputs.ringCapability,
+                pushRegistrationDetail = inputs.pushRegistrationDetail,
             ),
         )
     }
@@ -316,12 +341,18 @@ class PresenceForegroundService : Service() {
      */
     private fun startForegroundCompat(): Boolean = try {
         val presenceNow = DependencyContainer.agentPresence
+        // Named for the same reason as updateNotification's call above. This is the
+        // FIRST notification a restarted process posts, built from the record seeded out
+        // of PresenceStateStore in onCreate — so it is also the one most likely to be
+        // carrying a push failure inherited from a previous process.
+        val pushFailure = PushRegistrationState.lastFailure.value
         val notification = PresenceNotificationBuilder.build(
-            this,
-            presenceNow.currentStatus.value,
-            presenceNow.syncState.value,
-            PushRegistrationState.lastFailure.value?.failure,
-            RingCapabilityState.current.value,
+            context = this,
+            status = presenceNow.currentStatus.value,
+            syncState = presenceNow.syncState.value,
+            pushRegistrationFailure = pushFailure?.failure,
+            ringCapability = RingCapabilityState.current.value,
+            pushRegistrationDetail = pushFailure?.detail,
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
