@@ -8,6 +8,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -72,6 +74,46 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
+                // The ring surface is read and drawn OUTSIDE AuthGate, and that
+                // placement is the whole point.
+                //
+                // It used to sit inside AuthGate, below the authenticated content's
+                // other state. But AuthGate (ui/screens/LoginScreen.kt) does not
+                // render its content until the Supabase session resolves: while
+                // sessionStatus is Initializing it shows a CircularProgressIndicator,
+                // and on RefreshFailure — a session that exists but could not be
+                // refreshed, i.e. a just-woken device with poor network — it shows the
+                // LOGIN FORM. The path this surface exists for is a locked-device
+                // full-screen intent after a push wake, which per AGENTS.md "Push
+                // wake-up" starts from a KILLED process, so both of those states are
+                // live possibilities at exactly the moment the phone rings. A
+                // locked-screen FSI draws the target Activity's own content
+                // (docs/android-presence-and-call-ux.md §3: "If the FSI target is
+                // MainActivity showing its ordinary nav/dashboard content, a locked
+                // phone that starts ringing shows the wrong thing... which is worse
+                // than not wiring FSI at all") — a spinner or a login form is the same
+                // failure wearing a different screen.
+                //
+                // An overlay in a Box rather than an `if/else` around AuthGate: the
+                // else-branch would dispose AuthGate and, with it, the
+                // rememberNavController() that today survives a call, turning every
+                // answered call into a hard reset to the Dashboard. The docs already
+                // call this "a top-level overlay"; this is that, literally.
+                val incomingCallCoordinator = remember { DependencyContainer.incomingCallCoordinator }
+                val noOffer = remember {
+                    kotlinx.coroutines.flow.MutableStateFlow<VoxIncomingCallCoordinator.IncomingOffer?>(null)
+                }
+                val pendingOffer by (incomingCallCoordinator?.pendingOffer ?: noOffer).collectAsState()
+
+                // Only the locked-device full-screen-intent launch sets these flags
+                // (applyIncomingCallWindowFlagsIfNeeded); clear them the moment the
+                // offer resolves so this activity does not keep bypassing the lock
+                // screen for ordinary future launches.
+                LaunchedEffect(pendingOffer) {
+                    if (pendingOffer == null) clearIncomingCallWindowFlags()
+                }
+
+                Box(modifier = Modifier.fillMaxSize()) {
                 AuthGate {
                     val state by viewModel.uiState.collectAsState()
                     val navController = rememberNavController()
@@ -120,39 +162,7 @@ class MainActivity : ComponentActivity() {
                     // second one can only take the dialog away.
                     EnsureCallAudioPermission()
 
-                    // The incoming-call ring surface (docs §3) — a top-level overlay,
-                    // independent of the (untouched) DEBUG-only InCallScreen branch
-                    // below. incomingCallCoordinator is null only in mock mode / before
-                    // DependencyContainer.attach() has run, in which case this simply
-                    // never fires.
-                    val incomingCallCoordinator = remember { DependencyContainer.incomingCallCoordinator }
-                    val noOffer = remember {
-                        kotlinx.coroutines.flow.MutableStateFlow<VoxIncomingCallCoordinator.IncomingOffer?>(null)
-                    }
-                    val pendingOffer by (incomingCallCoordinator?.pendingOffer ?: noOffer).collectAsState()
-
-                    // Only the locked-device full-screen-intent launch sets these
-                    // flags (applyIncomingCallWindowFlagsIfNeeded); clear them the
-                    // moment the offer resolves so this activity does not keep
-                    // bypassing the lock screen for ordinary future launches.
-                    LaunchedEffect(pendingOffer) {
-                        if (pendingOffer == null) clearIncomingCallWindowFlags()
-                    }
-
-                    // The RTL provider wraps BOTH branches. It used to wrap only the
-                    // nav/dashboard branch, which left IncomingCallScreen — the one
-                    // surface an agent sees on a locked phone, and the only one with a
-                    // two-button choice where getting Answer/Decline the wrong way
-                    // round costs a real call — rendering left-to-right in a
-                    // Hebrew-first app (AGENTS.md hard rule 1).
                     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                    if (pendingOffer != null) {
-                        IncomingCallScreen(
-                            displayName = pendingOffer?.displayName.orEmpty(),
-                            onAnswer = { pendingOffer?.let { incomingCallCoordinator?.answer(it.callId) } },
-                            onDecline = { pendingOffer?.let { incomingCallCoordinator?.decline(it.callId) } }
-                        )
-                    } else {
                         // Adaptive nav: bottom bar on compact, rail on expanded. Hidden entirely during a call.
                         AdaptiveConsoleScaffold(
                             navController = navController,
@@ -232,7 +242,36 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-                    }
+                }
+
+                // Drawn over whatever AuthGate is showing — see the comment above
+                // the coordinator for why it must not be inside it.
+                // IncomingCallScreen is an opaque, full-size Surface and provides
+                // its own RTL (ui/screens/IncomingCallScreen.kt), so nothing extra
+                // is needed for either.
+                //
+                // The empty clickable is a touch blocker, not dead code: Compose
+                // hit-tests a Box's children front to back, and a child with no
+                // pointer-input modifier is not a hit-test target at all — taps
+                // would fall through the opaque overlay to the dashboard and
+                // navigation bar underneath, letting a ringing agent change their
+                // own status or route by hitting a control they cannot see.
+                // (Material3's Surface may already block this internally; that is
+                // not verifiable from the artifacts available here, so it is not
+                // relied on.)
+                if (pendingOffer != null) {
+                    IncomingCallScreen(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) { },
+                        displayName = pendingOffer?.displayName.orEmpty(),
+                        onAnswer = { pendingOffer?.let { incomingCallCoordinator?.answer(it.callId) } },
+                        onDecline = { pendingOffer?.let { incomingCallCoordinator?.decline(it.callId) } }
+                    )
+                }
                 }
             }
         }

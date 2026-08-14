@@ -46,10 +46,12 @@ class VoxIncomingCallCoordinator(
     // _pendingOffer, which answer() clears: without it, cleanUp() had no way to tell
     // "the leg that owns the microphone service ended" from "some other leg ended",
     // and tore down both unconditionally. See cleanUp's comment for the sequence that
-    // broke. @Volatile because handleIncomingCall arrives on the SDK's own executor
-    // thread (verified in android-sdk-calls 3.2.0: VICalls' message listener
-    // dispatches through a ScheduledExecutorService) while answer()/decline() can be
-    // called from the main thread or a BroadcastReceiver.
+    // broke. @Volatile because the writers are on different threads: answer() runs on
+    // whichever thread invoked it (the main thread from IncomingCallScreen, a binder
+    // thread from IncomingCallActionReceiver), cleanUp() on Dispatchers.Main, and the
+    // offers it tracks originate on the SDK's own executor (verified in
+    // android-sdk-calls 3.2.0: VICalls' message listener dispatches through a
+    // ScheduledExecutorService, so nothing on this path is main-thread by default).
     @Volatile private var answeredCallId: String? = null
 
     init {
@@ -70,17 +72,34 @@ class VoxIncomingCallCoordinator(
         )
         _pendingOffer.value = offer
 
-        // The offer's own leg needs the microphone FGS type available BEFORE answer()
-        // can be safely called (see answer() below) — start it now too, matching how
-        // a real phone rings while already holding the resources it will need.
+        // NO foreground service during the ring phase — a deliberate deviation from
+        // docs/android-presence-and-call-ux.md §3 step 4, which says the coordinator
+        // starts CallForegroundService here.
         //
-        // NOT when a call is already answered: the service is a singleton, so starting
-        // it again would retitle the ACTIVE call's ongoing notification to
-        // "שיחה נכנסת..." — the answered leg already holds exactly the resource this
-        // start is for.
-        if (answeredCallId == null && hasRecordAudioPermission()) {
-            startCallForegroundService(title = "שיחה נכנסת...")
-        }
+        // The platform does not allow it on the path that matters. CallForegroundService
+        // is `microphone`-typed, and `microphone` is a WHILE-IN-USE foreground-service
+        // type: it cannot be started while the app is in the background. The
+        // high-priority-FCM exemption that makes a push wake-up legal is on the separate
+        // background-START list, NOT on the while-in-use list (which is: system
+        // component, app widget, interacting with a notification, PendingIntent from a
+        // visible app, device-owner DPC, VoiceInteractionService,
+        // START_ACTIVITIES_FROM_BACKGROUND). This method is reached from the SDK's
+        // incoming-call callback on a push-woken, backgrounded process — none of those.
+        //
+        // The `hasRecordAudioPermission()` check that used to guard this was necessary
+        // but not sufficient, and that is the trap: the permission IS granted, it simply
+        // is not usable from the background, so the check passed and the start threw
+        // anyway. Verified with fgs-owner against the platform's own service-types docs;
+        // no device here to confirm it empirically.
+        //
+        // answer() still starts it, and legally: an answer arrives either from the
+        // notification action (interacting with a notification — on the while-in-use
+        // list) or from IncomingCallScreen (a visible activity). Accepted cost: the ring
+        // window runs with no FGS, so a low-memory kill before the agent answers is
+        // possible. If CallForegroundService ever moves to the `phoneCall` type — under
+        // discussion with telecom-owner, since core-telecom already supplies the
+        // MANAGE_OWN_CALLS that type requires — this start becomes legal again and can
+        // come back exactly as the spec describes it.
 
         NotificationManagerCompat.from(context).notify(
             IncomingCallNotificationBuilder.NOTIFICATION_ID,
@@ -163,24 +182,27 @@ class VoxIncomingCallCoordinator(
      * Starting the call FGS can THROW, and the throw is not a bug to let crash.
      *
      * `Context.startForegroundService` raises `ForegroundServiceStartNotAllowedException`
-     * when the app is in the background and no exemption applies (Android 12+). This
-     * path is reached from exactly there: the SDK's incoming-call callback on a
-     * push-woken, backgrounded app, and from `IncomingCallActionReceiver` — a
-     * `BroadcastReceiver`, where an escaping exception kills the process outright
-     * instead of dropping one call. Whether Voximplant's wake push carries the
-     * high-priority FCM exemption, and whether it is still inside the temporary
-     * allowlist window after `VoxWakePushHandler`'s up-to-9s login, are both
-     * unverified without a device.
+     * when the app is in the background and no exemption applies (Android 12+), and the
+     * only remaining caller — `answer()` — can be reached from
+     * `IncomingCallActionReceiver`, a `BroadcastReceiver` where an escaping exception
+     * kills the process outright instead of dropping one call.
+     *
+     * Both of `answer()`'s entry points are documented exemptions (a notification
+     * action; a visible activity), so this should not fire. "Should not" is not
+     * "cannot" on an OEM skin nobody here can test, and the cost of being wrong is a
+     * process kill during a live ring, so the call is guarded rather than trusted.
+     *
+     * Kept even though CallForegroundService now guards its own side too (fgs-owner,
+     * 74ee35b): the two throws happen in different places — this one synchronously from
+     * `startForegroundService`, theirs from inside `Service.startForeground()` on the
+     * main looper after this call has already returned — and Google's own pages
+     * disagree about which one raises. Guarding both is what makes the outcome
+     * independent of that.
      *
      * Degrading is what docs/android-presence-and-call-ux.md §3 already prescribes for
      * the sibling case (RECORD_AUDIO missing): the notification still shows, the agent
      * can still see and open the call. Logged rather than surfaced because there is no
      * action an agent could take about it mid-ring.
-     *
-     * NOTE this cannot cover the whole failure: on Android 14+ a `microphone`-typed
-     * FGS started from the background throws `SecurityException` from inside
-     * `Service.startForeground()`, on the main looper, long after this call has
-     * returned. That half has to be handled in CallForegroundService itself.
      */
     private fun startCallForegroundService(title: String) {
         try {

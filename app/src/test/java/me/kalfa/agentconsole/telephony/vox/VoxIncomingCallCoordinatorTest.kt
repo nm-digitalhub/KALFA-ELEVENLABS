@@ -122,7 +122,10 @@ class VoxIncomingCallCoordinatorTest {
     }
 
     @Test
-    fun `a declined-before-answer call releases everything it started`() {
+    fun `a declined-before-answer call with nothing else live releases everything`() {
+        // stopForegroundService is true even though the ring phase no longer starts one
+        // (see handleIncomingCall): the rule is "nobody is left who needs it", and
+        // Context.stopService on a service that never started is a no-op.
         val plan = planIncomingCallCleanup(
             endedCallId = "call-1",
             pendingCallId = "call-1",
