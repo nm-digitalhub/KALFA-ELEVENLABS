@@ -15,7 +15,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.CallMade
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Dialpad
+import androidx.compose.material.icons.filled.GroupAdd
+import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Pause
@@ -28,9 +32,14 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,6 +52,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
+import me.kalfa.agentconsole.domain.telephony.TransferTarget
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -79,9 +89,19 @@ import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
 //    button that silently does nothing. The held STATE is made impossible to miss —
 //    `CallStatusPill` replaces "שיחה פעילה" outright while held, it does not just tint
 //    an icon — because an agent who forgets a call is on hold is its own malfunction.
-//    Unaddressed and out of this repo's boundary: there is still no music-on-hold on
-//    this leg, so a held guest hears silence; that is server/VoxEngine-scenario work,
-//    not something this screen can fix.
+//    The music-on-hold this bullet used to call an unaddressed gap SHIPPED on the
+//    server side on 2026-08-17: ConsoleInbound/ConsoleDial now play a looped audio
+//    file to the customer leg on `CallEvents.OnHold`, so a held guest no longer hears
+//    silence. Nothing on this screen changed for it — correctly, since it was never
+//    something this screen could fix.
+//  * DTMF keypad — `Call.sendDTMF`, wired 2026-08-17 (see DtmfKeypad). It needs no
+//    server or scenario support: `Call.handleTones` is documented OFF by default, so
+//    tones ride the bridged audio to whatever the customer leg is connected to.
+//  * Transfer / consult / conference — the three server-side handoffs. Each POSTs to
+//    /api/console-calls/{id}/… and the VoxEngine scenario does the rewiring; the
+//    device only asks, and nothing here claims the handoff succeeded (see
+//    ConsoleViewModel.runCallAction). Disabled, with the reason stated on screen,
+//    when the call carries no console_calls id.
 //  * Audio route — `AudioDeviceManager`, with the active device read back from the SDK
 //    and its change listener. Renders as UNAVAILABLE, with a reason, whenever the SDK
 //    has not told us what the route is; it never guesses a default.
@@ -90,9 +110,6 @@ import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
 //
 // WHAT IS DELIBERATELY NOT HERE — each omission is a control that would lie:
 //
-//  * NO DTMF keypad. `Call.sendDTMF` is real SDK API, but nothing on the far end of this
-//    leg consumes tones: the agent leg is bridged to the RSVPAgent scenario, which has
-//    no DTMF handler. A keypad would send digits into nothing and look like it worked.
 //  * NO RSVP capture form. The old InCallScreen's "שמור ונתק" built an RsvpResult with a
 //    FABRICATED guestId and handed it to SupabaseRsvpRepository.saveRsvpResult, which is
 //    an intentionally empty body — RSVP outcomes belong to the ElevenLabs client-tools
@@ -118,8 +135,30 @@ fun ActiveCallScreen(
     onSelectAudioDevice: (com.voximplant.android.sdk.core.audio.AudioDevice) -> Unit,
     onHangup: () -> Unit,
     modifier: Modifier = Modifier,
+    // ── Live-call handoff + keypad (17.8) ────────────────────────────────────
+    // Defaulted so the previews and any caller that does not wire the handoff
+    // still compile and render a working call screen. A default of `false` for
+    // [handoffAvailable] is the honest one: without a console_calls id the three
+    // server-side actions cannot address anything.
+    handoffAvailable: Boolean = false,
+    transferTargets: List<TransferTarget> = emptyList(),
+    transferTargetsLoading: Boolean = false,
+    transferTargetsFailed: Boolean = false,
+    consultRequested: Boolean = false,
+    onSendDtmf: (String) -> Unit = {},
+    onLoadTransferTargets: () -> Unit = {},
+    onTransfer: (String) -> Unit = {},
+    onConsult: (String) -> Unit = {},
+    onConference: (String) -> Unit = {},
+    onCancelConsult: () -> Unit = {},
+    onCompleteConsult: () -> Unit = {},
 ) {
     val connected = visibility == ActiveCallVisibility.CONNECTED
+    var keypadOpen by rememberSaveable { mutableStateOf(false) }
+    // Which handoff the open sheet is for; null = closed. One sheet for all three
+    // because they differ only in the verb — the list, the empty state and the
+    // failure state are identical, and three near-copies would drift.
+    var pickerFor by rememberSaveable { mutableStateOf<HandoffKind?>(null) }
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Surface(
@@ -182,6 +221,34 @@ fun ActiveCallScreen(
                     onSelect = onSelectAudioDevice,
                 )
 
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Every control below acts on a CONNECTED call and nothing else.
+                // `connected` already gates mute/hold above for the same reason: a
+                // keypad on a ringing leg sends tones nobody receives, and a transfer
+                // of a call that has not been answered has nothing to transfer.
+                HandoffControls(
+                    enabled = connected,
+                    handoffAvailable = handoffAvailable,
+                    consultRequested = consultRequested,
+                    keypadOpen = keypadOpen,
+                    onToggleKeypad = { keypadOpen = !keypadOpen },
+                    onOpenPicker = { kind ->
+                        pickerFor = kind
+                        // Loaded on OPEN, never cached across openings: who is free to
+                        // take a call changes minute to minute, and a stale name
+                        // produces a failure the agent cannot explain.
+                        onLoadTransferTargets()
+                    },
+                    onCancelConsult = onCancelConsult,
+                    onCompleteConsult = onCompleteConsult,
+                )
+
+                if (keypadOpen) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    DtmfKeypad(enabled = connected, onDigit = onSendDtmf)
+                }
+
                 Spacer(modifier = Modifier.height(40.dp))
 
                 // Always enabled, in every state this screen can be in. Hanging up is the
@@ -203,6 +270,283 @@ fun ActiveCallScreen(
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                     )
+                }
+            }
+
+            pickerFor?.let { kind ->
+                TransferTargetSheet(
+                    kind = kind,
+                    targets = transferTargets,
+                    loading = transferTargetsLoading,
+                    failed = transferTargetsFailed,
+                    onPick = { agentId ->
+                        // Closed before the request, not after it. These are
+                        // fire-and-forget POSTs whose real outcome arrives out of
+                        // band (see ConsoleViewModel), so there is nothing to wait
+                        // for on this sheet, and leaving it open invites a second tap
+                        // that would start a second handoff on the same call.
+                        pickerFor = null
+                        when (kind) {
+                            HandoffKind.TRANSFER -> onTransfer(agentId)
+                            HandoffKind.CONSULT -> onConsult(agentId)
+                            HandoffKind.CONFERENCE -> onConference(agentId)
+                        }
+                    },
+                    onDismiss = { pickerFor = null },
+                )
+            }
+        }
+    }
+}
+
+/** Which of the three server-side handoffs an open target picker is for. */
+enum class HandoffKind(val title: String, val verb: String) {
+    TRANSFER("העברת השיחה", "העבר"),
+    CONSULT("התייעצות", "התייעץ"),
+    CONFERENCE("צירוף לשיחה", "צרף"),
+}
+
+/**
+ * Keypad toggle + the three handoff buttons + the consult exits.
+ *
+ * [handoffAvailable] and [enabled] are SEPARATE gates and both disable, because
+ * they are different facts and an agent deserves to know which one applies. A
+ * ringing call has nothing to hand over yet; a connected call with no
+ * `console_calls` id (an older scenario) has nowhere to send the request. The
+ * keypad depends on neither — DTMF goes down the SDK leg, not through the server —
+ * which is why it stays usable when the other three are not.
+ */
+@Composable
+private fun HandoffControls(
+    enabled: Boolean,
+    handoffAvailable: Boolean,
+    consultRequested: Boolean,
+    keypadOpen: Boolean,
+    onToggleKeypad: () -> Unit,
+    onOpenPicker: (HandoffKind) -> Unit,
+    onCancelConsult: () -> Unit,
+    onCompleteConsult: () -> Unit,
+) {
+    val handoffEnabled = enabled && handoffAvailable
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            SecondaryCallAction(
+                icon = Icons.Default.Dialpad,
+                label = "מקשים",
+                enabled = enabled,
+                selected = keypadOpen,
+                onClick = onToggleKeypad,
+            )
+            SecondaryCallAction(
+                icon = Icons.AutoMirrored.Filled.CallMade,
+                label = "העבר",
+                enabled = handoffEnabled,
+                onClick = { onOpenPicker(HandoffKind.TRANSFER) },
+            )
+            SecondaryCallAction(
+                icon = Icons.Default.SupportAgent,
+                label = "התייעצות",
+                enabled = handoffEnabled,
+                onClick = { onOpenPicker(HandoffKind.CONSULT) },
+            )
+            SecondaryCallAction(
+                icon = Icons.Default.GroupAdd,
+                label = "ועידה",
+                enabled = handoffEnabled,
+                onClick = { onOpenPicker(HandoffKind.CONFERENCE) },
+            )
+        }
+
+        // Only reachable once a consult was requested. Both are offered rather than
+        // one: cancelling returns the customer to THIS agent, completing hands them
+        // to the colleague — opposite outcomes, and guessing which the agent wants
+        // would be the worse failure.
+        if (consultRequested) {
+            Spacer(modifier = Modifier.height(14.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(
+                    onClick = onCancelConsult,
+                    enabled = enabled,
+                    shape = RoundedCornerShape(12.dp),
+                ) { Text(text = "בטל התייעצות") }
+                Button(
+                    onClick = onCompleteConsult,
+                    enabled = enabled,
+                    shape = RoundedCornerShape(12.dp),
+                ) { Text(text = "השלם העברה") }
+            }
+        }
+
+        if (enabled && !handoffAvailable) {
+            Spacer(modifier = Modifier.height(10.dp))
+            // Said out loud rather than left as three greyed buttons with no reason.
+            Text(
+                text = "העברה, התייעצות וועידה אינן זמינות בשיחה הזו.",
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SecondaryCallAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean,
+    selected: Boolean = false,
+    onClick: () -> Unit,
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        FilledIconToggleButton(
+            checked = selected,
+            onCheckedChange = { onClick() },
+            enabled = enabled,
+            modifier = Modifier
+                .size(56.dp)
+                .semantics { contentDescription = label },
+        ) {
+            Icon(imageVector = icon, contentDescription = null)
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = if (enabled) 0.9f else 0.4f),
+        )
+    }
+}
+
+/**
+ * A standard 12-key DTMF pad.
+ *
+ * Fire-and-forget by design, matching the SDK: `Call.sendDTMF` returns Unit and
+ * reports nothing back, so there is no success to display and no failure to catch.
+ * What the agent gets instead is the digit echoed in the row above the keys — the
+ * only honest feedback available is "the app registered your tap".
+ *
+ * Needs NO server or scenario support: `Call.handleTones` is documented as OFF by
+ * default, so tones travel in the bridged audio to whatever is on the other end
+ * (an IVR the agent is navigating) untouched by VoxEngine.
+ */
+@Composable
+private fun DtmfKeypad(enabled: Boolean, onDigit: (String) -> Unit) {
+    var entered by rememberSaveable { mutableStateOf("") }
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        // An LTR island: a dialled sequence reads left-to-right regardless of the
+        // Hebrew page around it — the same treatment the phone number gets above.
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+            Text(
+                text = entered.ifBlank { " " },
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
+                modifier = Modifier.height(32.dp),
+            )
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        // Explicit LTR for the GRID too: a keypad's layout is universal — 1 is
+        // top-left in every locale — and inheriting RTL would mirror it into 3-2-1.
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                DTMF_ROWS.forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        row.forEach { digit ->
+                            Button(
+                                onClick = {
+                                    onDigit(digit)
+                                    // Bounded so a long IVR session cannot grow this
+                                    // line until it wraps and shifts the keys.
+                                    entered = (entered + digit).takeLast(20)
+                                },
+                                enabled = enabled,
+                                shape = RoundedCornerShape(14.dp),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                                modifier = Modifier
+                                    .size(width = 68.dp, height = 52.dp)
+                                    .semantics { contentDescription = "חייג $digit" },
+                            ) {
+                                Text(text = digit, style = MaterialTheme.typography.titleMedium)
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+            }
+        }
+    }
+}
+
+private val DTMF_ROWS = listOf(
+    listOf("1", "2", "3"),
+    listOf("4", "5", "6"),
+    listOf("7", "8", "9"),
+    listOf("*", "0", "#"),
+)
+
+/**
+ * The colleague picker behind all three handoffs.
+ *
+ * Empty, loading and failed are three DIFFERENT screens on purpose. "Nobody is
+ * available" is a normal state an agent must be able to act on (wait, or handle the
+ * call themselves); a failed request that renders as an empty list tells them the
+ * same thing about the world and is simply false.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun TransferTargetSheet(
+    kind: HandoffKind,
+    targets: List<TransferTarget>,
+    loading: Boolean,
+    failed: Boolean,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 32.dp),
+            ) {
+                Text(
+                    text = kind.title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+
+                when {
+                    loading -> Text(
+                        text = "טוען נציגים זמינים…",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    failed -> Text(
+                        text = "לא הצלחנו לטעון את רשימת הנציגים. נסו שוב.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    targets.isEmpty() -> Text(
+                        text = "אין כרגע נציג זמין לקבל את השיחה.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    else -> targets.forEach { target ->
+                        Button(
+                            onClick = { onPick(target.agentId) },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .semantics {
+                                    contentDescription = "${kind.verb} אל ${target.displayName}"
+                                },
+                        ) {
+                            Text(text = target.displayName)
+                        }
+                    }
                 }
             }
         }

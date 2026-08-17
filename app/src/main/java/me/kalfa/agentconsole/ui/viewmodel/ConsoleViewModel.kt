@@ -23,6 +23,7 @@ import me.kalfa.agentconsole.ui.message.FailureContext
 import me.kalfa.agentconsole.ui.message.MessageAction
 import me.kalfa.agentconsole.ui.message.MessageSeverity
 import me.kalfa.agentconsole.ui.message.UiMessage
+import me.kalfa.agentconsole.domain.telephony.TransferTarget
 import me.kalfa.agentconsole.ui.message.UiEffect
 import me.kalfa.agentconsole.ui.message.toHebrewMessage
 import me.kalfa.agentconsole.ui.state.LoadState
@@ -74,7 +75,26 @@ data class ConsoleUiState(
     // Media path to the cloud is down on a leg that is otherwise still up — see
     // CallSession.isReconnecting. Drives ActiveCallScreen's banner; without it a
     // mid-call audio drop is invisible and the duration keeps reassuring.
-    val currentSessionReconnecting: Boolean = false
+    val currentSessionReconnecting: Boolean = false,
+    // ── Live-call handoff ────────────────────────────────────────────────────
+    // Colleagues this call can be handed to. Empty is a REAL answer ("nobody is
+    // available"), which is why loading and failure are tracked separately —
+    // rendering all three the same way would let a failed request read as an
+    // empty call floor.
+    val transferTargets: List<TransferTarget> = emptyList(),
+    val transferTargetsLoading: Boolean = false,
+    val transferTargetsFailed: Boolean = false,
+    /**
+     * A consult has been REQUESTED for this call and not yet ended by this agent.
+     *
+     * Deliberately not called `consultActive`: the device is told the request was
+     * delivered to the live session, never that the target answered. The scenario
+     * owns that fact and reports it server-side (consult_connected /
+     * consult_failed), where this app has no subscription. So this gates the
+     * cancel/complete controls — which the scenario safely ignores when no consult
+     * is in progress — and nothing on screen claims the colleague is on the line.
+     */
+    val consultRequested: Boolean = false,
 )
 
 class ConsoleViewModel : ViewModel() {
@@ -634,5 +654,99 @@ class ConsoleViewModel : ViewModel() {
 
     fun hangupDirectly() {
         _uiState.value.currentSession?.hangup()
+    }
+
+    // ── Live-call handoff: transfer / consult / conference ────────────────────
+    //
+    // Every one of these goes through the SERVER, not the SDK leg, because the
+    // topology change happens in the VoxEngine scenario — see CallEngine's kdoc.
+    //
+    // Two rules hold across all of them, and both are about not lying to the agent:
+    //
+    // 1. A success here means the request reached the live session. It does NOT
+    //    mean the transfer happened, the colleague answered, or the conference
+    //    formed — the scenario decides that and reports it server-side, where this
+    //    app is not listening. Every message below is phrased as a request sent.
+    // 2. A missing consoleCallId is reported, never silently swallowed. It means
+    //    the call arrived from a scenario that predates the header carrying it, and
+    //    an agent pressing a button that does nothing with no explanation is the
+    //    exact failure mode CallSession.holdRefused exists to prevent.
+
+    fun loadTransferTargets() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(transferTargetsLoading = true, transferTargetsFailed = false) }
+            when (val result = callEngine.loadTransferTargets()) {
+                is AppResult.Success -> _uiState.update {
+                    it.copy(
+                        transferTargets = result.value,
+                        transferTargetsLoading = false,
+                        transferTargetsFailed = false,
+                    )
+                }
+                is AppResult.Failure -> _uiState.update {
+                    // The list is CLEARED on failure rather than left stale: a name
+                    // from a minute ago may already be on another call, and offering
+                    // it would produce an error the agent cannot explain.
+                    it.copy(
+                        transferTargets = emptyList(),
+                        transferTargetsLoading = false,
+                        transferTargetsFailed = true,
+                    )
+                }
+            }
+        }
+    }
+
+    fun transferTo(agentId: String) = runCallAction("העברת השיחה") { id ->
+        callEngine.transferCall(id, agentId)
+    }
+
+    fun consultWith(agentId: String) = runCallAction("בקשת ההתייעצות", onSuccess = {
+        _uiState.update { it.copy(consultRequested = true) }
+    }) { id -> callEngine.startConsult(id, agentId) }
+
+    fun conferenceWith(agentId: String) = runCallAction("צירוף הנציג לשיחה") { id ->
+        callEngine.addToConference(id, agentId)
+    }
+
+    fun cancelConsult() = runCallAction("ביטול ההתייעצות", onSuccess = {
+        _uiState.update { it.copy(consultRequested = false) }
+    }) { id -> callEngine.cancelConsult(id) }
+
+    fun completeConsult() = runCallAction("השלמת ההעברה", onSuccess = {
+        _uiState.update { it.copy(consultRequested = false) }
+    }) { id -> callEngine.completeConsult(id) }
+
+    /**
+     * The shared shape of the five actions above: resolve the call id, run the
+     * request, and say what happened in Hebrew either way.
+     *
+     * [what] is a noun phrase that reads correctly in all three sentences below
+     * ("X נשלחה", "X נכשלה", "לא ניתן לבצע X"), so each caller supplies one string
+     * instead of three.
+     */
+    private fun runCallAction(
+        what: String,
+        onSuccess: () -> Unit = {},
+        action: suspend (consoleCallId: String) -> AppResult<Unit>,
+    ) {
+        val consoleCallId = _uiState.value.currentSession?.consoleCallId
+        if (consoleCallId.isNullOrBlank()) {
+            viewModelScope.launch {
+                _effects.emit(
+                    UiEffect.ShowSnackbar("לא ניתן לבצע $what — השיחה הזו אינה מזוהה בשרת."),
+                )
+            }
+            return
+        }
+        viewModelScope.launch {
+            when (action(consoleCallId)) {
+                is AppResult.Success -> {
+                    onSuccess()
+                    _effects.emit(UiEffect.ShowSnackbar("$what נשלחה."))
+                }
+                is AppResult.Failure -> _effects.emit(UiEffect.ShowSnackbar("$what נכשלה."))
+            }
+        }
     }
 }

@@ -31,6 +31,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import io.ktor.client.statement.*
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import me.kalfa.agentconsole.di.AppVisibility
 
@@ -1176,6 +1179,95 @@ class SupabaseCallEngineImpl(
         e.printStackTrace()
         AppResult.Failure(e.toAppFailure())
     }
+
+    // ── Live-call handoff: transfer / consult / conference ───────────────────
+    //
+    // Same JWT + client + failure mapping as the command routes above. Each is a
+    // thin POST; the scenario does the actual rewiring and reports the outcome
+    // out-of-band, so a 2xx here means DELIVERED, never "it happened" — see
+    // CallEngine's kdoc for these.
+    //
+    // 409 maps to CallNoLongerActive exactly as endCall does: all four action routes
+    // answer 409 when the call has no live session to command, and that is the one
+    // failure an agent can act on themselves ("this call is over") rather than a
+    // generic error.
+    //
+    // The body is hand-built rather than serialized. It is a single uuid the server
+    // re-validates with z.string().uuid() and re-resolves through
+    // resolveTransferTarget, so a data class + serializer would add a dependency and
+    // a code path for a fixed 40-byte string. `to_agent_id` is not interpolated
+    // blindly either: it comes from loadTransferTargets, i.e. from the server.
+    private suspend fun postCallAction(
+        path: String,
+        body: String? = null,
+    ): AppResult<Unit> = try {
+        val jwt = getJwt()
+        val resp = httpClient.post("https://beta.kalfa.me/api/console-calls/$path") {
+            header(HttpHeaders.Authorization, "Bearer $jwt")
+            if (body != null) {
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+        }
+        if (resp.status.value in 200..299) {
+            AppResult.Success(Unit)
+        } else {
+            AppResult.Failure(
+                if (resp.status.value == 409) {
+                    me.kalfa.agentconsole.domain.error.AppFailure.CallNoLongerActive
+                } else {
+                    failureForStatus(resp.status.value)
+                }
+            )
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+        AppResult.Failure(e.toAppFailure())
+    }
+
+    override suspend fun loadTransferTargets(): AppResult<List<me.kalfa.agentconsole.domain.telephony.TransferTarget>> = try {
+        val jwt = getJwt()
+        val resp = httpClient.get("https://beta.kalfa.me/api/agents/transfer-targets") {
+            header(HttpHeaders.Authorization, "Bearer $jwt")
+        }
+        if (resp.status.value in 200..299) {
+            // Parsed with the JSON element API rather than a @Serializable class: the
+            // payload is two string fields and this keeps the response tolerant of the
+            // server adding a third without a client release. A row missing either
+            // field is DROPPED, not defaulted — an entry with no agent_id is a button
+            // that cannot work, and one with no name is a button with nothing on it.
+            val parsed = Json.parseToJsonElement(resp.bodyAsText())
+                .jsonObject["targets"]?.jsonArray.orEmpty()
+                .mapNotNull { row ->
+                    val obj = row.jsonObject
+                    val id = obj["agent_id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                    val name = obj["display_name"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                    if (id == null || name == null) null
+                    else me.kalfa.agentconsole.domain.telephony.TransferTarget(id, name)
+                }
+            AppResult.Success(parsed)
+        } else {
+            AppResult.Failure(failureForStatus(resp.status.value))
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+        AppResult.Failure(e.toAppFailure())
+    }
+
+    override suspend fun transferCall(consoleCallId: String, toAgentId: String): AppResult<Unit> =
+        postCallAction("$consoleCallId/transfer", """{"to_agent_id":"$toAgentId"}""")
+
+    override suspend fun startConsult(consoleCallId: String, toAgentId: String): AppResult<Unit> =
+        postCallAction("$consoleCallId/consult", """{"to_agent_id":"$toAgentId"}""")
+
+    override suspend fun cancelConsult(consoleCallId: String): AppResult<Unit> =
+        postCallAction("$consoleCallId/consult/cancel")
+
+    override suspend fun completeConsult(consoleCallId: String): AppResult<Unit> =
+        postCallAction("$consoleCallId/consult/complete")
+
+    override suspend fun addToConference(consoleCallId: String, toAgentId: String): AppResult<Unit> =
+        postCallAction("$consoleCallId/conference", """{"to_agent_id":"$toAgentId"}""")
 
     // Enqueue a real outbound AI call to an existing guest. ENQUEUE-ONLY: this
     // POSTs {guest_id} to /api/events/{eventId}/outreach-call and the worker owns

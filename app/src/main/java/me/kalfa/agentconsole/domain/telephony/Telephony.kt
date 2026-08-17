@@ -72,6 +72,31 @@ interface CallSession {
     val holdRefused: StateFlow<Boolean>
         get() = DefaultSessionFlows.holdNotRefused
 
+    /**
+     * The `console_calls` row id for this call, or null when it is not known.
+     *
+     * This is the address for every live-call action the SERVER performs on the
+     * agent's behalf — transfer, consult, conference are each
+     * `POST /api/console-calls/{id}/…`. Without it those controls have nothing to
+     * aim at, and the app has no other way to work it out: its own live-call list
+     * comes from `console_call_feed`, which is keyed on `call_attempts` (the AI
+     * campaign calls), a different table describing different calls. Matching an
+     * SDK leg to a `console_calls` row by phone number or timing would be a guess
+     * about which call the agent is on.
+     *
+     * So the server states it outright: the ConsoleInbound scenario sends it as the
+     * `X-Kalfa-Console-Call-Id` SIP header on the ring, and
+     * `VoxIncomingCallCoordinator` reads it off the offer.
+     *
+     * Null is a real, expected value, not just a mock convenience — a leg from a
+     * scenario version predating that header has none, and every caller must treat
+     * "no id" as "these controls are unavailable for this call" rather than
+     * guessing. Default null keeps mock mode and the monitor/takeover legs
+     * compiling.
+     */
+    val consoleCallId: String?
+        get() = null
+
     fun mute(muted: Boolean)
     fun hold(held: Boolean)
     fun sendDtmf(digit: String)
@@ -176,7 +201,62 @@ interface CallEngine {
      * each individual answer/decline/hangup call site. Default no-op.
      */
     fun clearAttachedSession() {}
+
+    // ── Live-call handoff: transfer / consult / conference ────────────────────
+    //
+    // All five act on a `console_calls` row via the server, never on the SDK leg
+    // directly, because the topology change happens in the VoxEngine scenario:
+    // each route posts a command envelope to the live session and the scenario
+    // rewires the media. The device only asks.
+    //
+    // `consoleCallId` is [CallSession.consoleCallId] — see its kdoc for why the app
+    // cannot derive it and the server has to state it. A null id means these are
+    // unavailable for that call, which callers must surface rather than paper over.
+    //
+    // 2xx from any of them means DELIVERED to the live session, NOT that the
+    // topology changed. The scenario reports the real outcome out-of-band
+    // (transfer_started/transferred/transfer_failed and the consult/conference
+    // equivalents), exactly like sendAgentCommand above. A UI that claims success
+    // on the HTTP response is claiming something it has not been told.
+    //
+    // Defaults keep mock mode and every other implementation compiling.
+
+    /** Agents this call can be handed to right now — GET /api/agents/transfer-targets. */
+    suspend fun loadTransferTargets(): AppResult<List<TransferTarget>> =
+        AppResult.Success(emptyList())
+
+    /** Blind transfer — POST /api/console-calls/{id}/transfer. The agent leaves the call. */
+    suspend fun transferCall(consoleCallId: String, toAgentId: String): AppResult<Unit> =
+        AppResult.Success(Unit)
+
+    /**
+     * Consult — POST /api/console-calls/{id}/consult. Puts the CUSTOMER on hold and
+     * bridges this agent privately with the target, so the customer hears neither
+     * side. Ends via [cancelConsult] (back to the customer) or [completeConsult]
+     * (a warm transfer: this agent drops, the target takes the customer).
+     */
+    suspend fun startConsult(consoleCallId: String, toAgentId: String): AppResult<Unit> =
+        AppResult.Success(Unit)
+
+    /** Abandons a consult and restores the customer bridge — POST …/consult/cancel. */
+    suspend fun cancelConsult(consoleCallId: String): AppResult<Unit> = AppResult.Success(Unit)
+
+    /** Completes a consult as a warm transfer — POST …/consult/complete. */
+    suspend fun completeConsult(consoleCallId: String): AppResult<Unit> = AppResult.Success(Unit)
+
+    /**
+     * Conference — POST /api/console-calls/{id}/conference. Unlike a consult the
+     * customer is NOT put on hold; the target joins all three into one mixer.
+     */
+    suspend fun addToConference(consoleCallId: String, toAgentId: String): AppResult<Unit> =
+        AppResult.Success(Unit)
 }
+
+/** A colleague a live call can be handed to. Mirrors GET /api/agents/transfer-targets. */
+data class TransferTarget(
+    val agentId: String,
+    val displayName: String,
+)
 
 /**
  * Whether the LAST setStatus/setShiftActive attempt actually reached and was

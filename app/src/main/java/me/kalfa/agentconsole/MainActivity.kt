@@ -405,6 +405,23 @@ class MainActivity : ComponentActivity() {
                         onToggleHold = { viewModel.toggleHold() },
                         onSelectAudioDevice = { audioController.selectRoute(it) },
                         onHangup = { viewModel.hangupDirectly() },
+                        // The three server-side handoffs need a console_calls id, and
+                        // only a call that arrived carrying the X-Kalfa-Console-Call-Id
+                        // header has one — see CallSession.consoleCallId. Passing the
+                        // presence of that id rather than the id itself keeps the
+                        // screen free of any notion of what it addresses.
+                        handoffAvailable = !callState.currentSession?.consoleCallId.isNullOrBlank(),
+                        transferTargets = callState.transferTargets,
+                        transferTargetsLoading = callState.transferTargetsLoading,
+                        transferTargetsFailed = callState.transferTargetsFailed,
+                        consultRequested = callState.consultRequested,
+                        onSendDtmf = { viewModel.sendDtmf(it) },
+                        onLoadTransferTargets = { viewModel.loadTransferTargets() },
+                        onTransfer = { viewModel.transferTo(it) },
+                        onConsult = { viewModel.consultWith(it) },
+                        onConference = { viewModel.conferenceWith(it) },
+                        onCancelConsult = { viewModel.cancelConsult() },
+                        onCompleteConsult = { viewModel.completeConsult() },
                     )
                 }
 

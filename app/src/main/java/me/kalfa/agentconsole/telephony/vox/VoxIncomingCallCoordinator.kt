@@ -70,6 +70,16 @@ class VoxIncomingCallCoordinator(
     }
 
     /**
+     * One SIP header value, matched case-insensitively.
+     *
+     * Header names are case-insensitive by RFC 3261 §7.3.1 and nothing promises this
+     * SDK preserves the sender's casing, so matching the exact string would be
+     * relying on an accident.
+     */
+    private fun headerValue(headers: Map<String, String>, name: String): String? =
+        headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value?.trim()
+
+    /**
      * The caller's number to put in front of the agent, or "" for none.
      *
      * The server decides this, not the device, and sends it in the
@@ -87,16 +97,9 @@ class VoxIncomingCallCoordinator(
      * number as the caller's, a sharper version of the bug this all started with.
      * It is kept as the fallback for the one case the header cannot cover: an
      * incoming call placed by a scenario version that predates the header.
-     *
-     * Header lookup is case-insensitive. SIP header names are case-insensitive by
-     * RFC 3261 §7.3.1 and nothing promises this SDK preserves the sender's casing,
-     * so matching the exact string would be relying on an accident.
      */
     private fun displayNumberFrom(headers: Map<String, String>, call: Call): String {
-        val header = headers.entries
-            .firstOrNull { it.key.equals(CALLER_NUMBER_HEADER, ignoreCase = true) }
-            ?.value
-            ?.trim()
+        val header = headerValue(headers, CALLER_NUMBER_HEADER)
         return when {
             header == null -> call.number.trim()   // pre-header scenario — best effort
             header.equals(WITHHELD, ignoreCase = true) -> ""
@@ -109,7 +112,15 @@ class VoxIncomingCallCoordinator(
     // so an abandoned-before-answer call is observed through the same CallListener
     // path VoxCallSession already has, rather than a second bespoke listener.
     fun handleIncomingCall(call: Call, headers: Map<String, String>) {
-        val session = VoxCallSession(call, connectedState = CallState.ACTIVE)
+        val session = VoxCallSession(
+            call,
+            connectedState = CallState.ACTIVE,
+            // Read here, at the ONE moment it is available. The headers arrive with
+            // the offer and nothing retains them afterwards, so a session built
+            // without this can never recover the id — which is why it is a
+            // constructor argument and not something looked up later.
+            consoleCallId = headerValue(headers, CONSOLE_CALL_ID_HEADER)?.takeIf { it.isNotBlank() },
+        )
         val offer = IncomingOffer(
             callId = call.id,
             session = session,
@@ -386,6 +397,7 @@ class VoxIncomingCallCoordinator(
         // either without the other silently loses the number from the ring screen,
         // which is why they are named constants here rather than inline strings.
         const val CALLER_NUMBER_HEADER = "X-Kalfa-Caller-Number"
+        const val CONSOLE_CALL_ID_HEADER = "X-Kalfa-Console-Call-Id"
         const val WITHHELD = "withheld"
     }
 }

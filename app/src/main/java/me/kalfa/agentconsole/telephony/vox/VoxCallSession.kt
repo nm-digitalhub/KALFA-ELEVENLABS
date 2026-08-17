@@ -37,6 +37,7 @@ import com.voximplant.android.sdk.calls.CallState as VoxCallState
 class VoxCallSession(
     private val call: Call,
     private val connectedState: CallState = CallState.ACTIVE,
+    override val consoleCallId: String? = null,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob()),
 ) : CallSession {
 
