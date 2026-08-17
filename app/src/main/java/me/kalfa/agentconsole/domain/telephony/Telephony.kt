@@ -309,6 +309,58 @@ interface CallEngine {
      */
     suspend fun returnCallback(callbackId: String): AppResult<Unit> =
         AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.Unknown)
+
+    // ── Call history ──────────────────────────────────────────────────────────
+
+    /**
+     * The console's own recent calls — GET /api/agents/call-history.
+     *
+     * NOT the same list the history screen used to show. That one came from
+     * `console_call_feed`, keyed on `call_attempts`: the AI campaign calls, rendered
+     * without name or number because that feed carries no PII. These are the calls a
+     * human actually took or placed, with who each one was with.
+     */
+    suspend fun loadCallHistory(): AppResult<List<ConsoleCallRecord>> =
+        AppResult.Success(emptyList())
+
+    /**
+     * Calls a past contact back, by the pair the history row carries.
+     *
+     * Same two-step shape as [returnCallback] and the same reason for it: the device
+     * names a CONTACT, dial-intent resolves the number and runs the consent chain,
+     * and only then is a one-time token minted. Offered only for rows where both ids
+     * are present — see [ConsoleCallRecord.dialable].
+     */
+    suspend fun dialContact(eventId: String, contactId: String): AppResult<Unit> =
+        AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.Unknown)
+}
+
+/**
+ * One past console call, as the history screen shows it.
+ *
+ * [name] is null for a caller we do not recognise, and the screen then shows the
+ * number — for someone who has never been a customer that IS their identity. [phone]
+ * is null only when the caller withheld it.
+ */
+data class ConsoleCallRecord(
+    val id: String,
+    val inbound: Boolean,
+    val name: String?,
+    val phone: String?,
+    val startedAt: String,
+    val durationSec: Int,
+    val answered: Boolean,
+    val eventId: String?,
+    val contactId: String?,
+) {
+    /**
+     * Whether a call-back button may be offered.
+     *
+     * False is common and correct: an inbound call from a number with no contact
+     * record has no consent-checked path back, and dial-intent would refuse it. A
+     * button that cannot work is worse than no button.
+     */
+    val dialable: Boolean get() = eventId != null && contactId != null
 }
 
 /**

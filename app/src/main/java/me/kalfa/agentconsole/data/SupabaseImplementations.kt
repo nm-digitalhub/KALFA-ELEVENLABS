@@ -1416,17 +1416,28 @@ class SupabaseCallEngineImpl(
      * outbound branch, which dials the customer from OUR DID — the agent's own number
      * is never exposed, and the call is recorded and billed like any other.
      */
-    override suspend fun returnCallback(callbackId: String): AppResult<Unit> = try {
+    override suspend fun returnCallback(callbackId: String): AppResult<Unit> =
+        dialViaIntent(
+            buildJsonObject {
+                put("kind", "callback")
+                put("id", callbackId)
+            }.toString(),
+        )
+
+    /**
+     * The one place the app turns a dial-intent into a ringing leg.
+     *
+     * Shared by every call-back path — a missed call, a past contact — because the
+     * two-step shape is the consent model and duplicating it is how one copy quietly
+     * loses a step. [body] names WHO in dial-intent's own vocabulary; this function
+     * never sees a phone number and could not dial one if it did.
+     */
+    private suspend fun dialViaIntent(body: String): AppResult<Unit> = try {
         val jwt = getJwt()
         val resp = httpClient.post("https://beta.kalfa.me/api/console-calls/dial-intent") {
             header(HttpHeaders.Authorization, "Bearer $jwt")
             contentType(ContentType.Application.Json)
-            setBody(
-                buildJsonObject {
-                    put("kind", "callback")
-                    put("id", callbackId)
-                }.toString(),
-            )
+            setBody(body)
         }
         if (resp.status.value !in 200..299) {
             AppResult.Failure(failureForStatus(resp.status.value))
@@ -1469,6 +1480,53 @@ class SupabaseCallEngineImpl(
         e.printStackTrace()
         AppResult.Failure(e.toAppFailure())
     }
+
+    // ── Call history ──────────────────────────────────────────────────────────
+
+    override suspend fun loadCallHistory(): AppResult<List<me.kalfa.agentconsole.domain.telephony.ConsoleCallRecord>> = try {
+        val jwt = getJwt()
+        val resp = httpClient.get("https://beta.kalfa.me/api/agents/call-history") {
+            header(HttpHeaders.Authorization, "Bearer $jwt")
+        }
+        if (resp.status.value in 200..299) {
+            val parsed = Json.parseToJsonElement(resp.bodyAsText())
+                .jsonObject["calls"]?.jsonArray.orEmpty()
+                .mapNotNull { row ->
+                    val o = row.jsonObject
+                    val id = o["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                        ?: return@mapNotNull null
+                    me.kalfa.agentconsole.domain.telephony.ConsoleCallRecord(
+                        id = id,
+                        inbound = o["direction"]?.jsonPrimitive?.contentOrNull == "inbound",
+                        // null, NOT a placeholder: the screen decides what to show when
+                        // there is no name, and "אורח" baked in here would be
+                        // indistinguishable from a guest actually called that.
+                        name = o["name"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
+                        phone = o["phone"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
+                        startedAt = o["started_at"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                        durationSec = o["duration_sec"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0,
+                        answered = o["answered"]?.jsonPrimitive?.contentOrNull == "true",
+                        eventId = o["event_id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
+                        contactId = o["contact_id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
+                    )
+                }
+            AppResult.Success(parsed)
+        } else {
+            AppResult.Failure(failureForStatus(resp.status.value))
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+        AppResult.Failure(e.toAppFailure())
+    }
+
+    override suspend fun dialContact(eventId: String, contactId: String): AppResult<Unit> =
+        dialViaIntent(
+            buildJsonObject {
+                put("kind", "guest_service")
+                put("eventId", eventId)
+                put("contactId", contactId)
+            }.toString(),
+        )
 
     override fun startOutboundCall(phone: String, customerName: String): CallSession =
         throw UnsupportedOperationException(

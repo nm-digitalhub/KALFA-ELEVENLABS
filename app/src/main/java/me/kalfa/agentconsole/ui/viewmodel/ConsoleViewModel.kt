@@ -24,6 +24,7 @@ import me.kalfa.agentconsole.ui.message.FailureContext
 import me.kalfa.agentconsole.ui.message.MessageAction
 import me.kalfa.agentconsole.ui.message.MessageSeverity
 import me.kalfa.agentconsole.ui.message.UiMessage
+import me.kalfa.agentconsole.domain.telephony.ConsoleCallRecord
 import me.kalfa.agentconsole.domain.telephony.PendingCallback
 import me.kalfa.agentconsole.domain.telephony.TransferTarget
 import me.kalfa.agentconsole.ui.message.UiEffect
@@ -110,6 +111,11 @@ data class ConsoleUiState(
     // People waiting to be called back. Empty is a real answer and rendered as
     // one; loading and failure are tracked apart so a failed fetch never reads as
     // a clear queue.
+    // The console's OWN call history — console_calls, with who each call was with.
+    // Distinct from `callHistory` above, which is console_call_feed (the AI campaign
+    // calls, no PII) and still feeds the event surfaces.
+    val consoleHistory: List<ConsoleCallRecord> = emptyList(),
+    val consoleHistoryFailed: Boolean = false,
     val pendingCallbacks: List<PendingCallback> = emptyList(),
     val callbacksLoading: Boolean = false,
     val callbacksFailed: Boolean = false,
@@ -711,6 +717,41 @@ class ConsoleViewModel : ViewModel() {
     //    the call arrived from a scenario that predates the header carrying it, and
     //    an agent pressing a button that does nothing with no explanation is the
     //    exact failure mode CallSession.holdRefused exists to prevent.
+
+    fun loadConsoleHistory() {
+        viewModelScope.launch {
+            when (val result = callEngine.loadCallHistory()) {
+                is AppResult.Success -> _uiState.update {
+                    it.copy(consoleHistory = result.value, consoleHistoryFailed = false)
+                }
+                is AppResult.Failure -> _uiState.update {
+                    // The list is NOT cleared on failure: a stale history is still a
+                    // true record of calls that happened, unlike a stale transfer
+                    // target list where acting on it produces an error. The flag is
+                    // what tells the screen it may be out of date.
+                    it.copy(consoleHistoryFailed = true)
+                }
+            }
+        }
+    }
+
+    /**
+     * Calls a past contact back from the history screen.
+     *
+     * Same contract as returnCallback: the device names the CONTACT, the server
+     * resolves the number and runs the consent chain. Offered only for rows that
+     * carry both ids.
+     */
+    fun dialContact(eventId: String, contactId: String) {
+        viewModelScope.launch {
+            when (callEngine.dialContact(eventId, contactId)) {
+                is AppResult.Success -> _effects.emit(UiEffect.ShowSnackbar("מחייג…"))
+                is AppResult.Failure -> _effects.emit(
+                    UiEffect.ShowSnackbar("החיוג נכשל. ייתכן שהמספר חסום או שהשעה אינה מתאימה."),
+                )
+            }
+        }
+    }
 
     fun loadPendingCallbacks() {
         viewModelScope.launch {

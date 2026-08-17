@@ -838,11 +838,17 @@ private fun ConsoleNavHost(
                     eventOptions = eventOptions,
                     selectedEventId = filterId,
                     onSelectEvent = { viewModel.setEventFilter(it) },
-                    onCallClick = { call ->
-                        viewModel.selectCall(call)
-                        navController.navigate(CallDetailRoute(call.id))
+                    onDialFromHistory = { record ->
+                        val eventId = record.eventId
+                        val contactId = record.contactId
+                        // Both or neither — ConsoleCallRecord.dialable already gates
+                        // the button on this, so reaching here without them would be
+                        // a bug rather than a state to handle silently.
+                        if (eventId != null && contactId != null) {
+                            viewModel.dialContact(eventId, contactId)
+                        }
                     },
-                    callHistory = filteredHistory,
+                    callHistory = state.consoleHistory,
                     rsvpResults = filteredRsvp,
                     modifier = contentModifier
                 )
