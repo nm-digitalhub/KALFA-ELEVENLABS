@@ -70,8 +70,80 @@ object DependencyContainer {
         // first emit IS fcm.service_created, and creating the recorder inside the
         // call that wants to record would lose it.
         deviceTelemetry
+        installCrashRecorder()
         Telemetry.emit(TelemetryEvents.APP_ATTACH, "via" to via)
     }
+
+    /**
+     * Make the process record WHY it died, in the one channel that can be read remotely.
+     *
+     * The gap this closes, measured 2026-08-17: the telemetry traced an incoming call
+     * end to end — `tm.session_open reason=sdk_incoming`, `vox.incoming_call`,
+     * `fcm.message_received`, `wake.login_ok`, `vox.push_register_start` — and then
+     * simply stopped, with a fresh `app.attach` 5.8 seconds later. The log recorded the
+     * BOUNDARY of a crash and nothing about its cause, so the one question that mattered
+     * ("what threw?") was answerable only from logcat, on a phone with no ADB, no USB and
+     * no Wi-Fi. That is exactly the situation this whole channel exists to avoid, and it
+     * had a hole in it precisely where it hurt most.
+     *
+     * Installed here rather than in an Application subclass because there isn't one, and
+     * [attach] already runs exactly once per process from all three entry points —
+     * including `VoxFirebaseMessagingService.onCreate`, which is the headless push wake
+     * where a crash is least observable and most likely.
+     *
+     * THREE THINGS THIS DELIBERATELY DOES NOT DO:
+     *
+     * It does not swallow the crash. The previous handler is always called, so Android
+     * still terminates the process, still shows whatever dialog it would have shown, and
+     * any future crash reporter still sees the throwable. A handler that "helpfully"
+     * recovers turns a loud fatal into a silent corrupt state.
+     *
+     * It does not upload. `flushLocalBlocking` writes to the device's own file and stops
+     * there — an HTTP round trip inside a dying process is a good way to hang the death
+     * itself, and the uploader will ship the line on the next launch anyway. The 400ms
+     * ceiling is a bound on how long a dead process is allowed to keep the user waiting.
+     *
+     * It does not let its own failure become the crash. Everything here is wrapped: if
+     * emitting or flushing throws, the original throwable must still reach the original
+     * handler, or a diagnostic would have replaced the fault it was written to explain.
+     */
+    private fun installCrashRecorder() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                // Same cause-chain shape as VoxClientManager's sdk_init tag — the top
+                // frame of a crash is routinely a wrapper (ExceptionInInitializerError,
+                // InvocationTargetException, RuntimeException from a coroutine) whose
+                // own message says nothing, and the link below it is the answer.
+                val chain = generateSequence(throwable) { it.cause }
+                    .take(4)
+                    .joinToString(" <- ") { t ->
+                        val name = t::class.simpleName ?: "Throwable"
+                        val msg = t.message?.takeIf { m -> m.isNotBlank() }?.take(140)
+                        if (msg != null) "$name: $msg" else name
+                    }
+                // `at` is the first application frame, not the first frame overall: the
+                // top of the stack is usually framework or library code that is the same
+                // for every crash, while "which of OUR lines was running" is the field
+                // that turns a report into a location.
+                val appFrame = throwable.stackTrace
+                    .firstOrNull { it.className.startsWith("me.kalfa.agentconsole") }
+                    ?.let { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }
+                Telemetry.emit(
+                    TelemetryEvents.APP_CRASH,
+                    "err" to chain,
+                    "at" to (appFrame ?: "none"),
+                    "thread" to thread.name,
+                )
+                Telemetry.flushLocalBlocking(CRASH_FLUSH_TIMEOUT_MS)
+            } catch (_: Throwable) {
+                // Intentionally empty: see the kdoc. The line below is what must happen.
+            }
+            previous?.uncaughtException(thread, throwable)
+        }
+    }
+
+    private const val CRASH_FLUSH_TIMEOUT_MS = 400L
 
     // Read-only escape hatch for the rare caller that genuinely needs a raw Context
     // and has no other way to get one — e.g. PresenceActions checking RingCapability

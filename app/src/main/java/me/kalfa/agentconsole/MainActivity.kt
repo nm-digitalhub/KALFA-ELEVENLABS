@@ -84,7 +84,23 @@ class MainActivity : ComponentActivity() {
         // Cheap and synchronous by design: RingCapabilityState.refresh reads
         // NotificationManager flags, so there is no IO to move off the main thread and
         // no reason to defer it past the frame the agent is about to see.
-        PresenceActions.refreshAndReportRingCapability(applicationContext)
+        //
+        // GUARDED, and the guard is not decoration. An Activity lifecycle callback that
+        // throws takes the process down — there is no framework catch above onStart —
+        // so a banner refresh, which is a diagnostic convenience, would be able to kill
+        // the app on any device or OEM where a NotificationManager query behaves
+        // differently than it does here. Shipped unguarded on 2026-08-17 and corrected
+        // the same day after a crash was reported; whether or not this line caused that
+        // particular crash, an unguarded call here was wrong on its own terms.
+        //
+        // Failing silently is right for THIS call specifically: the worst case is a
+        // stale ring-capability banner, which the 30s heartbeat and the next READY tap
+        // both still repair. Trading the whole app for that is not a trade.
+        try {
+            PresenceActions.refreshAndReportRingCapability(applicationContext)
+        } catch (e: Throwable) {
+            android.util.Log.w("MainActivity", "ring-capability refresh on start failed: ${e.javaClass.simpleName}: ${e.message}")
+        }
     }
     override fun onStop() { super.onStop(); me.kalfa.agentconsole.di.AppVisibility.isForeground.value = false }
 

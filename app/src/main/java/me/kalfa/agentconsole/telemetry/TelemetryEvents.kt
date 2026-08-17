@@ -65,6 +65,9 @@ object TelemetryEvents {
 
     // ── process ───────────────────────────────────────────────────────────────
     /** DependencyContainer.attach ran for the first time in this process. `via=activity|fcm|other` */
+    // The last line a dying process writes. See DependencyContainer.attach for why the
+    // handler is installed there and what it does about the flush.
+    const val APP_CRASH = "app.crash"
     const val APP_ATTACH = "app.attach"
 
     /** MainActivity.onCreate. Absence of this alongside [FCM_SERVICE_CREATED] proves a headless wake. */
