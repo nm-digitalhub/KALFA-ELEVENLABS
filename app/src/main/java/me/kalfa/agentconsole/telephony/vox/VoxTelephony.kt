@@ -68,7 +68,21 @@ sealed class VoxAuthException(message: String) : Exception(message) {
     object NoIdentity : VoxAuthException("agent has no Voximplant identity (sdk-auth 409)")
     object NotAgent : VoxAuthException("not a console agent (sdk-auth 401)")
     class Http(val code: Int) : VoxAuthException("sdk-auth HTTP $code")
-    class Sdk(reason: String) : VoxAuthException(reason)
+    /**
+     * @param credentialRejected the server answered and refused the STORED CREDENTIAL
+     *   itself — as opposed to never answering, refusing for an unrelated reason, or
+     *   failing somewhere that says nothing about the token. Defaults to false so that
+     *   every existing throw site, and every future one, is non-evidence until someone
+     *   deliberately classifies it. Only `refreshFailureProvesTokensDead` reads this,
+     *   and only to decide whether the persisted Voximplant session may be discarded.
+     *
+     *   It is a boolean rather than the SDK's `LoginError` on purpose: the decision is
+     *   consumed in VoxSilentLogin.kt, which is deliberately free of Android and SDK
+     *   imports so it stays unit-testable with no device (see its header). The
+     *   classification therefore happens at the SDK boundary, where `LoginError` is in
+     *   scope, and travels as a domain fact.
+     */
+    class Sdk(reason: String, val credentialRejected: Boolean = false) : VoxAuthException(reason)
 }
 
 // The ONLY network call in the login flow: exchange a Voximplant one-time key for

@@ -77,12 +77,16 @@ class VoxClientManager(
     private val _loginState = MutableStateFlow(VoxLoginState.LOGGED_OUT)
     val loginState: StateFlow<VoxLoginState> = _loginState.asStateFlow()
 
-    // The human agent's incoming SDK leg (set by the future monitor/takeover flow).
-    // Kept here so it survives across logins; null until that feature is wired —
-    // which means a push-delivered incoming call is currently NOT answered end to
-    // end (it reaches this null listener and is dropped). See the push-wake handoff
-    // report: this class gets the SDK logged in and registered for push; it does
-    // not yet complete the call.
+    // The human agent's incoming SDK leg. Kept here (rather than constructed with a
+    // fixed listener) so it survives across logins and so DependencyContainer can
+    // assign it once VoxIncomingCallCoordinator exists, without this class needing
+    // to know about that class. Corrected 2026-08-17: this comment used to say null
+    // "until that feature is wired" and described a push-delivered call as dropped —
+    // stale since the 2026-08-14 wiring. DependencyContainer's voxClientManager
+    // getter assigns this to VoxIncomingCallCoordinator::handleIncomingCall the
+    // moment both exist, which answers the inbound-to-human offer path end to end
+    // (not device-verified — see docs/android-presence-and-call-ux.md §3). It is
+    // still null only in the narrow window before that getter has run once.
     @Volatile var onIncomingCall: ((Call, Map<String, String>) -> Unit)? = null
 
     private val loginMutex = Mutex()
@@ -543,6 +547,43 @@ class VoxClientManager(
         Client.handlePushNotification(data)
     }
 
+    /**
+     * Does this [LoginError] mean the server looked at the credential we sent and
+     * refused IT — as opposed to never answering, or refusing for a reason that has
+     * nothing to do with the token?
+     *
+     * The classification has to happen here and only here. `VoxSilentLogin.kt` holds
+     * the decision that consumes it and is deliberately free of Android and SDK
+     * imports so it stays unit-testable with no device (its header, :3-6), and by the
+     * time the error reaches it the enum has been stringified into a message. Parsing
+     * that string back out would be a second source of truth for something the type
+     * system already knows here.
+     *
+     * Exhaustive on purpose, with NO `else` branch: if Voximplant adds an eleventh
+     * value, this stops compiling and someone classifies it deliberately. An `else`
+     * would silently assign the new case to whichever side it was written on, which
+     * is how a credential-destroying default gets introduced by an SDK bump nobody
+     * read the changelog for.
+     *
+     * See refreshFailureProvesTokensDead for the per-value reasoning and the live-doc
+     * quotes behind this split — in particular why MauAccessDenied is false.
+     */
+    private fun LoginError.rejectsStoredCredential(): Boolean = when (this) {
+        LoginError.TokenExpired,
+        LoginError.InvalidPassword,
+        -> true
+
+        LoginError.AccountFrozen,
+        LoginError.InvalidUsername,
+        LoginError.MauAccessDenied,
+        LoginError.NetworkIssues,
+        LoginError.Timeout,
+        LoginError.Interrupted,
+        LoginError.InternalError,
+        LoginError.InvalidState,
+        -> false
+    }
+
     private suspend fun connectSuspend(): Unit = suspendCancellableCoroutine { cont ->
         Client.connect(ConnectOptions(VoxConfig.node), object : ConnectionCallback {
             override fun onSuccess() { if (cont.isActive) cont.resume(Unit) }
@@ -584,8 +625,18 @@ class VoxClientManager(
                 override fun onSuccess(displayName: String, authParams: AuthParams?) {
                     if (cont.isActive) cont.resume(authParams)
                 }
+                // Tagged for the same reason as refreshTokenSuspend below: this is the
+                // OTHER call inside tryRefreshThenAccessToken's runCatching, so an
+                // untagged failure here reached the same discard.
                 override fun onFailure(error: LoginError) {
-                    if (cont.isActive) cont.resumeWithException(VoxAuthException.Sdk("loginWithAccessToken: $error"))
+                    if (cont.isActive) {
+                        cont.resumeWithException(
+                            VoxAuthException.Sdk(
+                                "loginWithAccessToken: $error",
+                                credentialRejected = error.rejectsStoredCredential(),
+                            ),
+                        )
+                    }
                 }
             })
         }
@@ -603,8 +654,21 @@ class VoxClientManager(
                 override fun onSuccess(authParams: AuthParams) {
                     if (cont.isActive) cont.resume(authParams)
                 }
+                // The classification travels WITH the exception. Stringifying the enum
+                // into the message and stopping there is what made
+                // refreshFailureProvesTokensDead unable to tell "your token is expired"
+                // from "the network did not answer" — a phone waking on push with bad
+                // signal gets NetworkIssues or Timeout, which unwind through a LIVE
+                // coroutine, so unlike a cancellation nothing masks the wipe.
                 override fun onFailure(error: LoginError) {
-                    if (cont.isActive) cont.resumeWithException(VoxAuthException.Sdk("refreshToken: $error"))
+                    if (cont.isActive) {
+                        cont.resumeWithException(
+                            VoxAuthException.Sdk(
+                                "refreshToken: $error",
+                                credentialRejected = error.rejectsStoredCredential(),
+                            ),
+                        )
+                    }
                 }
             })
         }

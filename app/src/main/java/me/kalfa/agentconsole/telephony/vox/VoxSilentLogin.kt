@@ -74,31 +74,56 @@ fun planSilentLogin(
  * Whether a failed silent-login attempt has actually learned that the stored tokens
  * are dead, and may therefore throw them away.
  *
- * `runCatching { … }.onFailure { … }` cannot tell the two apart on its own, and they
- * are not the same fact. A `LoginError` from the platform is evidence: the refresh
- * token was presented and rejected, so keeping it only buys a re-failure on every
- * future call. A cancellation is the absence of evidence — `PresenceActions
- * .ensurePushRegistration` bounds the whole login at 15s and
- * `VoxFirebaseMessagingService` at 9s, so a pocketed phone on a slow network unwinds
- * here having never heard back. The tokens may be perfectly good; nothing asked them.
+ * ALLOW-LIST, not a deny-list, and that inversion is the whole design. The first
+ * version of this was `error !is CancellationException`, which reasoned only about
+ * the enclosing timeouts and treated everything else as proof. It is not: the SDK
+ * reports ten distinct `LoginError` values through one callback, and only two of them
+ * say anything about the credential we stored. Descriptions quoted from the live
+ * reference (`getDoc?fqdn=references.androidsdk3.android.sdk.core.loginerror`), value
+ * list byte-verified against the shipped android-sdk-core 3.2.0 AAR:
  *
- * MEASURED, so the guard is not mistaken for the thing that fixes the timeout case:
- * a cancellation does NOT currently reach the store anyway. `onFailure`'s handler is
- * entered and its non-suspending statements run, but `VoxTokenStore.clearTokens` is a
- * suspend function whose body is a DataStore `edit`, and suspending on an
- * already-cancelling Job throws before the write lands. Verified with a JVM probe of
- * this exact shape (`withTimeoutOrNull` around `runCatching { delay } .onFailure {
- * withContext { … } }`): handler entered true, plain statement ran true, suspending
- * statement ran FALSE.
+ *   EVIDENCE — the server answered and refused THIS credential:
+ *     TokenExpired      "Token expired"
+ *     InvalidPassword   "Invalid password or token"
  *
- * So this guard changes no behaviour today. It is written anyway because the thing
- * making the timeout case safe is an accident of where the suspension point falls —
- * one non-suspending line added to the top of a cleanup function, or a cancellation
- * arriving a moment later, and it silently starts discarding live credentials on
- * every slow tick. Depending on that is not the same as deciding it.
+ *   NOT EVIDENCE — the server answered, but about something else entirely:
+ *     AccountFrozen     "User account is frozen"           — nothing to do with the token
+ *     InvalidUsername   "Invalid username"
+ *     MauAccessDenied   "MAU limit is reached. Payment is required"
+ *
+ *   NOT EVIDENCE — we never got an answer at all:
+ *     NetworkIssues     "Login is failed due to network problem"
+ *     Timeout           "Timeout"
+ *     Interrupted       "Operation has been interrupted by another client operation"
+ *     InternalError     "Internal error"
+ *     InvalidState      "…not connected, currently logging or already logged in"
+ *
+ * `MauAccessDenied` is the case that settles the direction of the default. Clearing
+ * there would force the next attempt down the interactive one-time-key path — which
+ * is a NEW login, and a MAU ceiling is precisely what blocks new logins. Discarding
+ * on it makes recovery strictly harder, on a credential the platform never said a
+ * word against.
+ *
+ * The asymmetry that decides every ambiguous case: wrongly KEEPING a dead token costs
+ * one extra failed attempt on the next wake. Wrongly CLEARING a live one costs the
+ * silent-login path entirely and forces an interactive login, which needs the app
+ * open — see ConsoleViewModel.loadIdentity for how little is guaranteed there. So
+ * anything that is not an explicit credential rejection returns false, including the
+ * two ambiguous ones.
+ *
+ * On the cancellation case this replaces: it is still covered, because a cancellation
+ * is not a `VoxAuthException.Sdk` and so cannot be tagged. Worth keeping the
+ * measurement on record — a cancellation does not currently reach the store anyway.
+ * `onFailure`'s handler IS entered and its non-suspending statements run, but
+ * `VoxTokenStore.clearTokens` is a suspend function whose body is a DataStore `edit`,
+ * and suspending on an already-cancelling Job throws before the write lands. JVM probe
+ * of that exact shape: handler entered true, plain statement ran true, suspending
+ * statement ran FALSE. The SDK's OWN timeout is the one that actually mattered here —
+ * `LoginError.Timeout` arrives as a plain exception through a live coroutine, where
+ * nothing masks it.
  */
 fun refreshFailureProvesTokensDead(error: Throwable): Boolean =
-    error !is kotlin.coroutines.cancellation.CancellationException
+    error is VoxAuthException.Sdk && error.credentialRejected
 
 // The FCM data-message signature the SDK itself checks — BYTE-VERIFIED against
 // android-sdk-core 3.2.0's PushManager.handlePushNotification$lambda$9 (javap -c on
