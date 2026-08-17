@@ -120,7 +120,66 @@ object PresenceActions {
                 }
             }
 
-            loginAndRegisterForPush(voxUsername)
+            // WITHDRAW READY IF TELEPHONY DID NOT COME UP.
+            //
+            // Measured live 2026-08-17: the device wrote `presence.status_set s=ready
+            // ok=true` and, 6ms later, `vox.sdk_init_fail`. The server therefore held
+            // this agent as available while the SDK on the phone could not start — and
+            // the server ROUTES on that flag (findRoutableAgentVoxUsernames → the
+            // scenario's ring_order). So the flag did not merely mislead the agent, it
+            // actively pulled real customer calls onto a device that would answer none
+            // of them, instead of letting them fall to the no-agent path. The owner
+            // reported the visible half of it: the "זמין" control stayed green with no
+            // message explaining that anything had failed.
+            //
+            // Staying READY is strictly worse than not being ready, so this reverts the
+            // flag rather than only complaining about it. The revert is what turns the
+            // control green→grey too: the UI renders agentPresence.currentStatus
+            // (ConsoleViewModel:145), so one honest write fixes the routing and the
+            // display together, with no second source of truth.
+            //
+            // Only a LOGIN failure triggers this. A push-registration failure leaves
+            // READY alone on purpose — that device still answers calls while the app is
+            // open, and withdrawing it would take a working agent out of the pool over
+            // a fact that only matters once the app is closed. Its banner already says
+            // so.
+            //
+            // Shift is deliberately NOT withdrawn: it feeds the push-wake retry
+            // audience, costs nothing while telephony is down, and removing it would
+            // add a second thing to restore once this is fixed.
+            val telephonyUp = loginAndRegisterForPush(voxUsername)
+            if (!telephonyUp) {
+                val revert = presence.setStatus(AgentStatus.NOT_READY)
+                Telemetry.emit(
+                    TelemetryEvents.PRESENCE_STATUS_SET,
+                    "s" to "not_ready_auto",
+                    "ok" to (revert is AppResult.Success).toString(),
+                )
+                AppMessageCenter.publish(
+                    UiMessage(
+                        id = PRESENCE_MESSAGE_ID,
+                        severity = MessageSeverity.ERROR,
+                        title = "לא ניתן לעבור לזמין",
+                        // Names the consequence, not the subsystem: "the telephony
+                        // component did not start" is already on screen from the push
+                        // banner, and repeating it here would say the same thing twice
+                        // while answering neither "what does this mean for me" nor "what
+                        // is my status now".
+                        body = if (revert is AppResult.Success) {
+                            "רכיב הטלפוניה לא עלה במכשיר, ולכן לא ניתן לקבל שיחות. הסטטוס הוחזר ל\"לא זמין\" כדי שלא ינותבו אליך שיחות שייפלו."
+                        } else {
+                            // The revert itself failed — the server may still hold this
+                            // agent as ready. Say that plainly rather than imply a
+                            // clean state; the heartbeat's next tick re-sends whatever
+                            // currentStatus holds, so this can resolve itself, and an
+                            // agent who knows can also toggle manually.
+                            "רכיב הטלפוניה לא עלה במכשיר, ולכן לא ניתן לקבל שיחות. ניסיון להחזיר את הסטטוס ל\"לא זמין\" נכשל — ייתכן שהשרת עדיין רואה אותך כזמין. עברו ידנית ל\"לא זמין\"."
+                        },
+                        dismissible = false,
+                        deduplicationKey = PRESENCE_MESSAGE_ID,
+                    ),
+                )
+            }
 
             // A device-configuration check, not a request that failed — deliberately
             // NOT run through AppFailure/FailureMapping (there is no operation here
@@ -328,19 +387,29 @@ object PresenceActions {
      * "Whatever it cannot do, it must say" is the lesson of this whole class of bug, and
      * it belongs in the code rather than in a doc.
      */
-    private suspend fun loginAndRegisterForPush(voxUsername: String?) {
+    private suspend fun loginAndRegisterForPush(voxUsername: String?): Boolean {
         val vcm = DependencyContainer.voxClientManager
         if (voxUsername == null || vcm == null) {
             val reason =
                 if (voxUsername == null) "no_device_identity: vox username unknown"
                 else "no_device_identity: telephony client unavailable"
             reportPushRegistrationResult(Result.failure(VoxAuthException.Sdk(reason)))
-            return
+            return false
         }
+        // The RETURN VALUE reports the login, not the registration, and the two are
+        // deliberately different facts. A device that logged in but could not register
+        // a push token still takes calls while the app is open — READY is honest for
+        // it, and the banner alone is the right response. A device that could not log
+        // in takes NO calls at all, which is what applyStatus needs to know.
+        var loggedIn = false
         vcm.ensureLoggedIn(voxUsername).fold(
-            onSuccess = { reportPushRegistrationResult(vcm.registerCurrentPushToken()) },
+            onSuccess = {
+                loggedIn = true
+                reportPushRegistrationResult(vcm.registerCurrentPushToken())
+            },
             onFailure = { e -> reportPushRegistrationResult(Result.failure(e)) },
         )
+        return loggedIn
     }
 
     private fun reportPresenceResult(result: AppResult<Unit>) {

@@ -39,6 +39,7 @@ import me.kalfa.agentconsole.telemetry.Telemetry
 import me.kalfa.agentconsole.telemetry.TelemetryEvents
 import me.kalfa.agentconsole.telephony.EnsureCallAudioPermission
 import me.kalfa.agentconsole.telephony.TelecomRegistration
+import me.kalfa.agentconsole.telephony.presence.PresenceActions
 import me.kalfa.agentconsole.telephony.presence.PresenceForegroundService
 import me.kalfa.agentconsole.telephony.vox.IncomingCallNotificationBuilder
 import me.kalfa.agentconsole.telephony.vox.VoxIncomingCallCoordinator
@@ -58,7 +59,33 @@ import me.kalfa.agentconsole.ui.viewmodel.ConsoleViewModel
 class MainActivity : ComponentActivity() {
     private val viewModel: ConsoleViewModel by viewModels()
 
-    override fun onStart() { super.onStart(); me.kalfa.agentconsole.di.AppVisibility.isForeground.value = true }
+    override fun onStart() {
+        super.onStart()
+        me.kalfa.agentconsole.di.AppVisibility.isForeground.value = true
+        // Re-read the ring-capability facts every time the app comes forward, because
+        // the ONE moment they change is a moment this app is not running: the agent
+        // leaves for system Settings, grants notifications or full-screen-intent, and
+        // comes back.
+        //
+        // Until now nothing re-checked on that return. refreshAndReportRingCapability
+        // had exactly three callers — PresenceForegroundService.onStartCommand, its 30s
+        // heartbeat, and a READY tap — so an agent who fixed the permission and came
+        // back kept staring at a banner describing a problem they had just solved, for
+        // up to 30 seconds if they happened to be on shift, or indefinitely if they
+        // were not. Reported live by the owner on 2026-08-17: "הבאנרים של הרשאות לא
+        // מוסרים מיידית בעת מתן ההרשאות".
+        //
+        // The audio-permission banner (CALL_AUDIO_PERMISSION_MESSAGE_ID) already
+        // recovers here for free — accompanist's own ON_RESUME check rewrites the
+        // state that EnsureCallAudioPermission's LaunchedEffect is keyed on. Ring
+        // capability is not a runtime permission and has no such observer, which is
+        // why it, and only it, needed this.
+        //
+        // Cheap and synchronous by design: RingCapabilityState.refresh reads
+        // NotificationManager flags, so there is no IO to move off the main thread and
+        // no reason to defer it past the frame the agent is about to see.
+        PresenceActions.refreshAndReportRingCapability(applicationContext)
+    }
     override fun onStop() { super.onStop(); me.kalfa.agentconsole.di.AppVisibility.isForeground.value = false }
 
     override fun onCreate(savedInstanceState: Bundle?) {

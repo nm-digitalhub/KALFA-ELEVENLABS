@@ -210,11 +210,36 @@ class VoxClientManager(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                Telemetry.emit(
-                    TelemetryEvents.VOX_SDK_INIT_FAIL,
-                    "err" to (e.message ?: e::class.simpleName ?: "unknown"),
-                )
-                throw VoxAuthException.Sdk("sdk_init: ${e.message ?: e::class.simpleName}")
+                // Report the CAUSE CHAIN, not just this throwable's own message.
+                //
+                // Measured 2026-08-17 from live device telemetry, which reported
+                // `err=com.voximplant.android.sdk.core.Client` on every attempt and
+                // stopped exactly one level short of the answer. A bare fully-qualified
+                // class name as a message is the signature of NoClassDefFoundError,
+                // which is the SECOND symptom: the first access threw
+                // ExceptionInInitializerError, whose own message is null and whose
+                // `cause` is the only place the real failure (a missing transitive, an
+                // incompatible binary API, an UnsatisfiedLinkError) is named. Every
+                // access after that gets the bare NoClassDefFoundError forever.
+                //
+                // `e.message ?: e::class.simpleName` therefore produced a string that
+                // names the victim and never the culprit. Walking `cause` closes that:
+                // the chain is what turns "the SDK would not start" into "the SDK would
+                // not start BECAUSE x".
+                //
+                // Capped at 4 links and truncated per link — this string reaches a
+                // Slack-adjacent log and a device banner, neither of which is a stack
+                // trace viewer, and an unbounded chain from a deeply nested loader
+                // failure would drown both.
+                val chain = generateSequence<Throwable>(e) { it.cause }
+                    .take(4)
+                    .joinToString(" <- ") { t ->
+                        val name = t::class.simpleName ?: "Throwable"
+                        val msg = t.message?.takeIf { m -> m.isNotBlank() }?.take(120)
+                        if (msg != null) "$name: $msg" else name
+                    }
+                Telemetry.emit(TelemetryEvents.VOX_SDK_INIT_FAIL, "err" to chain)
+                throw VoxAuthException.Sdk("sdk_init: $chain")
             }
             if (Client.clientState == ClientState.LoggedIn) {
                 Telemetry.emit(TelemetryEvents.VOX_LOGIN_START, "plan" to "already")
