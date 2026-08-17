@@ -1416,11 +1416,16 @@ class SupabaseCallEngineImpl(
      * outbound branch, which dials the customer from OUR DID — the agent's own number
      * is never exposed, and the call is recorded and billed like any other.
      */
+    // `returned_call`, NOT `callback`. The id in the missed-call list is a
+    // console_calls id; `callback` resolves against `callback_requests`, where
+    // these ids do not exist — so every return refused, silently and always
+    // (measured 2026-08-17: 200 of 200 sampled ids absent from that table).
+    // The list changed source and this call did not follow it.
     override suspend fun returnCallback(callbackId: String, confirmOutsideHours: Boolean): AppResult<Unit> =
         dialViaIntent(
             buildJsonObject {
-                put("kind", "callback")
-                put("id", callbackId)
+                put("kind", "returned_call")
+                put("consoleCallId", callbackId)
                 if (confirmOutsideHours) put("confirm_outside_hours", true)
             }.toString(),
         )
