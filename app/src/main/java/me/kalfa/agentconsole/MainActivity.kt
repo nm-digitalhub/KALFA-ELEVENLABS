@@ -153,12 +153,32 @@ class MainActivity : ComponentActivity() {
                 }
                 val pendingOffer by (incomingCallCoordinator?.pendingOffer ?: noOffer).collectAsState()
 
-                // Only the locked-device full-screen-intent launch sets these flags
-                // (applyIncomingCallWindowFlagsIfNeeded); clear them the moment the
-                // offer resolves so this activity does not keep bypassing the lock
-                // screen for ordinary future launches.
-                LaunchedEffect(pendingOffer) {
-                    if (pendingOffer == null) clearIncomingCallWindowFlags()
+                // Held while EITHER a call is ringing or one is live — not just while
+                // an offer is pending, which is what this used to key on.
+                //
+                // That earlier condition had the right goal and the wrong moment. An
+                // offer resolves in two ways, and one of them is the agent ANSWERING:
+                // the coordinator clears _pendingOffer, this effect fired, and
+                // setShowWhenLocked(false) took away the very permission the call
+                // screen needed. On a phone with no lock code nothing showed, because
+                // there was nothing to be behind. On a phone with a PIN the agent was
+                // dropped behind the keyguard and had to unlock to see a call they had
+                // already answered — reported 17.8: "יש קוד נעילה למכשיר אני חייב
+                // לפתוח את המכשיר בכדי לראות את מסך השיחה".
+                //
+                // AOSP is explicit that the flag itself is enough for a secure
+                // keyguard — setShowWhenLocked keeps the activity "in the resumed
+                // state visible on-top of the lock screen", with no exemption for a
+                // PIN (frameworks/base Activity.java, read 17.8). So this was never a
+                // platform limit to work around; it was ours to stop causing.
+                //
+                // The original intent still holds and is still enforced: the flags
+                // must not linger, or an ordinary app launch would bypass the lock
+                // screen forever. They now clear one moment later — when the call is
+                // actually over.
+                val liveSession by DependencyContainer.callEngine.currentSession.collectAsState()
+                LaunchedEffect(pendingOffer, liveSession) {
+                    if (pendingOffer == null && liveSession == null) clearIncomingCallWindowFlags()
                 }
 
                 Box(modifier = Modifier.fillMaxSize()) {
