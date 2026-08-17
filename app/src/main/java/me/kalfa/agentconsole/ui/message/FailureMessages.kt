@@ -20,6 +20,10 @@ fun AppFailure.toHebrewMessage(context: FailureContext): String =
             else -> "לא מחובר. יש להתחבר כדי להמשיך."
         }
         AppFailure.Forbidden -> "אין לך הרשאה לבצע את הפעולה."
+        // Phrased as a FACT, not a refusal, because the caller is expected to offer a
+        // confirmation rather than show this on its own — it is what the agent reads
+        // if something surfaces it directly.
+        AppFailure.OutsideCallHours -> "השעה מחוץ לשעות החיוג הרגילות (08:00–19:00)."
         AppFailure.NotFound -> when (context) {
             FailureContext.GUEST_CALL -> "האורח לא נמצא."
             FailureContext.CAMPAIGN -> "הקמפיין לא נמצא."

@@ -42,6 +42,19 @@ private data class MeRow(
     val vox_username: String? = null
 )
 
+/** The dial waiting on an agent's after-hours confirmation. */
+sealed interface OutsideHoursPrompt {
+    /** Who it is, for the dialog to name. */
+    val who: String
+
+    data class Callback(val callbackId: String, override val who: String) : OutsideHoursPrompt
+    data class Contact(
+        val eventId: String,
+        val contactId: String,
+        override val who: String,
+    ) : OutsideHoursPrompt
+}
+
 data class ConsoleUiState(
     val agentStatus: AgentStatus = AgentStatus.NOT_READY,
     val agentName: String = "נציג KALFA",
@@ -116,6 +129,14 @@ data class ConsoleUiState(
     // calls, no PII) and still feeds the event surfaces.
     val consoleHistory: List<ConsoleCallRecord> = emptyList(),
     val consoleHistoryFailed: Boolean = false,
+    /**
+     * A dial the server refused ONLY because of the hour, held here so the agent can
+     * confirm it.
+     *
+     * Holds enough to retry the exact same dial and nothing more. Null means no
+     * question is pending — every other refusal is final and never lands here.
+     */
+    val outsideHoursPrompt: OutsideHoursPrompt? = null,
     val pendingCallbacks: List<PendingCallback> = emptyList(),
     val callbacksLoading: Boolean = false,
     val callbacksFailed: Boolean = false,
@@ -742,15 +763,55 @@ class ConsoleViewModel : ViewModel() {
      * resolves the number and runs the consent chain. Offered only for rows that
      * carry both ids.
      */
-    fun dialContact(eventId: String, contactId: String) {
+    fun dialContact(
+        eventId: String,
+        contactId: String,
+        who: String = "",
+        confirmOutsideHours: Boolean = false,
+    ) {
         viewModelScope.launch {
-            when (callEngine.dialContact(eventId, contactId)) {
-                is AppResult.Success -> _effects.emit(UiEffect.ShowSnackbar("מחייג…"))
-                is AppResult.Failure -> _effects.emit(
-                    UiEffect.ShowSnackbar("החיוג נכשל. ייתכן שהמספר חסום או שהשעה אינה מתאימה."),
+            when (val r = callEngine.dialContact(eventId, contactId, confirmOutsideHours)) {
+                is AppResult.Success -> {
+                    _uiState.update { it.copy(outsideHoursPrompt = null) }
+                    _effects.emit(UiEffect.ShowSnackbar("מחייג…"))
+                }
+                is AppResult.Failure -> handleDialFailure(
+                    r.reason,
+                    OutsideHoursPrompt.Contact(eventId, contactId, who),
                 )
             }
         }
+    }
+
+    /**
+     * Turns a refused dial into either a question or an answer.
+     *
+     * OutsideCallHours is the ONE refusal that becomes a question — the agent is
+     * working, the caller is waiting, and the hour is a judgement they may make.
+     * Everything else is stated plainly and finally, because DNC, an opt-out, Shabbat
+     * or a spent attempt cap are not theirs to overrule and offering a button would
+     * imply otherwise.
+     */
+    private suspend fun handleDialFailure(reason: AppFailure, prompt: OutsideHoursPrompt) {
+        if (reason == AppFailure.OutsideCallHours) {
+            _uiState.update { it.copy(outsideHoursPrompt = prompt) }
+        } else {
+            _uiState.update { it.copy(outsideHoursPrompt = null) }
+            _effects.emit(UiEffect.ShowSnackbar(reason.toHebrewMessage(FailureContext.LIVE_CALL)))
+        }
+    }
+
+    /** The agent said yes to the after-hours warning — retry the same dial, confirmed. */
+    fun confirmOutsideHoursDial() {
+        when (val p = _uiState.value.outsideHoursPrompt) {
+            null -> Unit
+            is OutsideHoursPrompt.Callback -> returnCallback(p.callbackId, p.who, confirmOutsideHours = true)
+            is OutsideHoursPrompt.Contact -> dialContact(p.eventId, p.contactId, p.who, confirmOutsideHours = true)
+        }
+    }
+
+    fun dismissOutsideHoursPrompt() {
+        _uiState.update { it.copy(outsideHoursPrompt = null) }
     }
 
     fun loadPendingCallbacks() {
@@ -781,15 +842,19 @@ class ConsoleViewModel : ViewModel() {
      * The list is reloaded either way: a success moves the request out of the queue
      * server-side, and a failure may have been caused by someone else taking it.
      */
-    fun returnCallback(callbackId: String) {
+    fun returnCallback(callbackId: String, who: String = "", confirmOutsideHours: Boolean = false) {
         viewModelScope.launch {
-            when (callEngine.returnCallback(callbackId)) {
-                is AppResult.Success -> _effects.emit(UiEffect.ShowSnackbar("מחייג חזרה…"))
-                is AppResult.Failure -> _effects.emit(
-                    UiEffect.ShowSnackbar("החיוג חזרה נכשל. ייתכן שהמספר חסום או שהשעה אינה מתאימה."),
+            when (val r = callEngine.returnCallback(callbackId, confirmOutsideHours)) {
+                is AppResult.Success -> {
+                    _uiState.update { it.copy(outsideHoursPrompt = null) }
+                    _effects.emit(UiEffect.ShowSnackbar("מחייג חזרה…"))
+                    loadPendingCallbacks()
+                }
+                is AppResult.Failure -> handleDialFailure(
+                    r.reason,
+                    OutsideHoursPrompt.Callback(callbackId, who),
                 )
             }
-            loadPendingCallbacks()
         }
     }
 

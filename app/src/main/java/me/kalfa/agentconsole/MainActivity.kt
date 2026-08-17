@@ -450,6 +450,44 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
+                // The after-hours question. A dialog rather than a snackbar because it
+                // asks something — the agent has to answer before anything happens,
+                // and a snackbar that disappears is not an answer.
+                // Collected HERE rather than reused from inside AuthGate: this dialog
+                // is drawn in the same top-level overlay as the call screens, outside
+                // AuthGate entirely, so it cannot see that scope's `state`.
+                val overlayState by viewModel.uiState.collectAsState()
+                overlayState.outsideHoursPrompt?.let { prompt ->
+                    AlertDialog(
+                        onDismissRequest = { viewModel.dismissOutsideHoursPrompt() },
+                        title = { Text(text = "מחוץ לשעות החיוג") },
+                        text = {
+                            Text(
+                                text = buildString {
+                                    append("השעה כעת מחוץ לשעות החיוג הרגילות (08:00–19:00, ובשישי עד 13:00)")
+                                    if (prompt.who.isNotBlank()) {
+                                        append(".\n\nלחייג בכל זאת אל ")
+                                        append(prompt.who)
+                                        append("?")
+                                    } else {
+                                        append(".\n\nלחייג בכל זאת?")
+                                    }
+                                },
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { viewModel.confirmOutsideHoursDial() }) {
+                                Text(text = "חייג בכל זאת")
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { viewModel.dismissOutsideHoursPrompt() }) {
+                                Text(text = "ביטול")
+                            }
+                        },
+                    )
+                }
+
                 if (pendingOffer != null) {
                     IncomingCallScreen(
                         displayName = pendingOffer?.displayName.orEmpty(),
@@ -720,7 +758,7 @@ private fun ConsoleNavHost(
                     callbacksLoading = state.callbacksLoading,
                     callbacksFailed = state.callbacksFailed,
                     onRefreshCallbacks = { viewModel.loadPendingCallbacks() },
-                    onReturnCallback = { viewModel.returnCallback(it) },
+                    onReturnCallback = { id, who -> viewModel.returnCallback(id, who) },
                     modifier = contentModifier
                 )
             }
@@ -845,7 +883,14 @@ private fun ConsoleNavHost(
                         // the button on this, so reaching here without them would be
                         // a bug rather than a state to handle silently.
                         if (eventId != null && contactId != null) {
-                            viewModel.dialContact(eventId, contactId)
+                            // The name goes with it so the after-hours dialog can say
+                            // WHO it is about to ring — "לחייג בכל זאת?" with no name
+                            // asks the agent to confirm something they cannot see.
+                            viewModel.dialContact(
+                                eventId,
+                                contactId,
+                                who = record.name ?: record.phone ?: "",
+                            )
                         }
                     },
                     callHistory = state.consoleHistory,

@@ -53,7 +53,7 @@ fun DashboardScreen(
     callbacksLoading: Boolean = false,
     callbacksFailed: Boolean = false,
     onRefreshCallbacks: () -> Unit = {},
-    onReturnCallback: (String) -> Unit = {},
+    onReturnCallback: (id: String, who: String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     // Loaded when the dashboard appears and whenever the agent comes back to it —
@@ -398,7 +398,7 @@ private fun MissedCallsCard(
     callbacks: List<PendingCallback>,
     failed: Boolean,
     loading: Boolean,
-    onReturnCallback: (String) -> Unit,
+    onReturnCallback: (id: String, who: String) -> Unit,
     onRetry: () -> Unit,
 ) {
     Card(
@@ -470,7 +470,7 @@ private fun MissedCallsCard(
                             }
                         }
                         Button(
-                            onClick = { onReturnCallback(callback.id) },
+                            onClick = { onReturnCallback(callback.id, callback.fullName) },
                             enabled = !loading,
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.semantics {

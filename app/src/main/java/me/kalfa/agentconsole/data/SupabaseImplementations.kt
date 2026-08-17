@@ -1416,11 +1416,12 @@ class SupabaseCallEngineImpl(
      * outbound branch, which dials the customer from OUR DID — the agent's own number
      * is never exposed, and the call is recorded and billed like any other.
      */
-    override suspend fun returnCallback(callbackId: String): AppResult<Unit> =
+    override suspend fun returnCallback(callbackId: String, confirmOutsideHours: Boolean): AppResult<Unit> =
         dialViaIntent(
             buildJsonObject {
                 put("kind", "callback")
                 put("id", callbackId)
+                if (confirmOutsideHours) put("confirm_outside_hours", true)
             }.toString(),
         )
 
@@ -1440,7 +1441,19 @@ class SupabaseCallEngineImpl(
             setBody(body)
         }
         if (resp.status.value !in 200..299) {
-            AppResult.Failure(failureForStatus(resp.status.value))
+            // 403 carries a machine-readable `reason`, and exactly one of them is
+            // something the agent can decide about: outside_hours. Surfaced as its own
+            // failure so the UI can ask rather than announce — every other reason
+            // (dnc, opted_out, quiet_hours for Shabbat, attempt_cap) is final and
+            // must keep reading as final.
+            val reason = runCatching {
+                Json.parseToJsonElement(resp.bodyAsText()).jsonObject["reason"]?.jsonPrimitive?.contentOrNull
+            }.getOrNull()
+            if (reason == "outside_hours") {
+                AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.OutsideCallHours)
+            } else {
+                AppResult.Failure(failureForStatus(resp.status.value))
+            }
         } else {
             val token = Json.parseToJsonElement(resp.bodyAsText())
                 .jsonObject["dial"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
@@ -1519,12 +1532,17 @@ class SupabaseCallEngineImpl(
         AppResult.Failure(e.toAppFailure())
     }
 
-    override suspend fun dialContact(eventId: String, contactId: String): AppResult<Unit> =
+    override suspend fun dialContact(
+        eventId: String,
+        contactId: String,
+        confirmOutsideHours: Boolean,
+    ): AppResult<Unit> =
         dialViaIntent(
             buildJsonObject {
                 put("kind", "guest_service")
                 put("eventId", eventId)
                 put("contactId", contactId)
+                if (confirmOutsideHours) put("confirm_outside_hours", true)
             }.toString(),
         )
 

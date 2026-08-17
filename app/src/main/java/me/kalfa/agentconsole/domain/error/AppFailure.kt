@@ -20,6 +20,19 @@ sealed interface AppFailure {
     data object Validation : AppFailure
     data object RealtimeDisconnected : AppFailure
     data object CallNoLongerActive : AppFailure
+
+    /**
+     * The dial was refused ONLY because of the hour — outside 08:00–19:00 Sun–Thu or
+     * 08:00–13:00 Fri.
+     *
+     * Its own failure, separate from Forbidden, because it is the one refusal an
+     * agent may overrule: the caller is waiting, the agent is working, and a default
+     * business hour is a judgement they can make. Every other refusal on that route
+     * — DNC, opt-out, Shabbat, the attempt cap — is final, and folding this in with
+     * them would either hide a legitimate call or invite someone to offer an override
+     * for a rule that must not have one.
+     */
+    data object OutsideCallHours : AppFailure
     data object CampaignHoldRequired : AppFailure
     data object NoActiveCampaign : AppFailure
     data object GuestMissingPhone : AppFailure

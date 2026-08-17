@@ -307,7 +307,7 @@ interface CallEngine {
      * On success the new leg is already attached as the current session, so the
      * active-call screen shows it the same way an answered inbound call does.
      */
-    suspend fun returnCallback(callbackId: String): AppResult<Unit> =
+    suspend fun returnCallback(callbackId: String, confirmOutsideHours: Boolean = false): AppResult<Unit> =
         AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.Unknown)
 
     // ── Call history ──────────────────────────────────────────────────────────
@@ -331,7 +331,11 @@ interface CallEngine {
      * and only then is a one-time token minted. Offered only for rows where both ids
      * are present — see [ConsoleCallRecord.dialable].
      */
-    suspend fun dialContact(eventId: String, contactId: String): AppResult<Unit> =
+    suspend fun dialContact(
+        eventId: String,
+        contactId: String,
+        confirmOutsideHours: Boolean = false,
+    ): AppResult<Unit> =
         AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.Unknown)
 }
 
