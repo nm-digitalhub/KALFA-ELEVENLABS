@@ -19,7 +19,7 @@ import me.kalfa.agentconsole.domain.telephony.ConsoleHistoryFilter
 import me.kalfa.agentconsole.domain.telephony.HistoryDirection
 import me.kalfa.agentconsole.domain.telephony.HistoryOutcome
 import me.kalfa.agentconsole.domain.telephony.HistoryRange
-import me.kalfa.agentconsole.domain.telephony.isValidE164
+import me.kalfa.agentconsole.domain.telephony.looksLikePhoneNumber
 
 /**
  * Every axis the platform can filter on, in one sheet.
@@ -48,7 +48,7 @@ fun HistoryFilterSheet(
     var minText by remember(current) { mutableStateOf(current.minDurationSec?.toString().orEmpty()) }
     var maxText by remember(current) { mutableStateOf(current.maxDurationSec?.toString().orEmpty()) }
 
-    val phoneError = phoneText.isNotBlank() && !isValidE164(phoneText)
+    val phoneError = phoneText.isNotBlank() && !looksLikePhoneNumber(phoneText)
     val minVal = minText.toIntOrNull()
     val maxVal = maxText.toIntOrNull()
     // A band whose floor is above its ceiling matches nothing. Named on the field
@@ -135,8 +135,11 @@ fun HistoryFilterSheet(
                         placeholder = { Text("+972501234567") },
                         supportingText = {
                             Text(
-                                if (phoneError) "יש להזין מספר בפורמט בינלאומי, למשל +972501234567"
-                                else "מסנן בצד Voximplant — לא סינון של הרשימה שכבר נטענה"
+                                if (phoneError) "מספר לא תקין."
+                                // Both forms work: the server normalizes to one
+                                // canonical number, so an agent never has to know
+                                // which one the platform wants.
+                                else "אפשר 0536212562 או +972536212562 — מסנן בצד Voximplant"
                             )
                         },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),

@@ -437,8 +437,23 @@ data class ConsoleHistoryFilter(
     fun cleared(): ConsoleHistoryFilter = ConsoleHistoryFilter(range = range)
 }
 
-/** E.164 as Voximplant and our own route both require it. */
-fun isValidE164(raw: String): Boolean = Regex("^\\+[1-9]\\d{6,14}$").matches(raw.trim())
+/**
+ * A LENIENT sanity check, not a format rule.
+ *
+ * The canonical form is produced ON THE SERVER by libphonenumber-js with region
+ * IL, which is the same helper the dial path uses — so 0536212562,
+ * 972536212562 and +972536212562 all become +972536212562 and mean one person.
+ * Re-implementing E.164 here would have rejected the first two while the rest of
+ * the system treats them as identical, which is a filter that refuses a valid
+ * number and cannot say why.
+ *
+ * So this only catches input that is obviously not a phone number at all, and
+ * everything else is normalized where the normalizer actually lives.
+ */
+fun looksLikePhoneNumber(raw: String): Boolean {
+    val digits = raw.count(Char::isDigit)
+    return digits in 7..15 && raw.trim().all { it.isDigit() || it in "+-() " }
+}
 
 /**
  * What Voximplant reports happened, per call.
