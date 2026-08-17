@@ -24,6 +24,26 @@ fun AppFailure.toHebrewMessage(context: FailureContext): String =
         // confirmation rather than show this on its own — it is what the agent reads
         // if something surfaces it directly.
         AppFailure.OutsideCallHours -> "השעה מחוץ לשעות החיוג הרגילות (08:00–19:00)."
+        // Each reason says what actually happened. They were ALL rendered as "אין לך
+        // הרשאה" until 2026-08-17, when a missed-call return failing with
+        // `not_found` sent the owner looking for a permissions problem that did not
+        // exist. The reason codes are dial-intent's own and are stable.
+        is AppFailure.DialRefused -> when (reason) {
+            "dnc" -> "המספר נמצא ברשימת החסומים ולא ניתן לחייג אליו."
+            "opted_out" -> "האדם ביקש להסיר את מספרו ולא ניתן לחייג אליו."
+            "quiet_hours" -> "לא ניתן לחייג כעת — שבת או חג."
+            "not_found" -> "לא נמצאה שיחה מתאימה לחיוג חוזר."
+            "stale" -> "השיחה ישנה מכדי לחזור אליה מכאן."
+            "attempt_cap" -> "בוצעו כבר מספר ניסיונות חיוג לשיחה הזו."
+            "invalid_phone" -> "השיחה הגיעה ממספר חסוי — אין לאן לחזור."
+            "not_open" -> "הבקשה כבר טופלה."
+            "not_linked", "event_not_active", "past_event_day" ->
+                "לא ניתן לחייג לפי כללי האירוע."
+            "lookup_failed" -> "לא ניתן לאמת את פרטי השיחה כרגע. נסה שוב."
+            // An unknown code is reported as a refusal WITHOUT inventing a cause —
+            // and carries the raw code, so a bug report names it.
+            else -> "לא ניתן לחייג כעת ($reason)."
+        }
         AppFailure.NotFound -> when (context) {
             FailureContext.GUEST_CALL -> "האורח לא נמצא."
             FailureContext.CAMPAIGN -> "הקמפיין לא נמצא."

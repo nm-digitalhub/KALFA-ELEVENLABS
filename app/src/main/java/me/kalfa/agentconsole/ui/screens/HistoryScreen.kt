@@ -78,10 +78,23 @@ fun HistoryScreen(
     failed: Boolean = false,
     modifier: Modifier = Modifier
 ) {
+    var showFilterSheet by remember { mutableStateOf(false) }
+
     // Re-runs when the filter changes, because the filter is applied SERVER-SIDE.
     // Narrowing the page already in hand would report "no calls" for a range full of
     // them — the server returns a bounded page, not the whole history.
     LaunchedEffect(filter) { onRefreshHistory() }
+
+    if (showFilterSheet) {
+        HistoryFilterSheet(
+            current = filter,
+            onApply = {
+                onFilterChange(it)
+                showFilterSheet = false
+            },
+            onDismiss = { showFilterSheet = false },
+        )
+    }
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Column(
@@ -127,7 +140,11 @@ fun HistoryScreen(
                 }
             }
 
-            HistoryFilterBar(filter = filter, onChange = onFilterChange)
+            HistoryFilterBar(
+                filter = filter,
+                onChange = onFilterChange,
+                onOpenSheet = { showFilterSheet = true },
+            )
 
             Box(modifier = Modifier.weight(1f)) {
                 when {
@@ -168,55 +185,48 @@ fun HistoryScreen(
  * chip row reflows as options are toggled, and a control that moves under the
  * thumb between taps is how an agent selects the wrong one.
  */
+/**
+ * The shortcuts, plus the way in to everything else.
+ *
+ * The presets answer the common question in one tap. They are NOT the filter — the
+ * platform takes a date range to the second, a specific number and a duration band,
+ * and offering only three drawers while calling it filtering is what the owner
+ * rejected. The button opens the sheet where those live, and carries a count so an
+ * active filter is visible without opening it.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HistoryFilterBar(
     filter: ConsoleHistoryFilter,
     onChange: (ConsoleHistoryFilter) -> Unit,
+    onOpenSheet: () -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            HistoryRange.entries.forEach { r ->
-                FilterChip(
-                    selected = filter.range == r,
-                    onClick = { onChange(filter.copy(range = r)) },
-                    label = { Text(r.labelHebrew) },
-                )
-            }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        HistoryRange.entries.forEach { r ->
+            FilterChip(
+                // A preset reads as unselected while an explicit window is set —
+                // otherwise two different time ranges appear active at once.
+                selected = !filter.hasExplicitWindow && filter.range == r,
+                onClick = { onChange(filter.copy(range = r, fromMs = null, toMs = null)) },
+                label = { Text(r.labelHebrew) },
+            )
         }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            // ALL is the default and needs no chip of its own on either axis — it is
-            // expressed by nothing being selected, which keeps the row short enough
-            // to read without scrolling in the common case.
-            HistoryOutcome.entries.filter { it != HistoryOutcome.ALL }.forEach { o ->
-                FilterChip(
-                    selected = filter.outcome == o,
-                    onClick = {
-                        onChange(filter.copy(outcome = if (filter.outcome == o) HistoryOutcome.ALL else o))
-                    },
-                    label = { Text(o.labelHebrew) },
-                )
-            }
-            HistoryDirection.entries.filter { it != HistoryDirection.ALL }.forEach { d ->
-                FilterChip(
-                    selected = filter.direction == d,
-                    onClick = {
-                        onChange(filter.copy(direction = if (filter.direction == d) HistoryDirection.ALL else d))
-                    },
-                    label = { Text(d.labelHebrew) },
-                )
-            }
-        }
+        FilterChip(
+            selected = filter.activeCount > 0,
+            onClick = onOpenSheet,
+            label = {
+                Text(if (filter.activeCount > 0) "סינון (${filter.activeCount})" else "סינון")
+            },
+            leadingIcon = {
+                Icon(Icons.Default.FilterList, contentDescription = null, modifier = Modifier.size(18.dp))
+            },
+        )
     }
 }
 

@@ -33,6 +33,24 @@ sealed interface AppFailure {
      * for a rule that must not have one.
      */
     data object OutsideCallHours : AppFailure
+
+    /**
+     * The dial was refused, and the server said WHY.
+     *
+     * dial-intent answers a refusal with `403 {error, reason}` where reason is one
+     * of a small stable set — dnc, opted_out, quiet_hours, not_found, stale,
+     * attempt_cap, invalid_phone, lookup_failed. The app used to map every 403 to
+     * Forbidden and tell the agent "אין לך הרשאה לבצע את הפעולה", which was wrong
+     * in every one of those cases: the agent's permissions were never in question.
+     *
+     * Measured live 2026-08-17: a missed-call return failed with reason
+     * `not_found`, and the screen reported a permissions problem — sending the
+     * owner looking at roles for a defect that was an id resolved against the wrong
+     * table. A refusal that misnames itself costs more than one that simply says
+     * "no".
+     */
+    data class DialRefused(val reason: String) : AppFailure
+
     data object CampaignHoldRequired : AppFailure
     data object NoActiveCampaign : AppFailure
     data object GuestMissingPhone : AppFailure

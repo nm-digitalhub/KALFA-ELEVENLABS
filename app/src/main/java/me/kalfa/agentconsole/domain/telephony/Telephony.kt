@@ -380,15 +380,65 @@ enum class HistoryDirection(val labelHebrew: String, val wire: String?) {
     OUTBOUND("יוצאות", "outbound"),
 }
 
+/**
+ * What the agent asked for.
+ *
+ * THE PRESETS ARE NOT THE FILTER. An earlier version offered only היום/שבוע/חודש
+ * and called that filtering — three drawers where the platform accepts a date
+ * range to the second, a specific number, and a duration band. The presets remain
+ * as shortcuts because "today" is what an agent wants most mornings, but every
+ * axis the API supports is now reachable:
+ *
+ *   from/to        exact window, hours included ('YYYY-MM-DD HH:mm:ss' upstream)
+ *   phone          one caller, narrowed on Voximplant's side
+ *   min/max sec    duration band, also server-side
+ *   outcome        computed from the legs (the API has no parameter for it)
+ *   direction      inbound / outbound
+ *
+ * `from`/`to` are epoch milliseconds. When either is set it WINS over `range`,
+ * so a chosen window is never quietly widened back to a preset.
+ */
 data class ConsoleHistoryFilter(
     val range: HistoryRange = HistoryRange.WEEK,
     val outcome: HistoryOutcome = HistoryOutcome.ALL,
     val direction: HistoryDirection = HistoryDirection.ALL,
+    val fromMs: Long? = null,
+    val toMs: Long? = null,
+    /** E.164. Anything else is refused before it is sent. */
+    val phone: String? = null,
+    val minDurationSec: Int? = null,
+    val maxDurationSec: Int? = null,
 ) {
-    /** True when nothing is narrowed — used to word the empty state honestly. */
+    val hasExplicitWindow: Boolean get() = fromMs != null || toMs != null
+
+    /**
+     * True when nothing is narrowed. Drives the empty-state wording: "אין שיחות"
+     * under an active filter reads as a broken screen, so the two are worded apart.
+     */
     val isDefault: Boolean
-        get() = outcome == HistoryOutcome.ALL && direction == HistoryDirection.ALL
+        get() = outcome == HistoryOutcome.ALL &&
+            direction == HistoryDirection.ALL &&
+            !hasExplicitWindow &&
+            phone == null &&
+            minDurationSec == null &&
+            maxDurationSec == null
+
+    /** How many narrowing choices are active — shown on the filter button. */
+    val activeCount: Int
+        get() = listOf(
+            outcome != HistoryOutcome.ALL,
+            direction != HistoryDirection.ALL,
+            hasExplicitWindow,
+            phone != null,
+            minDurationSec != null || maxDurationSec != null,
+        ).count { it }
+
+    /** Clears everything but keeps the preset window the agent is looking at. */
+    fun cleared(): ConsoleHistoryFilter = ConsoleHistoryFilter(range = range)
 }
+
+/** E.164 as Voximplant and our own route both require it. */
+fun isValidE164(raw: String): Boolean = Regex("^\\+[1-9]\\d{6,14}$").matches(raw.trim())
 
 /**
  * What Voximplant reports happened, per call.

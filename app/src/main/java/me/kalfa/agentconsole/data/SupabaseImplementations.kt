@@ -1416,16 +1416,20 @@ class SupabaseCallEngineImpl(
      * outbound branch, which dials the customer from OUR DID — the agent's own number
      * is never exposed, and the call is recorded and billed like any other.
      */
-    // `returned_call`, NOT `callback`. The id in the missed-call list is a
-    // console_calls id; `callback` resolves against `callback_requests`, where
-    // these ids do not exist — so every return refused, silently and always
-    // (measured 2026-08-17: 200 of 200 sampled ids absent from that table).
-    // The list changed source and this call did not follow it.
+    // A VOXIMPLANT SESSION ID, and the server reads the number back from
+    // Voximplant's own record of that session.
+    //
+    // It used to post {kind:'callback', id} with an id from our own tables, into a
+    // lookup that searches `callback_requests` — where those ids do not exist.
+    // Measured server-side: 200 of 200 sampled absent, so every "חזור" tap refused,
+    // and the app reported it as a permissions problem. Resolving from Voximplant
+    // instead removes the mismatch and works for EVERY call in the log rather than
+    // the 2% our tables carry an event link for.
     override suspend fun returnCallback(callbackId: String, confirmOutsideHours: Boolean): AppResult<Unit> =
         dialViaIntent(
             buildJsonObject {
                 put("kind", "returned_call")
-                put("consoleCallId", callbackId)
+                put("sessionId", callbackId)
                 if (confirmOutsideHours) put("confirm_outside_hours", true)
             }.toString(),
         )
@@ -1454,10 +1458,16 @@ class SupabaseCallEngineImpl(
             val reason = runCatching {
                 Json.parseToJsonElement(resp.bodyAsText()).jsonObject["reason"]?.jsonPrimitive?.contentOrNull
             }.getOrNull()
-            if (reason == "outside_hours") {
-                AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.OutsideCallHours)
-            } else {
-                AppResult.Failure(failureForStatus(resp.status.value))
+            when {
+                reason == "outside_hours" ->
+                    AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.OutsideCallHours)
+                // Every OTHER reason is final, but it is not a permissions problem —
+                // and saying "אין לך הרשאה" for `not_found` or `dnc` sends the agent
+                // looking in the wrong place entirely. Carried through so the screen
+                // can name what actually happened.
+                reason != null && resp.status.value == 403 ->
+                    AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.DialRefused(reason))
+                else -> AppResult.Failure(failureForStatus(resp.status.value))
             }
         } else {
             val token = Json.parseToJsonElement(resp.bodyAsText())
@@ -1510,9 +1520,21 @@ class SupabaseCallEngineImpl(
             // Server-side, always. The route returns a bounded page, so narrowing
             // here would answer "no calls" for a range that has plenty just beyond
             // the page boundary.
-            parameter("days", filter.range.days)
+            //
+            // An explicit window is sent INSTEAD of the preset, never alongside it:
+            // sending both would leave which one applies to the server's tie-break
+            // rather than to what the agent chose.
+            if (filter.hasExplicitWindow) {
+                filter.fromMs?.let { parameter("from", it) }
+                filter.toMs?.let { parameter("to", it) }
+            } else {
+                parameter("days", filter.range.days)
+            }
             filter.outcome.wire?.let { parameter("outcome", it) }
             filter.direction.wire?.let { parameter("direction", it) }
+            filter.phone?.let { parameter("phone", it) }
+            filter.minDurationSec?.let { parameter("min_duration", it) }
+            filter.maxDurationSec?.let { parameter("max_duration", it) }
         }
         if (resp.status.value in 200..299) {
             val parsed = Json.parseToJsonElement(resp.bodyAsText())
