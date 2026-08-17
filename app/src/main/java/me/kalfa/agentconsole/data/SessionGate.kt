@@ -78,8 +78,16 @@ internal fun Flow<Boolean>.enteredSignedIn(): Flow<Unit> =
  * [enteredSignedIn] over this client's own session status.
  *
  * A new collector is replayed `sessionStatus`'s current value, so a repository
- * constructed AFTER sign-in (as ConsoleViewModel's are) still fetches immediately — the
- * gate only delays the ones constructed before it, which is the whole point.
+ * constructed AFTER sign-in still fetches immediately — the gate only delays the ones
+ * constructed before it, which is the whole point.
+ *
+ * This kdoc used to name ConsoleViewModel's repositories as an example of the
+ * constructed-after-sign-in case. That was wrong, and believing it is what left
+ * ConsoleViewModel.loadIdentity reading `currentUserOrNull()` ungated: `by viewModels()`
+ * is lazy, and the first touch of `viewModel` in MainActivity is the ActiveCallScreen
+ * overlay drawn OUTSIDE AuthGate — so on a cold start the ViewModel and everything it
+ * constructs come up while `sessionStatus` is still `Initializing`. Nothing here is
+ * guaranteed to be built after sign-in; that is precisely why the gate is not optional.
  */
 internal fun SupabaseClient.signedInSessions(): Flow<Unit> =
     auth.sessionStatus.settledSignedIn().enteredSignedIn()

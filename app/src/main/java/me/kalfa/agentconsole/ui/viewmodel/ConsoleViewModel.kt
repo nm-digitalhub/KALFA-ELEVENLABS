@@ -16,9 +16,11 @@ import me.kalfa.agentconsole.domain.error.AppResult
 import me.kalfa.agentconsole.domain.error.RepositoryHealth
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.postgrest
 import kotlinx.serialization.Serializable
+import me.kalfa.agentconsole.data.signedInSessions
 import me.kalfa.agentconsole.ui.message.AppMessageCenter
 import me.kalfa.agentconsole.ui.message.FailureContext
 import me.kalfa.agentconsole.ui.message.MessageAction
@@ -418,65 +420,104 @@ class ConsoleViewModel : ViewModel() {
         _uiState.update { it.copy(selectedEventFilter = eventId) }
     }
 
+    /**
+     * Reads who this agent is — and re-reads it every time the session settles into
+     * signed-in, rather than once at construction.
+     *
+     * The single read was a RACE THIS VIEWMODEL LOSES ON EVERY COLD START, and the
+     * symptom was visible on the dashboard: the greeting read "שלום, נציג KALFA".
+     * That string is `ConsoleUiState.agentName`'s DEFAULT and appears nowhere in the
+     * assignment below — whose own last-resort fallback is the bare "נציג" — so its
+     * presence on screen is proof that the `_uiState.update` never ran at all.
+     *
+     * Why it never ran: `by viewModels()` is lazy, and the FIRST touch of `viewModel`
+     * in MainActivity is not the one inside AuthGate — it is the ActiveCallScreen
+     * overlay at MainActivity.kt:390, deliberately drawn OUTSIDE AuthGate so an agent
+     * who answered from a notification can hang up without waiting on the session.
+     * On a cold start AuthGate renders its spinner (status `Initializing`, no
+     * `content()`), composition continues past it, that overlay touches `viewModel`,
+     * and this ViewModel is constructed while `sessionStatus` is still `Initializing`
+     * — where `currentUserOrNull()` is null by definition (SessionGate.kt). The old
+     * code returned there and never tried again for the life of the process.
+     *
+     * It is a race rather than a permanent break, which is why it looked intermittent:
+     * a WARM start finds the session already `Authenticated` at first composition and
+     * loads fine. Measured on the live project 2026-08-17: `agent_status` carries
+     * `ready` for this agent, so an earlier process did win it — a process that loses
+     * it leaves `me` null, and with it every permission gate, the manage_voice landing
+     * redirect, and the vox_username that setAgentStatus hands to PresenceActions.
+     *
+     * `signedInSessions()` is the gate every repository in the data package already
+     * uses for exactly this (SupabaseImplementations 349/533/682/789); this was the
+     * one reader that read straight through it.
+     */
     private fun loadIdentity() {
         val client = DependencyContainer.supabaseClient ?: return
         viewModelScope.launch {
-            try {
-                val user = client.auth.currentUserOrNull() ?: return@launch
-                val row = client.postgrest["console_me"].select()
-                    .decodeList<MeRow>().firstOrNull()
-                val metaName = user.userMetadata?.get("full_name")?.toString()?.trim('"')
-                val me = row?.let {
-                    ConsoleMe(
-                        displayName = it.display_name ?: metaName ?: user.email ?: "נציג",
-                        platformRole = it.platform_role ?: "",
-                        platformRank = it.platform_rank,
-                        permissions = it.permissions.toSet(),
-                        voxUsername = it.vox_username
-                    )
-                }
-                _uiState.update {
-                    it.copy(
-                        me = me,
-                        agentName = me?.displayName ?: metaName ?: user.email ?: "נציג",
-                        agentEmail = user.email ?: ""
-                    )
-                }
-                // Hand the device's Voximplant identity to durable storage the moment
-                // the server tells us what it is. This is the ONLY place the app learns
-                // it from a source that does not already require a Voximplant login:
-                // VoxTokenStore.save is called only AFTER a successful login step, so
-                // PresenceForegroundService.currentVoxUsername had nothing to read until
-                // a login had happened, and PresenceActions.applyStatus's
-                // `voxUsername != null` guard therefore skipped login, registration and
-                // reporting on every service-driven path — the deadlock that kept this
-                // device out of the push audience entirely. See VoxTokenStore.saveUsername.
-                me?.voxUsername?.let { username ->
-                    DependencyContainer.voxTokenStore?.saveUsername(username)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // NOT printStackTrace(). This read is where the app learns which
-                // Voximplant identity the device is, and it failing silently is what
-                // produced the live symptom on 2026-08-17: an app open for four minutes
-                // reported `presence.status_set s=ready` then `s=not_ready_auto` with no
-                // telephony event between them, because `me` was null and nothing
-                // anywhere said why. A stack trace in logcat is not a diagnostic on a
-                // phone with no ADB — the whole device-telemetry channel exists because
-                // of that.
-                //
-                // Reported, not surfaced as a banner: PresenceActions now falls back to
-                // the persisted username, so a failure here is usually survivable and a
-                // second red message would describe a problem the agent already sees
-                // named more usefully ("לא ניתן לעבור לזמין"). The telemetry line is for
-                // whoever reads the log; the consequence, if there is one, is announced
-                // by the code that actually hits it.
-                Telemetry.emit(
-                    TelemetryEvents.IDENTITY_LOAD_FAIL,
-                    "err" to "${e.javaClass.simpleName}: ${e.message?.take(120) ?: "no message"}",
+            client.signedInSessions().collect { fetchIdentity(client) }
+        }
+    }
+
+    // try/catch INSIDE the per-emission read, never around the collect. Wrapping the
+    // collector would let one PostgrestRestException cancel it and take identity down
+    // for the rest of the process — the same one-shot-then-silent disease, moved up a
+    // layer. Here a failed read leaves the collector alive for the next transition.
+    private suspend fun fetchIdentity(client: SupabaseClient) {
+        try {
+            val user = client.auth.currentUserOrNull() ?: return
+            val row = client.postgrest["console_me"].select()
+                .decodeList<MeRow>().firstOrNull()
+            val metaName = user.userMetadata?.get("full_name")?.toString()?.trim('"')
+            val me = row?.let {
+                ConsoleMe(
+                    displayName = it.display_name ?: metaName ?: user.email ?: "נציג",
+                    platformRole = it.platform_role ?: "",
+                    platformRank = it.platform_rank,
+                    permissions = it.permissions.toSet(),
+                    voxUsername = it.vox_username
                 )
             }
+            _uiState.update {
+                it.copy(
+                    me = me,
+                    agentName = me?.displayName ?: metaName ?: user.email ?: "נציג",
+                    agentEmail = user.email ?: ""
+                )
+            }
+            // Hand the device's Voximplant identity to durable storage the moment
+            // the server tells us what it is. This is the ONLY place the app learns
+            // it from a source that does not already require a Voximplant login:
+            // VoxTokenStore.save is called only AFTER a successful login step, so
+            // PresenceForegroundService.currentVoxUsername had nothing to read until
+            // a login had happened, and PresenceActions.applyStatus's
+            // `voxUsername != null` guard therefore skipped login, registration and
+            // reporting on every service-driven path — the deadlock that kept this
+            // device out of the push audience entirely. See VoxTokenStore.saveUsername.
+            me?.voxUsername?.let { username ->
+                DependencyContainer.voxTokenStore?.saveUsername(username)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // NOT printStackTrace(). This read is where the app learns which
+            // Voximplant identity the device is, and it failing silently is what
+            // produced the live symptom on 2026-08-17: an app open for four minutes
+            // reported `presence.status_set s=ready` then `s=not_ready_auto` with no
+            // telephony event between them, because `me` was null and nothing
+            // anywhere said why. A stack trace in logcat is not a diagnostic on a
+            // phone with no ADB — the whole device-telemetry channel exists because
+            // of that.
+            //
+            // Reported, not surfaced as a banner: PresenceActions now falls back to
+            // the persisted username, so a failure here is usually survivable and a
+            // second red message would describe a problem the agent already sees
+            // named more usefully ("לא ניתן לעבור לזמין"). The telemetry line is for
+            // whoever reads the log; the consequence, if there is one, is announced
+            // by the code that actually hits it.
+            Telemetry.emit(
+                TelemetryEvents.IDENTITY_LOAD_FAIL,
+                "err" to "${e.javaClass.simpleName}: ${e.message?.take(120) ?: "no message"}",
+            )
         }
     }
 
