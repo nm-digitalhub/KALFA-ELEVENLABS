@@ -65,10 +65,53 @@ object TelemetryEvents {
 
     // ── process ───────────────────────────────────────────────────────────────
     /** DependencyContainer.attach ran for the first time in this process. `via=activity|fcm|other` */
-    // The last line a dying process writes. See DependencyContainer.attach for why the
-    // handler is installed there and what it does about the flush.
-    const val APP_CRASH = "app.crash"
     const val APP_ATTACH = "app.attach"
+
+    /**
+     * The last line a dying process writes, from the handler DependencyContainer.attach
+     * installs. `err=` is the cause CHAIN (`A <- B <- C`), `at=` the first frame in our
+     * own package, `thread=` the thread that died.
+     *
+     * Added because a crash previously appeared here as nothing at all: the trace simply
+     * stopped mid-sequence and a new `app.attach` followed seconds later, which reads
+     * identically to reading 3 above ("the app dropped it") while saying nothing about
+     * why. This turns that silence into a sentence.
+     */
+    const val APP_CRASH = "app.crash"
+
+    /**
+     * The `console_me` read that tells the device which Voximplant user it is, failed.
+     *
+     * A FOURTH reading of silence, and one the doctrine above did not cover: with no
+     * identity, PresenceActions returns before any `vox.*` event is emitted, so the
+     * trace shows a READY tap and then nothing telephony-shaped at all. Until this
+     * existed the failure was a `printStackTrace()` and therefore invisible off-device.
+     */
+    const val IDENTITY_LOAD_FAIL = "app.identity_load_fail"
+
+    /**
+     * What is running, and on what. Emitted once per process, immediately after
+     * [APP_ATTACH].
+     *
+     * `app=v<name>(<code>)`, `os=Android<release>/api<sdk>`, `dev=<manufacturer>/<model>`,
+     * `abi=<primary>`.
+     *
+     * Every question asked of this log so far has eventually needed one of these and
+     * had to get it by asking the owner: which build is on the phone (three commits
+     * shipped in one afternoon, and "the fix is in" is unanswerable without it), which
+     * Android version (full-screen-intent, foreground-service-type and Doze rules all
+     * changed by API level), and which OEM (Xiaomi/Huawei/Samsung battery managers
+     * swallow pushes the platform reports as delivered).
+     *
+     * NON-IDENTIFYING BY CONSTRUCTION, which is the bar this file sets. Manufacturer and
+     * model describe a device CLASS shared by millions; nothing here is an installation
+     * id, an advertising id, a serial, or anything that survives a reinstall. Values are
+     * shaped to carry a letter and stay short on purpose — `scrubTelemetryValue` redacts
+     * anything that looks like a phone number (digits and punctuation only) or an opaque
+     * token (40+ chars), and a version string of bare digits and dots would trip the
+     * first of those.
+     */
+    const val APP_DEVICE = "app.device"
 
     /** MainActivity.onCreate. Absence of this alongside [FCM_SERVICE_CREATED] proves a headless wake. */
     const val APP_ACTIVITY_CREATE = "app.activity_create"

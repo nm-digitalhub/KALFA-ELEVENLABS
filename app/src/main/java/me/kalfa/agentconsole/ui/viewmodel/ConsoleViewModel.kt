@@ -2,6 +2,9 @@ package me.kalfa.agentconsole.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
+import me.kalfa.agentconsole.telemetry.Telemetry
+import me.kalfa.agentconsole.telemetry.TelemetryEvents
 import me.kalfa.agentconsole.di.DependencyContainer
 import me.kalfa.agentconsole.telephony.vox.RingCapabilityChecker
 import me.kalfa.agentconsole.telephony.presence.PresenceActions
@@ -373,7 +376,29 @@ class ConsoleViewModel : ViewModel() {
                 me?.voxUsername?.let { username ->
                     DependencyContainer.voxTokenStore?.saveUsername(username)
                 }
-            } catch (e: Exception) { e.printStackTrace() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // NOT printStackTrace(). This read is where the app learns which
+                // Voximplant identity the device is, and it failing silently is what
+                // produced the live symptom on 2026-08-17: an app open for four minutes
+                // reported `presence.status_set s=ready` then `s=not_ready_auto` with no
+                // telephony event between them, because `me` was null and nothing
+                // anywhere said why. A stack trace in logcat is not a diagnostic on a
+                // phone with no ADB — the whole device-telemetry channel exists because
+                // of that.
+                //
+                // Reported, not surfaced as a banner: PresenceActions now falls back to
+                // the persisted username, so a failure here is usually survivable and a
+                // second red message would describe a problem the agent already sees
+                // named more usefully ("לא ניתן לעבור לזמין"). The telemetry line is for
+                // whoever reads the log; the consequence, if there is one, is announced
+                // by the code that actually hits it.
+                Telemetry.emit(
+                    TelemetryEvents.IDENTITY_LOAD_FAIL,
+                    "err" to "${e.javaClass.simpleName}: ${e.message?.take(120) ?: "no message"}",
+                )
+            }
         }
     }
 

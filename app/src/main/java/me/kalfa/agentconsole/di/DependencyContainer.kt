@@ -1,5 +1,6 @@
 package me.kalfa.agentconsole.di
 
+import android.os.Build
 import android.content.Context
 import me.kalfa.agentconsole.BuildConfig
 import me.kalfa.agentconsole.data.LiveTranscriptManager
@@ -72,6 +73,45 @@ object DependencyContainer {
         deviceTelemetry
         installCrashRecorder()
         Telemetry.emit(TelemetryEvents.APP_ATTACH, "via" to via)
+        emitDeviceProfile()
+    }
+
+    /**
+     * One line saying what is running and on what — see [TelemetryEvents.APP_DEVICE] for
+     * why each field is here and why none of them identifies a person.
+     *
+     * Emitted right after `app.attach` so it is at the TOP of every process's trace: a
+     * reader who tails this file mid-incident should not have to scroll to learn which
+     * build they are looking at, and a crash can truncate everything after it.
+     *
+     * Wrapped, like the crash recorder above, because none of this is worth a failure in
+     * process startup. `Build` fields can be null on modified ROMs and `packageManager`
+     * can throw during early attach; a missing profile line costs a lookup, an exception
+     * here would cost the app.
+     */
+    private fun emitDeviceProfile() {
+        try {
+            val ctx = applicationContext ?: return
+            @Suppress("DEPRECATION")
+            val pkg = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
+            // `v` prefix and the parenthesised code are deliberate: a bare "5.5.1" is
+            // digits-and-dots only, which scrubTelemetryValue reads as a phone shape.
+            val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pkg.longVersionCode.toString()
+            } else {
+                @Suppress("DEPRECATION")
+                pkg.versionCode.toString()
+            }
+            Telemetry.emit(
+                TelemetryEvents.APP_DEVICE,
+                "app" to "v${pkg.versionName ?: "?"}($versionCode)",
+                "os" to "Android${Build.VERSION.RELEASE ?: "?"}/api${Build.VERSION.SDK_INT}",
+                "dev" to "${Build.MANUFACTURER ?: "?"}/${Build.MODEL ?: "?"}",
+                "abi" to (Build.SUPPORTED_ABIS?.firstOrNull() ?: "?"),
+            )
+        } catch (_: Throwable) {
+            // See the kdoc: a diagnostic must never be the reason startup fails.
+        }
     }
 
     /**

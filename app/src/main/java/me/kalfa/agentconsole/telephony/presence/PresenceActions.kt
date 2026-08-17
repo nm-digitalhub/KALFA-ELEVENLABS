@@ -387,8 +387,29 @@ object PresenceActions {
      * "Whatever it cannot do, it must say" is the lesson of this whole class of bug, and
      * it belongs in the code rather than in a doc.
      */
-    private suspend fun loginAndRegisterForPush(voxUsername: String?): Boolean {
+    private suspend fun loginAndRegisterForPush(passedUsername: String?): Boolean {
         val vcm = DependencyContainer.voxClientManager
+        // FALL BACK TO THE PERSISTED IDENTITY when the caller has none.
+        //
+        // Measured 2026-08-17: an app running for four minutes reported
+        // `presence.status_set s=ready` then `s=not_ready_auto` with NO vox event of any
+        // kind between them — the signature of this function's early return, reached
+        // because ConsoleViewModel's `me` was null. That read is wrapped in
+        // `catch (Exception) { printStackTrace() }`, so a failed identity fetch leaves
+        // the ViewModel holding null and says nothing about it.
+        //
+        // The device already knew who it was. A successful login minutes earlier had
+        // written the username to VoxTokenStore (applyStatus persists it on the path
+        // that proves it usable), and this function simply never looked. Reading the
+        // store here makes a transient identity-fetch failure survivable instead of
+        // fatal to telephony, and it means the foreground READY path and the heartbeat
+        // path — which always read the store — can no longer disagree about who this
+        // device is.
+        //
+        // Order matters: the caller's value wins when present, because it came from the
+        // server on this launch and the store is a cache of an older truth. Only a null
+        // falls through.
+        val voxUsername = passedUsername ?: DependencyContainer.voxTokenStore?.loadUsername()
         if (voxUsername == null || vcm == null) {
             val reason =
                 if (voxUsername == null) "no_device_identity: vox username unknown"
