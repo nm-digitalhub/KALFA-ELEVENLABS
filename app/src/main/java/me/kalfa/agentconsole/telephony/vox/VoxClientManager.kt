@@ -5,8 +5,11 @@ import android.util.Log
 import com.google.android.gms.tasks.Task
 import com.google.firebase.messaging.FirebaseMessaging
 import com.voximplant.android.sdk.calls.Call
+import com.voximplant.android.sdk.calls.CallSettings
 import com.voximplant.android.sdk.calls.IncomingCallListener
 import com.voximplant.android.sdk.calls.VICalls
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.voximplant.android.sdk.core.AuthParams
 import com.voximplant.android.sdk.core.Client
 import com.voximplant.android.sdk.core.ClientSessionListener
@@ -560,6 +563,51 @@ class VoxClientManager(
     suspend fun unregisterCurrentPushToken(): Result<Unit> = runCatching {
         val token = FirebaseMessaging.getInstance().token.awaitTask()
         unregisterPushTokenSuspend(token)
+    }
+
+    /**
+     * Creates an outbound leg from a one-time dial token — THE ONLY WAY THIS APP MAY
+     * TOUCH `VICalls.createCall`.
+     *
+     * It lives here, and not at the call site, because the call site got it wrong and
+     * a comment had already warned about exactly how. Measured from device telemetry
+     * 2026-08-17T21:21:41, after tapping "חזור" on a missed call:
+     *
+     *     app.crash err=ExceptionInInitializerError_<-_IllegalStateException:
+     *     _Voximplant at=SupabaseCallEngineImpl$dialViaIntent$2 thread=main
+     *
+     * `VICalls` is an object: merely REFERENCING it runs a static initialiser that
+     * throws when `VICore.initialize` has never been called. The data layer called it
+     * directly, without the login gate, inside `catch (e: Exception)` — and
+     * ExceptionInInitializerError is an Error, so nothing caught it and the process
+     * died on the main thread.
+     *
+     * ensureLoggedIn's own kdoc, twenty lines up, had described that trap precisely.
+     * Documenting a hazard does not remove it; the second caller reproduced it
+     * anyway. So the hazard is removed instead: `VICalls` is now referenced in this
+     * file alone, every path reaches it through ensureInitialized, and a future
+     * caller cannot skip the gate because there is nothing outside to skip it with.
+     *
+     * The username is resolved HERE from the token store rather than asked of the
+     * caller — a caller that has to look it up first is a caller that can forget to.
+     */
+    suspend fun placeCall(dialToken: String): Result<Call> {
+        val voxUsername = tokenStore.loadUsername()
+            ?: return Result.failure(IllegalStateException("no_device_identity"))
+        ensureLoggedIn(voxUsername).getOrElse { return Result.failure(it) }
+
+        // Main thread: the SDK requires it for call creation, and the previous call
+        // site already knew that. Errors as well as exceptions are caught, for the
+        // reason spelled out above.
+        return withContext(Dispatchers.Main) {
+            runCatching {
+                // NULLABLE, and a real outcome rather than something to assert away:
+                // the SDK returns null when it cannot create a call at all. A `!!`
+                // would turn "not connected" into a second crash.
+                VICalls.createCall(dialToken, CallSettings())
+                    ?: throw IllegalStateException("telephony_unavailable")
+            }
+        }
     }
 
     // The one non-suspend SDK call in the wake path (fire-and-forget void method,

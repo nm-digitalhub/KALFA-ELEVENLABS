@@ -74,6 +74,14 @@ fun AppFailure.toHebrewMessage(context: FailureContext): String =
                 "bad_request" ->
                     "שגיאה בבקשה שנשלחה לספק$code. באג במערכת — יש לדווח."
 
+                // ── the DEVICE, not the server. These two never reach the network:
+                // the app cannot place a leg because its own telephony is not up.
+                // Before them, a dead SDK crashed the process instead of saying so.
+                "no_device_identity" ->
+                    "המכשיר עדיין לא נרשם לטלפוניה. עבור למצב \"זמין\" ונסה שוב."
+                "telephony_unavailable" ->
+                    "מערכת הטלפוניה במכשיר אינה זמינה כרגע. עבור למצב \"זמין\" ונסה שוב."
+
                 // Normally intercepted upstream and turned into OutsideCallHours,
                 // which asks the agent to confirm instead of announcing a refusal.
                 // Here as a safety net: if it ever reaches this branch it must read

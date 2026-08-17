@@ -327,6 +327,19 @@ object TelemetryEvents {
      * On a push cold start the session loads asynchronously, so this is expected
      * early and diagnostic if it persists.
      */
+    /**
+     * A dial attempt failed, with the exception class that ended it.
+     *
+     * Added after a crash that was invisible from the server: dial-intent answered
+     * 200, the app then touched the Voximplant SDK, its static initialiser threw,
+     * and the process died on the main thread. Nothing in this event list covered
+     * the dial path at all, so the only trace was `app.crash` — which named the line
+     * but not what the agent had been doing.
+     *
+     * No phone number, no session id: the exception class and a clipped message.
+     */
+    const val DIAL_FAILED = "dial.failed"
+
     const val AUTH_JWT_MISSING = "auth.jwt_missing"
 
     // ── the channel describing itself ─────────────────────────────────────────

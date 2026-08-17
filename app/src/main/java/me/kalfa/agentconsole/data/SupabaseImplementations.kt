@@ -19,6 +19,10 @@ import io.github.jan.supabase.realtime.channel
 import io.github.jan.supabase.realtime.postgresChangeFlow
 import io.github.jan.supabase.realtime.PostgresAction
 import io.github.jan.supabase.realtime.RealtimeChannel
+import kotlinx.coroutines.CancellationException
+import me.kalfa.agentconsole.di.DependencyContainer
+import me.kalfa.agentconsole.telemetry.Telemetry
+import me.kalfa.agentconsole.telemetry.TelemetryEvents
 import io.ktor.client.*
 import io.ktor.client.engine.okhttp.*
 import io.ktor.client.request.*
@@ -1483,35 +1487,58 @@ class SupabaseCallEngineImpl(
                 // happened".
                 AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.Unknown)
             } else {
-                withContext(Dispatchers.Main) {
-                    // NULLABLE, and treated as a real outcome rather than asserted
-                    // away: the SDK returns null when it cannot create a call at all
-                    // — most often because this device is not logged in to
-                    // Voximplant, which is exactly the state a backgrounded console
-                    // can be in when an agent taps a missed call. A !! here would
-                    // turn "you are not connected" into a crash.
-                    val call = com.voximplant.android.sdk.calls.VICalls.createCall(
-                        token,
-                        com.voximplant.android.sdk.calls.CallSettings(),
+                // Through VoxClientManager.placeCall, which is now the ONLY code in
+                // this app that may touch VICalls. This call site used to reach the
+                // SDK directly and crashed the process on 2026-08-17 — see that
+                // method's kdoc for the telemetry and for why the fix was to move the
+                // reference rather than to add another warning beside it.
+                val manager = DependencyContainer.voxClientManager
+                if (manager == null) {
+                    AppResult.Failure(
+                        me.kalfa.agentconsole.domain.error.AppFailure.DialRefused("no_device_identity"),
                     )
-                    if (call == null) {
-                        AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.Unknown)
-                    } else {
-                        val session = me.kalfa.agentconsole.telephony.vox.VoxCallSession(call)
-                        // Attached BEFORE start(): the session must already be the
-                        // current one when the SDK begins emitting state, or the first
-                        // transitions land with nothing observing them and the call
-                        // screen opens blank.
-                        attachIncomingSession(session)
-                        call.start()
-                        AppResult.Success(Unit)
-                    }
+                } else {
+                    manager.placeCall(token).fold(
+                        onSuccess = { call ->
+                            val session = me.kalfa.agentconsole.telephony.vox.VoxCallSession(call)
+                            // Attached BEFORE start(): the session must already be the
+                            // current one when the SDK begins emitting state, or the
+                            // first transitions land with nothing observing them and
+                            // the call screen opens blank.
+                            attachIncomingSession(session)
+                            withContext(Dispatchers.Main) { call.start() }
+                            AppResult.Success(Unit)
+                        },
+                        onFailure = { err ->
+                            // The manager reports WHY in the failure's message, and
+                            // both values have their own Hebrew wording.
+                            AppResult.Failure(
+                                me.kalfa.agentconsole.domain.error.AppFailure.DialRefused(
+                                    err.message ?: "telephony_unavailable",
+                                ),
+                            )
+                        },
+                    )
                 }
             }
         }
-    } catch (e: Exception) {
-        e.printStackTrace()
-        AppResult.Failure(e.toAppFailure())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        // THROWABLE, not Exception, and that word is the difference between a
+        // message and a crash. ExceptionInInitializerError and NoClassDefFoundError
+        // are Errors — `catch (e: Exception)` misses both, which is why a failed SDK
+        // static initialiser took the whole app down here on 2026-08-17 instead of
+        // surfacing as "telephony unavailable". Same reasoning, verbatim, as
+        // VoxClientManager.ensureLoggedIn's own catch.
+        Telemetry.emit(
+            TelemetryEvents.DIAL_FAILED,
+            "err" to "${e.javaClass.simpleName}: ${e.message?.take(100) ?: "no message"}",
+        )
+        if (e is Exception) AppResult.Failure(e.toAppFailure())
+        else AppResult.Failure(
+            me.kalfa.agentconsole.domain.error.AppFailure.DialRefused("telephony_unavailable"),
+        )
     }
 
     // ── Call history ──────────────────────────────────────────────────────────
