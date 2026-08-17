@@ -349,6 +349,17 @@ interface CallEngine {
 data class ConsoleCallRecord(
     val id: String,
     val inbound: Boolean,
+    /**
+     * WHY the call ended, as the server recorded it: 'no_agent', 'caller_hangup',
+     * 'operator_hangup', or one of those with the platform's own code folded in —
+     * 'operator_failed:busy', 'caller_hangup:sip_503'.
+     *
+     * Carried because `answered` alone collapses outcomes an agent needs apart. A
+     * call that rang out because nobody was free and one the caller abandoned after
+     * two seconds are both "not answered", and only one of them is the console's
+     * fault.
+     */
+    val endedReason: String?,
     val name: String?,
     val phone: String?,
     val startedAt: String,

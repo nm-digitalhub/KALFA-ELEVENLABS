@@ -1511,6 +1511,7 @@ class SupabaseCallEngineImpl(
                     me.kalfa.agentconsole.domain.telephony.ConsoleCallRecord(
                         id = id,
                         inbound = o["direction"]?.jsonPrimitive?.contentOrNull == "inbound",
+                        endedReason = o["ended_reason"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
                         // null, NOT a placeholder: the screen decides what to show when
                         // there is no name, and "אורח" baked in here would be
                         // indistinguishable from a guest actually called that.

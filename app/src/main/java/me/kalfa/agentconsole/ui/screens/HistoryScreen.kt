@@ -164,6 +164,47 @@ private fun formatCallTime(isoUtc: String): String {
     }
 }
 
+/**
+ * What actually happened to a call, in one phrase an agent can act on.
+ *
+ * "לא נענתה" was all this screen could say, and it covered four different events:
+ * nobody was free, the caller gave up, the agent's own phone was busy, the number
+ * did not exist. Only one of those is the console's fault and only one is worth
+ * ringing back immediately.
+ *
+ * The server sends `reason` and, when the network said something, `reason:detail` —
+ * the detail coming from the platform's own status code (486 busy, 480 unavailable,
+ * 404 invalid number, 603 rejected, 408 no answer). Read the DETAIL first: it is the
+ * more specific fact, and "busy" tells an agent more than "the leg failed".
+ *
+ * An unrecognised value falls through to the plain answered/not-answered wording
+ * rather than being shown raw. A Hebrew UI must not surface `caller_hangup:sip_503`
+ * to an agent — that string is for a bug report, and it is still in the row for one.
+ */
+private fun callStatusLabel(answered: Boolean, endedReason: String?): Pair<String, Boolean> {
+    val detail = endedReason?.substringAfter(':', "")?.takeIf { it.isNotBlank() }
+    val base = endedReason?.substringBefore(':')
+
+    // Detail first — the network's own word beats our name for which leg dropped.
+    when (detail) {
+        "busy" -> return "תפוס" to false
+        "unavailable" -> return "לא זמין" to false
+        "invalid_number" -> return "מספר לא תקין" to false
+        "rejected" -> return "נדחתה" to false
+        "no_answer" -> return "לא ענה" to false
+        "no_funds" -> return "אין יתרה" to false
+    }
+
+    return when (base) {
+        // The console had nobody to give it to — the one outcome that is ours.
+        "no_agent" -> "לא נמצא נציג" to false
+        "caller_hangup" -> if (answered) "הלקוח ניתק" to true else "המתקשר ויתר" to false
+        "operator_hangup" -> "הסתיימה" to true
+        "safety_net_timeout" -> "נותקה בזמן קצוב" to false
+        else -> if (answered) "נענתה" to true else "לא נענתה" to false
+    }
+}
+
 /** "3:05", not "185 שניות" — the form every phone shows a call length in. */
 private fun formatDuration(seconds: Int): String {
     if (seconds <= 0) return "—"
@@ -270,19 +311,30 @@ fun ConsoleCallCard(call: ConsoleCallRecord, onDial: () -> Unit = {}) {
                         )
                     }
                 }
-                Text(
-                    text = buildString {
-                        append(formatCallTime(call.startedAt))
-                        if (call.answered) {
+                val (statusText, statusGood) = callStatusLabel(call.answered, call.endedReason)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold,
+                        // Colour REINFORCES the word, it does not replace it. The
+                        // label alone is readable to someone who cannot tell the two
+                        // apart.
+                        color = if (statusGood) ColorSuccess else ColorDanger,
+                    )
+                    Text(
+                        text = buildString {
                             append(" · ")
-                            append(formatDuration(call.durationSec))
-                        } else {
-                            append(" · לא נענתה")
-                        }
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
-                )
+                            append(formatCallTime(call.startedAt))
+                            if (call.answered && call.durationSec > 0) {
+                                append(" · ")
+                                append(formatDuration(call.durationSec))
+                            }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                    )
+                }
             }
 
             // Shown only where a consent-checked path back exists. An inbound call from
@@ -418,6 +470,7 @@ fun HistoryScreenPreview() {
                     id = "1",
                     inbound = true,
                     name = "מבורך קלפה",
+                    endedReason = "caller_hangup",
                     phone = "+972536212562",
                     startedAt = "2026-08-17T16:42:22",
                     durationSec = 185,
@@ -431,6 +484,9 @@ fun HistoryScreenPreview() {
                     // No name: the number becomes the title, which is the case this
                     // whole change exists for.
                     name = null,
+                    // The case the whole status change exists for: not answered, and
+                    // the reason says which kind.
+                    endedReason = "no_agent",
                     phone = "+972501234567",
                     startedAt = "2026-08-17T14:10:00",
                     durationSec = 0,
