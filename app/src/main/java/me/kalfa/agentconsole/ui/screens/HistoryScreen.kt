@@ -609,10 +609,10 @@ fun HistoryScreenPreview() {
 // AI RSVP call, no PII by design), that one a `console_calls` row a human took, with
 // the caller's real number.
 //
-// NOTE this card still shows "אורח" and a blank number for every row, because its
-// mapper hardcodes both. It lives on the EVENT surface, where an event and its
-// guests are the subject and that framing is correct — which is exactly why it was
-// wrong on the call log. Fixing its blank number is a separate change there.
+// The blank number line is GONE (it drew an empty row under every card, because
+// the feed carries no phone by design), and "אורח" stays: on the event surface an
+// event and its guests ARE the subject, which is exactly why the same word was
+// wrong on the owner's business call log.
 @Composable
 fun HistoryCallCard(call: Call, onClick: () -> Unit = {}) {
     Card(
@@ -659,12 +659,25 @@ fun HistoryCallCard(call: Call, onClick: () -> Unit = {}) {
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Bold
                         )
-                        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                            Text(
-                                text = call.customerPhone,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                            )
+                        // Rendered only when there IS one. `console_call_feed`
+                        // carries no phone by design — it is the AI campaign feed
+                        // and PII stays server-side — so this drew an empty line
+                        // under every row, which reads as a value that failed to
+                        // load rather than as one that was never there.
+                        //
+                        // The NAME stays "אורח" here, deliberately and unlike the
+                        // console call log: this card lives on the event surface,
+                        // where an event and its guests are the subject. That is
+                        // precisely why the same word was wrong on the owner's
+                        // business call log and is right here.
+                        if (call.customerPhone.isNotBlank()) {
+                            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                                Text(
+                                    text = call.customerPhone,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                )
+                            }
                         }
                     }
                 }
