@@ -1429,6 +1429,18 @@ class SupabaseCallEngineImpl(
     // and the app reported it as a permissions problem. Resolving from Voximplant
     // instead removes the mismatch and works for EVERY call in the log rather than
     // the 2% our tables carry an event link for.
+    // The number goes up as the agent typed it; the SERVER normalizes it with
+    // libphonenumber and runs DNC. Normalizing here too would be a second
+    // implementation of the same rule, and the two would eventually disagree.
+    override suspend fun dialManual(phone: String, confirmOutsideHours: Boolean): AppResult<Unit> =
+        dialViaIntent(
+            buildJsonObject {
+                put("kind", "manual")
+                put("phone", phone)
+                if (confirmOutsideHours) put("confirm_outside_hours", true)
+            }.toString(),
+        )
+
     override suspend fun returnCallback(callbackId: String, confirmOutsideHours: Boolean): AppResult<Unit> =
         dialViaIntent(
             buildJsonObject {

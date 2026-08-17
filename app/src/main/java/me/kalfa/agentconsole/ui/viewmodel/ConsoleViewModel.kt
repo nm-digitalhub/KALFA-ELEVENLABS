@@ -55,6 +55,11 @@ sealed interface OutsideHoursPrompt {
         val contactId: String,
         override val who: String,
     ) : OutsideHoursPrompt
+
+    /** A number the agent typed. `who` is the number — there is nothing else to name. */
+    data class Manual(val phone: String) : OutsideHoursPrompt {
+        override val who: String get() = phone
+    }
 }
 
 data class ConsoleUiState(
@@ -872,6 +877,7 @@ class ConsoleViewModel : ViewModel() {
             null -> Unit
             is OutsideHoursPrompt.Callback -> returnCallback(p.callbackId, p.who, confirmOutsideHours = true)
             is OutsideHoursPrompt.Contact -> dialContact(p.eventId, p.contactId, p.who, confirmOutsideHours = true)
+            is OutsideHoursPrompt.Manual -> dialManual(p.phone, confirmOutsideHours = true)
         }
     }
 
@@ -907,6 +913,19 @@ class ConsoleViewModel : ViewModel() {
      * The list is reloaded either way: a success moves the request out of the queue
      * server-side, and a failure may have been caused by someone else taking it.
      */
+    /** Dials a number the agent typed. See CallEngine.dialManual. */
+    fun dialManual(phone: String, confirmOutsideHours: Boolean = false) {
+        viewModelScope.launch {
+            when (val r = callEngine.dialManual(phone, confirmOutsideHours)) {
+                is AppResult.Success -> _uiState.update { it.copy(outsideHoursPrompt = null) }
+                is AppResult.Failure -> handleDialFailure(
+                    r.reason,
+                    OutsideHoursPrompt.Manual(phone),
+                )
+            }
+        }
+    }
+
     fun returnCallback(callbackId: String, who: String = "", confirmOutsideHours: Boolean = false) {
         viewModelScope.launch {
             when (val r = callEngine.returnCallback(callbackId, confirmOutsideHours)) {

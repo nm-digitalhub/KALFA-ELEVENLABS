@@ -79,6 +79,7 @@ fun HistoryScreen(
     modifier: Modifier = Modifier
 ) {
     var showFilterSheet by remember { mutableStateOf(false) }
+    var openCall by remember { mutableStateOf<ConsoleCallRecord?>(null) }
 
     // Re-runs when the filter changes, because the filter is applied SERVER-SIDE.
     // Narrowing the page already in hand would report "no calls" for a range full of
@@ -93,6 +94,17 @@ fun HistoryScreen(
                 showFilterSheet = false
             },
             onDismiss = { showFilterSheet = false },
+        )
+    }
+
+    openCall?.let { selected ->
+        CallDetailSheet(
+            call = selected,
+            onDial = {
+                onDialFromHistory(selected)
+                openCall = null
+            },
+            onDismiss = { openCall = null },
         )
     }
 
@@ -171,7 +183,11 @@ fun HistoryScreen(
                         actionLabel = if (filter.isDefault) null else "נקה סינון",
                         onAction = { onFilterChange(ConsoleHistoryFilter(range = filter.range)) },
                     )
-                    else -> CallHistoryList(callHistory = callHistory, onDial = onDialFromHistory)
+                    else -> CallHistoryList(
+                        callHistory = callHistory,
+                        onDial = onDialFromHistory,
+                        onOpen = { openCall = it },
+                    )
                 }
             }
         }
@@ -305,11 +321,15 @@ private fun formatCallTime(isoUtc: String): String {
  */
 private fun callStatusLabel(call: ConsoleCallRecord): Pair<String, Boolean> = when (call.outcome) {
     CallOutcome.ANSWERED -> "נענתה" to true
+    // Worded from the OWNER's side of the call, not the platform's. "האפליקציה לא
+    // זמינה" read as a fault in the app the owner was holding, when SIP 480 on an
+    // agent leg means the opposite: the agent's own phone never rang because it was
+    // asleep or signed out.
     CallOutcome.MISSED -> when (call.endCode) {
-        480 -> "לא נענתה · האפליקציה לא זמינה" to false
-        486 -> "לא נענתה · תפוס" to false
-        603 -> "לא נענתה · נדחתה" to false
-        408 -> "לא נענתה · אין מענה" to false
+        480 -> "לא נענתה · הנציג לא היה מחובר" to false
+        486 -> "לא נענתה · הנציג היה תפוס" to false
+        603 -> "לא נענתה · הנציג דחה" to false
+        408 -> "לא נענתה · הנציג לא ענה" to false
         else -> "לא נענתה" to false
     }
     CallOutcome.ABANDONED -> "המתקשר ניתק לפני מענה" to false
@@ -330,13 +350,14 @@ private fun formatDuration(seconds: Int): String {
 fun CallHistoryList(
     callHistory: List<ConsoleCallRecord>,
     onDial: (ConsoleCallRecord) -> Unit = {},
+    onOpen: (ConsoleCallRecord) -> Unit = {},
 ) {
     LazyColumn(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(bottom = 24.dp)
     ) {
         items(callHistory, key = { it.id }) { call ->
-            ConsoleCallCard(call = call, onDial = { onDial(call) })
+            ConsoleCallCard(call = call, onDial = { onDial(call) }, onOpen = { onOpen(call) })
         }
     }
 }
@@ -355,8 +376,15 @@ fun CallHistoryList(
  * wearing the appearance of more.
  */
 @Composable
-fun ConsoleCallCard(call: ConsoleCallRecord, onDial: () -> Unit = {}) {
+fun ConsoleCallCard(
+    call: ConsoleCallRecord,
+    onDial: () -> Unit = {},
+    onOpen: () -> Unit = {},
+) {
     Card(
+        // The whole row opens the detail. A card that shows a SIP outcome and a talk
+        // time is a summary of something, and there was no way to reach the something.
+        onClick = onOpen,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         shape = RoundedCornerShape(24.dp),

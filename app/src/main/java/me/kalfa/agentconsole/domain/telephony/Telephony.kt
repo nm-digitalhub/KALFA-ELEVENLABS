@@ -307,6 +307,17 @@ interface CallEngine {
      * On success the new leg is already attached as the current session, so the
      * active-call screen shows it the same way an answered inbound call does.
      */
+    /**
+     * Dials a number a human typed.
+     *
+     * The shape that did not exist. `dial-intent`'s union was built so the AI
+     * campaign could never cold-call, and that rule ended up refusing the OWNER
+     * dialling from their own console — a console that could not do what the handset
+     * beside it does. DNC still applies server-side, and every attempt is audited.
+     */
+    suspend fun dialManual(phone: String, confirmOutsideHours: Boolean = false): AppResult<Unit> =
+        AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.Unknown)
+
     suspend fun returnCallback(callbackId: String, confirmOutsideHours: Boolean = false): AppResult<Unit> =
         AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.Unknown)
 
@@ -511,11 +522,34 @@ data class ConsoleCallRecord(
     /**
      * Whether a call-back button may be offered.
      *
-     * False is common and correct: an inbound call from a number with no contact
-     * record has no consent-checked path back, and dial-intent would refuse it. A
-     * button that cannot work is worse than no button.
+     * ANY INBOUND CALL WITH A NUMBER, which is the change: it used to require
+     * `eventId != null && contactId != null`, and on a business line that is 28 rows
+     * out of 1,241 measured in a week. The other 98% showed no button at all — on a
+     * call log, where returning a call is the main thing an owner does with one.
+     *
+     * That condition existed because the only dial shape available needed an event
+     * and a contact of ours. `returned_call` needs neither: the server takes this
+     * row's Voximplant session id and reads the number back from Voximplant's own
+     * record, then runs the consent chain on it.
+     *
+     * ANY row with a number, inbound or outbound. Outbound rows used to be excluded
+     * because `returned_call` refuses them (correctly — a call we placed is not
+     * somebody who rang us), but that left a redial button missing from a call log,
+     * which is absurd. They now dial through the `manual` shape instead.
+     *
+     * A withheld CLI still has nothing to ring.
      */
-    val dialable: Boolean get() = eventId != null && contactId != null
+    val dialable: Boolean get() = phone != null
+
+    /**
+     * Which dial shape this row uses.
+     *
+     * Inbound goes through `returned_call`, which resolves the number from
+     * Voximplant's own record of the session — the device names a session, never a
+     * number. Outbound has no inbound leg to resolve, so it redials the number
+     * itself through `manual`.
+     */
+    val redialsByNumber: Boolean get() = !inbound
 }
 
 /**

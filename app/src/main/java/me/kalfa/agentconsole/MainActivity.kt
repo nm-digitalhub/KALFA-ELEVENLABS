@@ -882,18 +882,29 @@ private fun ConsoleNavHost(
                     filter = state.consoleHistoryFilter,
                     onFilterChange = { viewModel.setConsoleHistoryFilter(it) },
                     onDialFromHistory = { record ->
-                        val eventId = record.eventId
-                        val contactId = record.contactId
-                        // Both or neither — ConsoleCallRecord.dialable already gates
-                        // the button on this, so reaching here without them would be
-                        // a bug rather than a state to handle silently.
-                        if (eventId != null && contactId != null) {
-                            // The name goes with it so the after-hours dialog can say
-                            // WHO it is about to ring — "לחייג בכל זאת?" with no name
-                            // asks the agent to confirm something they cannot see.
-                            viewModel.dialContact(
-                                eventId,
-                                contactId,
+                        // The row's id IS the Voximplant session id, and returnCallback
+                        // sends it through dial-intent's `returned_call` shape — the
+                        // server reads the number back from Voximplant's own record.
+                        //
+                        // It used to require an event+contact pair from our tables,
+                        // which 98% of real calls do not have, so the button was
+                        // invisible on almost every row of a call log.
+                        //
+                        // `who` accompanies it so the after-hours dialog can name who
+                        // it is about to ring; on a business line that is usually the
+                        // number, because most callers have no name on file.
+                        // Two shapes, one button. An INBOUND row dials by session id
+                        // — the server resolves the number from Voximplant's record,
+                        // so the device never names a number. An OUTBOUND row has no
+                        // inbound leg to resolve, so it redials the number itself.
+                        //
+                        // Both are now offered on every row that has a number: a call
+                        // log whose rows cannot be called back is a list, not a phone.
+                        if (record.redialsByNumber) {
+                            record.phone?.let { viewModel.dialManual(it) }
+                        } else {
+                            viewModel.returnCallback(
+                                record.id,
                                 who = record.name ?: record.phone ?: "",
                             )
                         }
