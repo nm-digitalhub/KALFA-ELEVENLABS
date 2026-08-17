@@ -893,6 +893,7 @@ private fun ConsoleNavHost(
                             )
                         }
                     },
+                    onRefreshHistory = { viewModel.loadConsoleHistory() },
                     callHistory = state.consoleHistory,
                     rsvpResults = filteredRsvp,
                     modifier = contentModifier

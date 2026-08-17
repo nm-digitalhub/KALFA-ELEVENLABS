@@ -34,12 +34,25 @@ fun HistoryScreen(
     selectedEventId: String? = null,
     onSelectEvent: (String?) -> Unit = {},
     onDialFromHistory: (ConsoleCallRecord) -> Unit = {},
+    /**
+     * Loads the list. NOT optional in practice, and its absence is why this screen
+     * shipped showing "אין שיחות בהיסטוריה" over 1,242 rows: the state, the endpoint,
+     * the model and this screen were all wired, and nothing ever called the loader.
+     * An empty list is indistinguishable from a list never asked for, which is what
+     * made it invisible to every gate — it compiled, it tested, it rendered.
+     */
+    onRefreshHistory: () -> Unit = {},
     callHistory: List<ConsoleCallRecord>,
     rsvpResults: List<RsvpResult>,
     modifier: Modifier = Modifier
 ) {
     var selectedTab by remember { mutableStateOf(0) }
     val tabTitles = listOf("יומן שיחות", "תוצאות אישור הגעה")
+
+    // Loaded when the screen appears. Same idiom the dashboard's missed-call card
+    // uses, and for the same reason: a call list is stale within minutes and the
+    // agent's own arrival is the moment they care about it.
+    LaunchedEffect(Unit) { onRefreshHistory() }
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Column(
