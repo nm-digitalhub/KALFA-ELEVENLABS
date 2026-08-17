@@ -716,6 +716,11 @@ private fun ConsoleNavHost(
                     rsvpResults = state.rsvpResults,
                     onStatusChange = { viewModel.setAgentStatus(it) },
                     onDiagnosticsUnlock = onDiagnosticsUnlock,
+                    pendingCallbacks = state.pendingCallbacks,
+                    callbacksLoading = state.callbacksLoading,
+                    callbacksFailed = state.callbacksFailed,
+                    onRefreshCallbacks = { viewModel.loadPendingCallbacks() },
+                    onReturnCallback = { viewModel.returnCallback(it) },
                     modifier = contentModifier
                 )
             }

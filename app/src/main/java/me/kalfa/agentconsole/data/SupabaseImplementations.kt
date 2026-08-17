@@ -1366,6 +1366,110 @@ class SupabaseCallEngineImpl(
     // (beta's dialIntentBodySchema comment: no code path exists for it). Throwing
     // here keeps that decision enforced at the boundary even if a caller reappears
     // by accident; see AGENTS.md's "Outbound dialing" section before building one.
+    // ── Missed calls ──────────────────────────────────────────────────────────
+
+    override suspend fun loadPendingCallbacks(): AppResult<List<me.kalfa.agentconsole.domain.telephony.PendingCallback>> = try {
+        val jwt = getJwt()
+        val resp = httpClient.get("https://beta.kalfa.me/api/agents/callbacks") {
+            header(HttpHeaders.Authorization, "Bearer $jwt")
+        }
+        if (resp.status.value in 200..299) {
+            val parsed = Json.parseToJsonElement(resp.bodyAsText())
+                .jsonObject["callbacks"]?.jsonArray.orEmpty()
+                .mapNotNull { row ->
+                    val o = row.jsonObject
+                    val id = o["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                    val phone = o["phone"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                    // A row with no id cannot be dialled and a row with no phone cannot
+                    // be shown to the agent — both are dropped rather than defaulted,
+                    // the same rule loadTransferTargets applies.
+                    if (id == null || phone == null) null
+                    else me.kalfa.agentconsole.domain.telephony.PendingCallback(
+                        id = id,
+                        fullName = o["full_name"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                            ?: "מתקשר לא מזוהה",
+                        phone = phone,
+                        topic = o["topic"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
+                        createdAt = o["created_at"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    )
+                }
+            AppResult.Success(parsed)
+        } else {
+            AppResult.Failure(failureForStatus(resp.status.value))
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+        AppResult.Failure(e.toAppFailure())
+    }
+
+    /**
+     * Returns a missed call: ask the server for a dial token, then place the leg.
+     *
+     * TWO steps, and the split is the consent model rather than an implementation
+     * detail. The device sends the callback's ID; dial-intent re-reads the number,
+     * runs DNC / opt-out / quiet-hours / Shabbat / caps / balance, and answers with a
+     * one-time `ct…` token. The app never learns a dialable destination it could
+     * reuse, and a refusal comes back as a status the agent sees rather than a call
+     * that quietly should not have happened.
+     *
+     * The token is what goes to the SDK. `ct[0-9a-f]+` routes to ConsoleDial's
+     * outbound branch, which dials the customer from OUR DID — the agent's own number
+     * is never exposed, and the call is recorded and billed like any other.
+     */
+    override suspend fun returnCallback(callbackId: String): AppResult<Unit> = try {
+        val jwt = getJwt()
+        val resp = httpClient.post("https://beta.kalfa.me/api/console-calls/dial-intent") {
+            header(HttpHeaders.Authorization, "Bearer $jwt")
+            contentType(ContentType.Application.Json)
+            setBody(
+                buildJsonObject {
+                    put("kind", "callback")
+                    put("id", callbackId)
+                }.toString(),
+            )
+        }
+        if (resp.status.value !in 200..299) {
+            AppResult.Failure(failureForStatus(resp.status.value))
+        } else {
+            val token = Json.parseToJsonElement(resp.bodyAsText())
+                .jsonObject["dial"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            if (token == null) {
+                // A 2xx with no token is a contract break, not a refusal — refusals
+                // arrive as non-2xx. Surfaced rather than swallowed into "nothing
+                // happened".
+                AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.Unknown)
+            } else {
+                withContext(Dispatchers.Main) {
+                    // NULLABLE, and treated as a real outcome rather than asserted
+                    // away: the SDK returns null when it cannot create a call at all
+                    // — most often because this device is not logged in to
+                    // Voximplant, which is exactly the state a backgrounded console
+                    // can be in when an agent taps a missed call. A !! here would
+                    // turn "you are not connected" into a crash.
+                    val call = com.voximplant.android.sdk.calls.VICalls.createCall(
+                        token,
+                        com.voximplant.android.sdk.calls.CallSettings(),
+                    )
+                    if (call == null) {
+                        AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.Unknown)
+                    } else {
+                        val session = me.kalfa.agentconsole.telephony.vox.VoxCallSession(call)
+                        // Attached BEFORE start(): the session must already be the
+                        // current one when the SDK begins emitting state, or the first
+                        // transitions land with nothing observing them and the call
+                        // screen opens blank.
+                        attachIncomingSession(session)
+                        call.start()
+                        AppResult.Success(Unit)
+                    }
+                }
+            }
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+        AppResult.Failure(e.toAppFailure())
+    }
+
     override fun startOutboundCall(phone: String, customerName: String): CallSession =
         throw UnsupportedOperationException(
             "startOutboundCall has no caller: neither a dial-intent token picker nor an " +

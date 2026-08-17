@@ -25,7 +25,11 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.material.icons.filled.Phone
 import me.kalfa.agentconsole.domain.model.AgentStatus
+import me.kalfa.agentconsole.domain.telephony.PendingCallback
 import me.kalfa.agentconsole.domain.model.RsvpAnswer
 import me.kalfa.agentconsole.domain.model.RsvpResult
 import me.kalfa.agentconsole.ui.theme.*
@@ -42,8 +46,20 @@ fun DashboardScreen(
     rsvpResults: List<RsvpResult>,
     onStatusChange: (AgentStatus) -> Unit,
     onDiagnosticsUnlock: () -> Unit = {},
+    // ── Missed calls (17.8) ──────────────────────────────────────────────────
+    // Defaulted so previews and any caller that does not wire them still render a
+    // working dashboard; an empty list simply hides the card.
+    pendingCallbacks: List<PendingCallback> = emptyList(),
+    callbacksLoading: Boolean = false,
+    callbacksFailed: Boolean = false,
+    onRefreshCallbacks: () -> Unit = {},
+    onReturnCallback: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    // Loaded when the dashboard appears and whenever the agent comes back to it —
+    // a queue read on a screen that may sit open for an hour is stale within
+    // minutes, and the agent's own return is the moment they care.
+    LaunchedEffect(Unit) { onRefreshCallbacks() }
     // Ten taps on the agent's own name open "אבחון חי" — the same screen the
     // invisible 28dp long-press hotspot in MainActivity used to open, and which
     // replaced it because nobody could find it. Deliberately the platform's own
@@ -257,6 +273,29 @@ fun DashboardScreen(
                 }
             }
 
+            // Missed calls — the queue of people waiting to be called back.
+            //
+            // Placed above the RSVP breakdown deliberately: it is the only card here
+            // that is a TASK LIST rather than a statistic. Everything else on this
+            // screen tells an agent how things are going; this one tells them what to
+            // do next, and burying that under three read-outs would be the same
+            // mistake as the silent missed-call push.
+            //
+            // Hidden entirely when the queue is empty and healthy. A card reading
+            // "0 שיחות שלא נענו" is a permanent fixture that trains an agent to skip
+            // past exactly the region that matters on the day it is not zero.
+            if (pendingCallbacks.isNotEmpty() || callbacksFailed) {
+                item {
+                    MissedCallsCard(
+                        callbacks = pendingCallbacks,
+                        failed = callbacksFailed,
+                        loading = callbacksLoading,
+                        onReturnCallback = onReturnCallback,
+                        onRetry = onRefreshCallbacks,
+                    )
+                }
+            }
+
             // RSVP Breakdown
             item {
                 Card(
@@ -333,6 +372,118 @@ fun DashboardScreen(
             // against). A form that solicits a phone number for a call this platform
             // will never place is worse than no form — see AGENTS.md's "Outbound
             // dialing" section for the full evidence trail before reintroducing this.
+        }
+    }
+}
+
+/**
+ * The missed-call queue: who called while nobody answered, and one tap to ring them
+ * back.
+ *
+ * SHOWS THE FULL NUMBER, always, and that is the requirement rather than a detail.
+ * Most of these callers have no name on file — someone who has never been a customer
+ * still called this business and still deserves a call back — so the number IS the
+ * identity here. A masked hint would make the card decorative.
+ *
+ * The button sends the request's ID, never the number. The server re-reads the phone
+ * and runs the full consent chain before it will dial, so a number an agent can read
+ * off this screen is not a number the app can dial at will.
+ *
+ * Nothing here claims the call connected: the snackbar says "מחייג חזרה…" and the
+ * active-call screen reports what actually happens, the same division of labour the
+ * live-call controls use.
+ */
+@Composable
+private fun MissedCallsCard(
+    callbacks: List<PendingCallback>,
+    failed: Boolean,
+    loading: Boolean,
+    onReturnCallback: (String) -> Unit,
+    onRetry: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(24.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "שיחות שלא נענו",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                if (!failed) {
+                    Text(
+                        text = callbacks.size.toString(),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = ColorWarning,
+                    )
+                }
+            }
+
+            if (failed) {
+                // A failed read must never look like an empty queue — the whole card
+                // is hidden when the queue is genuinely empty, so anything shown here
+                // is a problem worth naming.
+                Text(
+                    text = "לא הצלחנו לטעון את רשימת השיחות שלא נענו.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Button(onClick = onRetry, shape = RoundedCornerShape(12.dp)) {
+                    Text(text = "נסה שוב")
+                }
+            } else {
+                callbacks.forEach { callback ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = callback.fullName,
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            // LTR island: a phone number reads left-to-right, and in
+                            // this RTL card a leading "+" would otherwise be laid out
+                            // at the wrong end.
+                            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                                Text(
+                                    text = callback.phone,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                )
+                            }
+                        }
+                        Button(
+                            onClick = { onReturnCallback(callback.id) },
+                            enabled = !loading,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.semantics {
+                                contentDescription = "התקשר חזרה אל ${callback.fullName}"
+                            },
+                        ) {
+                            Icon(imageVector = Icons.Default.Phone, contentDescription = null)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(text = "התקשר")
+                        }
+                    }
+                }
+            }
         }
     }
 }

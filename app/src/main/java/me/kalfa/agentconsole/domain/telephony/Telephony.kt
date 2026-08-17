@@ -282,7 +282,49 @@ interface CallEngine {
      */
     suspend fun removeFromConference(consoleCallId: String): AppResult<Unit> =
         AppResult.Success(Unit)
+
+    // ── Missed calls ──────────────────────────────────────────────────────────
+
+    /**
+     * The open missed-call queue — GET /api/agents/callbacks.
+     *
+     * Every inbound call nobody answered records one of these server-side. Each
+     * carries the caller's number for DISPLAY, including for someone who has never
+     * been a customer and has no name attached.
+     */
+    suspend fun loadPendingCallbacks(): AppResult<List<PendingCallback>> =
+        AppResult.Success(emptyList())
+
+    /**
+     * Returns a missed call, by callback id.
+     *
+     * The ID, never the number. POST /api/console-calls/dial-intent re-reads the
+     * phone server-side and runs the whole consent chain — DNC, opt-out, quiet hours,
+     * Shabbat, caps, balance — before minting a one-time dial token, and dial-intent
+     * has no request shape that accepts a raw phone at all. So the device asks "call
+     * back request X" and never "dial this number".
+     *
+     * On success the new leg is already attached as the current session, so the
+     * active-call screen shows it the same way an answered inbound call does.
+     */
+    suspend fun returnCallback(callbackId: String): AppResult<Unit> =
+        AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.Unknown)
 }
+
+/**
+ * Someone waiting to be called back. Mirrors GET /api/agents/callbacks.
+ *
+ * [phone] is present so the agent can see WHO they are about to ring — the whole
+ * point for a caller the platform has no record of. Display-only; the dial goes
+ * by [id].
+ */
+data class PendingCallback(
+    val id: String,
+    val fullName: String,
+    val phone: String,
+    val topic: String?,
+    val createdAt: String,
+)
 
 /** A colleague a live call can be handed to. Mirrors GET /api/agents/transfer-targets. */
 data class TransferTarget(

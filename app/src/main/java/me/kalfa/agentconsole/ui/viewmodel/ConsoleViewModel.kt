@@ -24,6 +24,7 @@ import me.kalfa.agentconsole.ui.message.FailureContext
 import me.kalfa.agentconsole.ui.message.MessageAction
 import me.kalfa.agentconsole.ui.message.MessageSeverity
 import me.kalfa.agentconsole.ui.message.UiMessage
+import me.kalfa.agentconsole.domain.telephony.PendingCallback
 import me.kalfa.agentconsole.domain.telephony.TransferTarget
 import me.kalfa.agentconsole.ui.message.UiEffect
 import me.kalfa.agentconsole.ui.message.toHebrewMessage
@@ -105,6 +106,13 @@ data class ConsoleUiState(
      * there is no conference in flight.
      */
     val conferenceRequested: Boolean = false,
+    // ── Missed calls ─────────────────────────────────────────────────────────
+    // People waiting to be called back. Empty is a real answer and rendered as
+    // one; loading and failure are tracked apart so a failed fetch never reads as
+    // a clear queue.
+    val pendingCallbacks: List<PendingCallback> = emptyList(),
+    val callbacksLoading: Boolean = false,
+    val callbacksFailed: Boolean = false,
 )
 
 class ConsoleViewModel : ViewModel() {
@@ -703,6 +711,46 @@ class ConsoleViewModel : ViewModel() {
     //    the call arrived from a scenario that predates the header carrying it, and
     //    an agent pressing a button that does nothing with no explanation is the
     //    exact failure mode CallSession.holdRefused exists to prevent.
+
+    fun loadPendingCallbacks() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(callbacksLoading = true, callbacksFailed = false) }
+            when (val result = callEngine.loadPendingCallbacks()) {
+                is AppResult.Success -> _uiState.update {
+                    it.copy(
+                        pendingCallbacks = result.value,
+                        callbacksLoading = false,
+                        callbacksFailed = false,
+                    )
+                }
+                is AppResult.Failure -> _uiState.update {
+                    it.copy(pendingCallbacks = emptyList(), callbacksLoading = false, callbacksFailed = true)
+                }
+            }
+        }
+    }
+
+    /**
+     * Calls someone back.
+     *
+     * The message on success says the call is being PLACED, not that it connected —
+     * dial-intent answers with a token and the leg then rings like any other, so the
+     * active-call screen is what reports the real outcome.
+     *
+     * The list is reloaded either way: a success moves the request out of the queue
+     * server-side, and a failure may have been caused by someone else taking it.
+     */
+    fun returnCallback(callbackId: String) {
+        viewModelScope.launch {
+            when (callEngine.returnCallback(callbackId)) {
+                is AppResult.Success -> _effects.emit(UiEffect.ShowSnackbar("מחייג חזרה…"))
+                is AppResult.Failure -> _effects.emit(
+                    UiEffect.ShowSnackbar("החיוג חזרה נכשל. ייתכן שהמספר חסום או שהשעה אינה מתאימה."),
+                )
+            }
+            loadPendingCallbacks()
+        }
+    }
 
     fun loadTransferTargets() {
         viewModelScope.launch {
