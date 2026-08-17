@@ -128,6 +128,24 @@
     -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!--
+      Ring vibration, driven by the app rather than the notification channel — see
+      IncomingCallVibrator for why a channel waveform cannot ring (it plays ONCE; the
+      first attempt buzzed twice and stopped).
+
+      Required by every Vibrator.vibrate overload:
+      @RequiresPermission(android.Manifest.permission.VIBRATE), read from AOSP
+      frameworks/base core/java/android/os/Vibrator.java on 2026-08-17. Its absence
+      would not have been loud — vibrate() throws SecurityException, the caller
+      catches it so an incoming call never crashes, and the phone would simply have
+      stayed still with a line in logcat. The channel's own two buzzes kept working
+      throughout, because the SYSTEM performs those on the app's behalf and they need
+      no permission from us; only direct vibration does.
+
+      protectionLevel="normal": install-time, no runtime prompt, nothing for an agent
+      to grant.
+    -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Android 12+ (API 31) Bluetooth headset routing. -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 

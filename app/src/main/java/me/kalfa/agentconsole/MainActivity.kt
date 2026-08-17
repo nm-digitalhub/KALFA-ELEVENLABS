@@ -118,6 +118,7 @@ class MainActivity : ComponentActivity() {
         // it kills locked-screen ringing with no symptom except missed calls.
         TelecomRegistration.register(applicationContext)
         applyIncomingCallWindowFlagsIfNeeded(intent)
+        answerFromNotificationIfRequested(intent)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
@@ -482,8 +483,32 @@ class MainActivity : ComponentActivity() {
     // Delivered when a full-screen-intent-launched call (docs §3) targets this
     // Activity while it is already running (singleTask — see AndroidManifest.xml) —
     // Android routes it here instead of a fresh onCreate.
+    /**
+     * Answers the call when this activity was launched by the notification's Answer
+     * action.
+     *
+     * The answer itself still goes through the same coordinator call the in-app button
+     * uses, so there is one implementation of "answer" and not two. What this adds is
+     * only that the UI is now on screen when it happens — see
+     * IncomingCallNotificationBuilder.answerPendingIntent for why a receiver could not
+     * do that.
+     *
+     * Guarded: an Activity lifecycle callback that throws takes the process down, and
+     * this one runs at the exact moment the agent is trying to take a call.
+     */
+    private fun answerFromNotificationIfRequested(intent: Intent?) {
+        if (intent?.action != IncomingCallNotificationBuilder.ACTION_ANSWER) return
+        val callId = intent.getStringExtra(IncomingCallNotificationBuilder.EXTRA_CALL_ID) ?: return
+        try {
+            DependencyContainer.incomingCallCoordinator?.answer(callId)
+        } catch (e: Throwable) {
+            android.util.Log.w("MainActivity", "answer from notification failed: ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        answerFromNotificationIfRequested(intent)
         setIntent(intent)
         applyIncomingCallWindowFlagsIfNeeded(intent)
     }
@@ -493,7 +518,15 @@ class MainActivity : ComponentActivity() {
     // an ordinary app open. setShowWhenLocked/setTurnScreenOn are API 27+; 24-26 falls
     // back to the equivalent WindowManager flags (spec's version-gating table).
     private fun applyIncomingCallWindowFlagsIfNeeded(intent: Intent?) {
-        if (intent?.action != IncomingCallNotificationBuilder.ACTION_INCOMING_CALL_UI) return
+        // ACTION_ANSWER joins the list: answering from the notification on a LOCKED
+        // phone launches this activity, and without these flags it would sit behind
+        // the keyguard — a connected call the agent can hear but not see or hang up.
+        val action = intent?.action
+        if (action != IncomingCallNotificationBuilder.ACTION_INCOMING_CALL_UI &&
+            action != IncomingCallNotificationBuilder.ACTION_ANSWER
+        ) {
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)

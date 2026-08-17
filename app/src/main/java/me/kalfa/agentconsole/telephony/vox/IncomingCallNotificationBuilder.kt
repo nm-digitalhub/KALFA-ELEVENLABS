@@ -198,8 +198,40 @@ object IncomingCallNotificationBuilder {
         )
     }
 
-    private fun answerPendingIntent(context: Context, callId: String) =
-        actionPendingIntent(context, ACTION_ANSWER, callId, requestCode = 1)
+    /**
+     * ANSWER launches the ACTIVITY, not the broadcast receiver, and that difference is
+     * the whole fix for "answered from the lock screen and no call screen appeared".
+     *
+     * A BroadcastReceiver answers the SDK leg perfectly well — that was the original
+     * design and its reasoning was sound as far as it went: answering is fast and
+     * non-UI, so it need not wait for an Activity. But nothing then BROUGHT the call
+     * screen up, so with the app closed or the phone locked the agent got a connected
+     * call and a blank screen, exactly unlike every other dialer on the device.
+     *
+     * A receiver cannot fix that itself: since Android 10, an app in the background
+     * may not start an activity, and a broadcast handler is background. What IS
+     * permitted is a PendingIntent the USER activated — tapping a notification action
+     * is a user action, so getActivity here launches legitimately from a locked screen
+     * where getBroadcast-then-startActivity would be silently dropped.
+     *
+     * MainActivity performs the answer on arrival, so the leg is still answered by the
+     * same coordinator call; only the thread of control changes.
+     *
+     * DECLINE stays a broadcast. It has no UI to show, and it must keep working with
+     * the app fully backgrounded.
+     */
+    private fun answerPendingIntent(context: Context, callId: String): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java)
+            .setAction(ACTION_ANSWER)
+            .putExtra(EXTRA_CALL_ID, callId)
+            .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        return PendingIntent.getActivity(
+            context,
+            1,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
 
     private fun declinePendingIntent(context: Context, callId: String) =
         actionPendingIntent(context, ACTION_DECLINE, callId, requestCode = 2)

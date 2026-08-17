@@ -233,6 +233,12 @@ class VoxIncomingCallCoordinator(
             IncomingCallNotificationBuilder.NOTIFICATION_ID,
             IncomingCallNotificationBuilder.build(context, offer.callId, offer.displayName, offer.number),
         )
+        // Ring vibration, for the whole ring rather than the two buzzes a channel
+        // waveform gives — see IncomingCallVibrator for why the channel alone cannot
+        // do this. Started AFTER the notify so an AOSP rejection of the notification
+        // (see the note below) leaves the phone still, rather than buzzing about a
+        // call the agent can no longer see anywhere.
+        IncomingCallVibrator.start(context)
         // Deliberately AFTER the notify rather than wrapped around it. AOSP rejects
         // a CallStyle notification outright in some states (AGENTS.md §A-1), and
         // catching that here would change this method's behaviour, which is not
@@ -282,6 +288,9 @@ class VoxIncomingCallCoordinator(
         }
 
         Telemetry.emit(TelemetryEvents.CALL_ANSWER, "id" to shortId(offer.callId))
+        // Before anything else: the phone must stop buzzing the instant the agent
+        // commits, not when the teardown eventually runs.
+        IncomingCallVibrator.stop(context)
         offer.session.answer()
         answeredCallId = offer.callId
         callEngine.attachIncomingSession(offer.session)
@@ -301,6 +310,7 @@ class VoxIncomingCallCoordinator(
             return
         }
         Telemetry.emit(TelemetryEvents.CALL_DECLINE, "id" to shortId(offer.callId))
+        IncomingCallVibrator.stop(context)
         offer.session.decline() // triggers finish() synchronously -> cleanUp() below
     }
 
@@ -338,6 +348,11 @@ class VoxIncomingCallCoordinator(
         }
         if (plan.clearAttachedSession) callEngine.clearAttachedSession()
         if (plan.stopForegroundService) CallForegroundService.stop(context)
+        // The catch-all stop. answer()/decline() already stopped it on the paths an
+        // agent takes deliberately; this covers the ones nobody chose — the caller
+        // gave up, the ring window expired, the leg failed. A repeating waveform has
+        // no natural end, so every exit has to be one.
+        if (plan.cancelRingNotification) IncomingCallVibrator.stop(context)
 
         Telemetry.emit(
             TelemetryEvents.CALL_CLEANUP,
