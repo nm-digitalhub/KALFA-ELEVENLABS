@@ -1525,6 +1525,19 @@ class SupabaseCallEngineImpl(
             // routing token exactly as it did before — ugly, but never WRONG,
             // which a number from a different source could be.
             val displayPhone = ok["target_phone"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            // The console_calls row this leg belongs to — the address every
+            // live-call action is sent to (POST /api/console-calls/{id}/transfer
+            // and friends).
+            //
+            // Without it, transfer, consult and conference were all refused on an
+            // OUTBOUND call with "השיחה הזו אינה מזוהה בשרת", reported by the owner
+            // on the first successful manual dial. The id reaches an INBOUND leg on
+            // the X-Kalfa-Console-Call-Id SIP header, and a leg this app creates has
+            // no header to read — so it was simply absent, and every handoff control
+            // was dead on exactly the calls an agent places themselves.
+            //
+            // dial-intent has always known it; it just never said so. It does now.
+            val consoleCallId = ok["console_call_id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
             if (token == null) {
                 // A 2xx with no token is a contract break, not a refusal — refusals
                 // arrive as non-2xx. Surfaced rather than swallowed into "nothing
@@ -1554,6 +1567,7 @@ class SupabaseCallEngineImpl(
                         onSuccess = { call ->
                             val session = me.kalfa.agentconsole.telephony.vox.VoxCallSession(
                                 call = call,
+                                consoleCallId = consoleCallId,
                                 displayPhoneOverride = displayPhone,
                             )
                             // Attached BEFORE start(): the session must already be the
