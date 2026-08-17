@@ -1,5 +1,6 @@
 package me.kalfa.agentconsole.telephony.vox
 
+import android.util.Log
 import com.voximplant.android.sdk.calls.Call
 import com.voximplant.android.sdk.calls.CallCallback
 import com.voximplant.android.sdk.calls.CallDisconnectReason
@@ -57,6 +58,9 @@ class VoxCallSession(
 
     private val _isReconnecting = MutableStateFlow(call.state == VoxCallState.Reconnecting)
     override val isReconnecting: StateFlow<Boolean> = _isReconnecting.asStateFlow()
+
+    private val _holdRefused = MutableStateFlow(false)
+    override val holdRefused: StateFlow<Boolean> = _holdRefused.asStateFlow()
 
     private var ticker: Job? = null
 
@@ -153,9 +157,10 @@ class VoxCallSession(
                 _durationSec.value = readDurationSec()
                 // Re-read the toggles from the SDK on the same beat rather than trusting
                 // what this class last wrote. `hold`'s failure path deliberately keeps
-                // the prior value and tells nobody, and `muteAudio` is fire-and-forget
-                // with no callback at all — so an optimistic write that the SDK did not
-                // honour would otherwise stay on screen for the rest of the call. This
+                // the prior value (holdRefused is the separate signal for "why nothing
+                // moved" — see its kdoc), and `muteAudio` is fire-and-forget with no
+                // callback at all — so an optimistic write that the SDK did not honour
+                // would otherwise stay on screen for the rest of the call. This
                 // converges the display on the SDK's own answer within a second,
                 // whoever changed it.
                 runCatching { call.isMuted }.onSuccess { _isMuted.value = it }
@@ -179,14 +184,25 @@ class VoxCallSession(
         _isMuted.value = muted
     }
 
+    // Reset BEFORE the SDK call, not after a failure — see CallSession.holdRefused's
+    // kdoc for why: a StateFlow does not re-emit an unchanged value, so without this
+    // a SECOND consecutive refusal (holdRefused already sitting at true) would never
+    // produce a new transition for ConsoleViewModel's collector to see.
     override fun hold(held: Boolean) {
+        _holdRefused.value = false
         call.hold(held, object : CallCallback {
             override fun onSuccess() { _isHeld.value = held }
-            // Keep the prior hold state. This alone is a silent no-op — the agent taps
-            // and nothing moves — which is why the ticker re-reads `call.isOnHold` every
-            // second, and why no hold control is offered on ActiveCallScreen (see the
-            // "what is deliberately not here" note in that file).
-            override fun onFailure(e: CallException) { }
+            // The prior hold state is kept (isHeld untouched here) — the ticker
+            // re-reads call.isOnHold every second and converges the display on the
+            // SDK's own answer regardless. What onFailure adds is telling someone: e
+            // carries a CallError enum + description, but neither is echoed to the
+            // agent (an SDK-internal string is not the kind of detail a user-facing
+            // message should carry) — only the CLASS of event, via holdRefused,
+            // which ConsoleViewModel turns into an honest Hebrew snackbar.
+            override fun onFailure(e: CallException) {
+                Log.w(TAG, "hold($held) refused: ${e.error}")
+                _holdRefused.value = true
+            }
         })
     }
 
@@ -216,5 +232,9 @@ class VoxCallSession(
     override fun decline() {
         runCatching { call.reject(RejectMode.Decline, emptyMap()) }
         finish()
+    }
+
+    private companion object {
+        const val TAG = "VoxCallSession"
     }
 }

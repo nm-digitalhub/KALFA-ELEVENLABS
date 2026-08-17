@@ -1247,10 +1247,22 @@ class SupabaseCallEngineImpl(
     // unreachable in production, not a regression — the throws are replaced by the
     // real leg in the telephony-wiring step.
     // ─────────────────────────────────────────────────────────────────────────
+    // Not "not wired yet" — there is deliberately no caller for this today. The
+    // only two SDK-dial destinations this app's Voximplant rules honour (see
+    // startOutboundCall's kdoc on CallEngine) are a dial-intent token, which needs
+    // a picker UI over a server-verified target (callback_requests / an event's
+    // guest_service contacts) this app does not read yet, and a colleague's
+    // agent_<uuid> identity, which needs a roster UI this app does not have. A
+    // free-typed phone number — this app's OLD "Quick Outbound Dialer" card, since
+    // removed from DashboardScreen — is not on that list BY PLATFORM DESIGN
+    // (beta's dialIntentBodySchema comment: no code path exists for it). Throwing
+    // here keeps that decision enforced at the boundary even if a caller reappears
+    // by accident; see AGENTS.md's "Outbound dialing" section before building one.
     override fun startOutboundCall(phone: String, customerName: String): CallSession =
         throw UnsupportedOperationException(
-            "startOutboundCall is not wired: app-initiated dialing is enqueue-only via " +
-                "enqueueOutboundCall(eventId, guestId); a live agent leg ships in the telephony-wiring step.",
+            "startOutboundCall has no caller: neither a dial-intent token picker nor an " +
+                "agent-roster picker exists in this app, and a free-typed phone number is " +
+                "excluded by platform design (beta's dial-intent schema). See AGENTS.md.",
         )
 
     override fun monitorCall(callId: String): CallSession =

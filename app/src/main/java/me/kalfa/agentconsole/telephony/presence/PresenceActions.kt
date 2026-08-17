@@ -88,6 +88,38 @@ object PresenceActions {
             )
             reportPresenceResult(shiftResult)
 
+            // Persist the identity HERE, on the path that just proved it usable —
+            // not only in ConsoleViewModel, where it was the single writer.
+            //
+            // The gap this closes, traced 2026-08-17 from a live banner reading
+            // "זהות הטלפוניה של המכשיר עדיין לא נקלטה":
+            //   • `Keys.VOX_USERNAME` had exactly ONE writer, ConsoleViewModel's
+            //     identity load, and it sits inside a `catch (Exception) {
+            //     printStackTrace() }` — so any failure of that read (network,
+            //     deserialisation, a JWT that had not settled) left the key unwritten
+            //     and said nothing.
+            //   • The heartbeat path (ensurePushRegistration, below) reads the store
+            //     and ONLY the store. With the key unwritten it reports
+            //     `no_device_identity` every 30s forever, and nothing on that path can
+            //     repair it — the device silently stops being wakeable for calls while
+            //     the dashboard still shows "זמין".
+            //
+            // A READY tap that arrives here with a non-null username is the strongest
+            // evidence the app ever has about which Voximplant identity this device
+            // is, so it is the right place to make that durable. Best-effort by
+            // design: a DataStore write failure must not abort a presence change the
+            // server has already accepted, and the login below does not depend on it
+            // (it uses the in-memory value). Worst case we are exactly where we were.
+            if (voxUsername != null) {
+                try {
+                    DependencyContainer.voxTokenStore?.saveUsername(voxUsername)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "could not persist vox identity: ${e.javaClass.simpleName}: ${e.message}")
+                }
+            }
+
             loginAndRegisterForPush(voxUsername)
 
             // A device-configuration check, not a request that failed — deliberately

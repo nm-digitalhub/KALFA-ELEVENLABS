@@ -17,9 +17,7 @@ import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteDefaul
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -120,6 +118,13 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Box(modifier = Modifier.fillMaxSize()) {
+                // Declared HERE rather than beside the overlay below, because the
+                // gesture that sets it now lives inside AuthGate (DashboardScreen's
+                // greeting) while the overlay that reads it is drawn outside. Compose
+                // lambdas capture their enclosing scope, so hoisting the state to the
+                // common ancestor is all the wiring this needs — AdaptiveConsoleScaffold
+                // takes `content` as a lambda, so nothing has to be threaded through it.
+                var showDebugLive by rememberSaveable { mutableStateOf(false) }
                 AuthGate {
                     val state by viewModel.uiState.collectAsState()
                     val navController = rememberNavController()
@@ -266,7 +271,13 @@ class MainActivity : ComponentActivity() {
                                     // a top-level overlay outside AuthGate; see that block
                                     // below for why the placement, not this Column, is where
                                     // it has to live.
-                                    ConsoleNavHost(navController, state, viewModel, contentModifier)
+                                    ConsoleNavHost(
+                                        navController,
+                                        state,
+                                        viewModel,
+                                        contentModifier,
+                                        onDiagnosticsUnlock = { showDebugLive = true },
+                                    )
                                 }
                             }
                         }
@@ -343,10 +354,12 @@ class MainActivity : ComponentActivity() {
                         visibility = callVisibility,
                         callState = callState.currentSessionState,
                         isMuted = callState.currentSessionMuted,
+                        isHeld = callState.currentSessionHeld,
                         isReconnecting = callState.currentSessionReconnecting,
                         durationSec = callState.currentSessionDuration,
                         audioRoute = audioRoute,
                         onToggleMute = { viewModel.toggleMute() },
+                        onToggleHold = { viewModel.toggleHold() },
                         onSelectAudioDevice = { audioController.selectRoute(it) },
                         onHangup = { viewModel.hangupDirectly() },
                     )
@@ -360,8 +373,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                // "אבחון חי" — a long-press hotspot and a top-level overlay, NOT a
-                // navigation destination.
+                // "אבחון חי" — a top-level overlay, NOT a navigation destination.
                 //
                 // An overlay in this Box rather than a fifth entry in
                 // consoleDestinations, for three reasons. It is a diagnostic, not a
@@ -379,25 +391,15 @@ class MainActivity : ComponentActivity() {
                 // b5a11f4, so a BuildConfig.DEBUG gate would put it on the one
                 // variant the owner does not install.
                 //
-                // detectTapGestures, not clickable/combinedClickable: a plain tap
-                // must fall through to the dashboard beneath, and only a long press
-                // opens this. Drawn BEFORE nothing and AFTER the ring overlay would
-                // put it on top of a ringing call, so it is declared here, before
-                // the overlay itself but after the ring screen — the ring screen is
-                // a full-size Surface that already blocks touches.
-                //
-                // A real contentDescription rather than an unlabelled target, the
-                // same accessibility concern the ring overlay above is written
-                // against.
-                var showDebugLive by rememberSaveable { mutableStateOf(false) }
-                Box(
-                    modifier = Modifier
-                        .size(28.dp)
-                        .semantics { contentDescription = "אבחון חי — לחיצה ארוכה" }
-                        .pointerInput(Unit) {
-                            detectTapGestures(onLongPress = { showDebugLive = true })
-                        }
-                )
+                // HOW IT OPENS, changed 2026-08-17: ten taps on the agent's own name
+                // in DashboardScreen. It used to be a long press on an invisible 28dp
+                // Box pinned to this Box's TopStart corner — and that failed the only
+                // test that matters: the owner could not find it. Worse, the corner it
+                // sat in was not knowable from the code, because this Box is OUTSIDE
+                // the RTL CompositionLocalProvider (that one lives inside AuthGate), so
+                // "start" resolved from the device configuration rather than from
+                // anything written here. A visible target with a documented gesture
+                // replaces a hidden one whose location had to be guessed.
                 if (showDebugLive) {
                     BackHandler { showDebugLive = false }
                     Surface(
@@ -545,7 +547,11 @@ private fun ConsoleNavHost(
     navController: NavHostController,
     state: ConsoleUiState,
     viewModel: ConsoleViewModel,
-    contentModifier: Modifier
+    contentModifier: Modifier,
+    // Threaded rather than read from a global: the gesture lives on the dashboard,
+    // the overlay it opens is drawn outside AuthGate, and an explicit parameter is
+    // what makes that jump greppable from either end.
+    onDiagnosticsUnlock: () -> Unit = {},
 ) {
     val filterId = state.selectedEventFilter
     val filteredLive = if (filterId == null) state.liveCalls else state.liveCalls.filter { it.eventId == filterId }
@@ -591,7 +597,7 @@ private fun ConsoleNavHost(
                     queueDepth = state.queueDepth,
                     rsvpResults = state.rsvpResults,
                     onStatusChange = { viewModel.setAgentStatus(it) },
-                    onMakeOutboundCall = { phone, name -> viewModel.makeOutboundCall(phone, name) },
+                    onDiagnosticsUnlock = onDiagnosticsUnlock,
                     modifier = contentModifier
                 )
             }

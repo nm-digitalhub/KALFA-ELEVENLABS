@@ -2,10 +2,10 @@ package me.kalfa.agentconsole.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
@@ -17,8 +17,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.LayoutDirection
@@ -40,12 +41,22 @@ fun DashboardScreen(
     queueDepth: Int,
     rsvpResults: List<RsvpResult>,
     onStatusChange: (AgentStatus) -> Unit,
-    onMakeOutboundCall: (phone: String, name: String) -> Unit,
+    onDiagnosticsUnlock: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var outPhone by remember { mutableStateOf("") }
-    var outName by remember { mutableStateOf("") }
-
+    // Ten taps on the agent's own name open "אבחון חי" — the same screen the
+    // invisible 28dp long-press hotspot in MainActivity used to open, and which
+    // replaced it because nobody could find it. Deliberately the platform's own
+    // idiom (Android's "tap the build number seven times"), on a target the agent
+    // can actually see.
+    //
+    // The window matters as much as the count: without it, ten stray taps spread
+    // across a shift would eventually open a diagnostic screen mid-call for an
+    // agent who never asked for it. Each tap must land within
+    // DIAGNOSTIC_TAP_WINDOW_MS of the previous one or the run restarts, so this
+    // can only be reached deliberately.
+    var diagnosticTapCount by remember { mutableIntStateOf(0) }
+    var lastDiagnosticTapMs by remember { mutableLongStateOf(0L) }
     // Aggregate statistics
     val countAttending = rsvpResults.filter { it.answer == RsvpAnswer.ATTENDING }.sumOf { it.guestsCount.coerceAtLeast(1) }
     val countDeclined = rsvpResults.count { it.answer == RsvpAnswer.DECLINED }
@@ -73,7 +84,32 @@ fun DashboardScreen(
                         Text(
                             text = "שלום, $agentName",
                             style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                            // `indication = null` on purpose: a ripple on the greeting
+                            // would advertise a gesture that is not a product feature,
+                            // and would change how this line looks for every agent who
+                            // never uses it. The screen-reader label DOES name it —
+                            // a hidden affordance that is also unreachable without
+                            // sight is a different problem from a discreet one.
+                            modifier = Modifier
+                                .semantics {
+                                    contentDescription =
+                                        "שלום, $agentName. עשר הקשות פותחות את מסך האבחון."
+                                }
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                ) {
+                                    val now = System.currentTimeMillis()
+                                    diagnosticTapCount =
+                                        if (now - lastDiagnosticTapMs > DIAGNOSTIC_TAP_WINDOW_MS) 1
+                                        else diagnosticTapCount + 1
+                                    lastDiagnosticTapMs = now
+                                    if (diagnosticTapCount >= DIAGNOSTIC_TAPS_REQUIRED) {
+                                        diagnosticTapCount = 0
+                                        onDiagnosticsUnlock()
+                                    }
+                                },
                         )
                         Text(
                             text = "לוח בקרה מרכזי",
@@ -285,69 +321,18 @@ fun DashboardScreen(
                 }
             }
 
-            // Quick Outbound Dialer
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    shape = RoundedCornerShape(24.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        Text(
-                            text = "חיוג מהיר ללקוח",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-
-                        OutlinedTextField(
-                            value = outName,
-                            onValueChange = { outName = it },
-                            label = { Text("שם הלקוח") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
-                        )
-
-                        OutlinedTextField(
-                            value = outPhone,
-                            onValueChange = { outPhone = it },
-                            label = { Text("מספר טלפון") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
-                        )
-
-                        // App-initiated outbound dialing is DISABLED: there is no
-                        // enqueue route yet (the worker owns dispatch), so tapping
-                        // this must not open a mock call. Re-enable when
-                        // POST /api/events/{id}/outreach-call ships.
-                        Button(
-                            onClick = {
-                                if (outPhone.isNotBlank() && outName.isNotBlank()) {
-                                    onMakeOutboundCall(outPhone, outName)
-                                    outPhone = ""
-                                    outName = ""
-                                }
-                            },
-                            enabled = false,
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                            shape = RoundedCornerShape(14.dp),
-                            contentPadding = PaddingValues(vertical = 12.dp)
-                        ) {
-                            Icon(imageVector = Icons.Default.Call, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("חיוג יזום — בקרוב", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
+            // Deliberately no free-form "dial any number" card here. It used to sit
+            // here (a phone + name text pair feeding a disabled "בקרוב" button) but
+            // was removed rather than wired: the real backend it would need to call,
+            // POST /api/console-calls/dial-intent, only ever accepts a SERVER-VERIFIED
+            // dial target — {kind:'callback', id} or {kind:'guest_service', eventId,
+            // contactId} — and its own schema comment states the free-typed-number case
+            // has "NO representation here on purpose... the union itself is the
+            // enforcement of 'no code path exists for scenario ג'" (dial-intent's
+            // consent/DNC/quiet-hours gate has nothing to resolve a raw number
+            // against). A form that solicits a phone number for a call this platform
+            // will never place is worse than no form — see AGENTS.md's "Outbound
+            // dialing" section for the full evidence trail before reintroducing this.
         }
     }
 }
@@ -508,8 +493,14 @@ fun DashboardScreenPreview() {
                 RsvpResult("3", "c3", "g3", "אורח 3", RsvpAnswer.MAYBE, 1, "אולי"),
                 RsvpResult("4", "c4", "g4", "אורח 4", RsvpAnswer.CALLBACK, 0, "בקשת שיחה")
             ),
-            onStatusChange = {},
-            onMakeOutboundCall = { _, _ -> }
+            onStatusChange = {}
         )
     }
 }
+
+// How many taps on the greeting open "אבחון חי", and how long a run may pause
+// before it restarts. Ten matches nothing on this screen by accident, and 1.5s is
+// comfortably above a fast double-tap while being far below "the agent put the
+// phone down and picked it up again".
+private const val DIAGNOSTIC_TAPS_REQUIRED = 10
+private const val DIAGNOSTIC_TAP_WINDOW_MS = 1_500L

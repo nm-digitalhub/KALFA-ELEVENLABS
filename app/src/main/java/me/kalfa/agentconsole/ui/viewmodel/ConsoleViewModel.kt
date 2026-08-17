@@ -12,7 +12,6 @@ import me.kalfa.agentconsole.domain.error.AppResult
 import me.kalfa.agentconsole.domain.error.RepositoryHealth
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import java.util.UUID
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.postgrest
 import kotlinx.serialization.Serializable
@@ -72,11 +71,7 @@ data class ConsoleUiState(
     // Media path to the cloud is down on a leg that is otherwise still up — see
     // CallSession.isReconnecting. Drives ActiveCallScreen's banner; without it a
     // mid-call audio drop is invisible and the duration keeps reassuring.
-    val currentSessionReconnecting: Boolean = false,
-    // Form inputs for In-Call screen
-    val inCallNotes: String = "",
-    val inCallRsvpAnswer: RsvpAnswer = RsvpAnswer.ATTENDING,
-    val inCallGuestsCount: Int = 1
+    val currentSessionReconnecting: Boolean = false
 )
 
 class ConsoleViewModel : ViewModel() {
@@ -195,15 +190,6 @@ class ConsoleViewModel : ViewModel() {
         viewModelScope.launch {
             _uiState.map { it.currentSession }.distinctUntilChanged().collectLatest { session ->
                 if (session != null) {
-                    // Reset form inputs for a new call
-                    _uiState.update { 
-                        it.copy(
-                            inCallNotes = "", 
-                            inCallRsvpAnswer = RsvpAnswer.ATTENDING, 
-                            inCallGuestsCount = 1
-                        ) 
-                    }
-                    
                     combine(
                         session.state,
                         session.isMuted,
@@ -230,6 +216,23 @@ class ConsoleViewModel : ViewModel() {
                             currentSessionDuration = 0,
                             currentSessionReconnecting = false
                         )
+                    }
+                }
+            }
+        }
+
+        // A refused hold() reported honestly — see CallSession.holdRefused's kdoc.
+        // Deliberately its OWN collector rather than folded into the combine() above:
+        // that one re-fires every second off durationSec, and holdRefused would still
+        // read true on every one of those ticks until the agent's next attempt reset
+        // it — this collector only reacts to the true EDGE (session.holdRefused
+        // itself is what resets to false before each new attempt), so the snackbar
+        // fires once per refusal, not once per second.
+        viewModelScope.launch {
+            _uiState.map { it.currentSession }.distinctUntilChanged().collectLatest { session ->
+                session?.holdRefused?.collect { refused ->
+                    if (refused) {
+                        _effects.emit(UiEffect.ShowSnackbar("החזקת השיחה נכשלה. נסו שוב."))
                     }
                 }
             }
@@ -507,16 +510,18 @@ class ConsoleViewModel : ViewModel() {
         }
     }
 
-    // Live-listen (monitor), takeover, and app-initiated outbound dialing are NOT
-    // wired end-to-end: each needs a real human-agent Voximplant SDK leg, a backend
-    // route (monitor / takeover / outreach-call — none exist yet), and for
-    // monitor/takeover the VoxEngine named-Conference redesign. Per the UI-honesty
-    // rule we must never open a fake in-call session or show fake success — so these
-    // surface an honest notice and do nothing else (the mock engine is never
-    // invoked, so currentSession stays null and no fake in-call screen appears). The
-    // matching buttons are also disabled + labelled "בקרוב". The AI-supervision
-    // commands (whisper / clear / close) below ARE wired and stay live. Re-enable
-    // each of these when its backend route + SDK path ships.
+    // Live-listen (monitor) and takeover are NOT wired end-to-end: each needs a real
+    // human-agent Voximplant SDK leg plus, server-side, the VoxEngine
+    // named-Conference redesign behind app_settings.monitor_enabled (see AGENTS.md
+    // "Known state" #2). Per the UI-honesty rule we must never open a fake in-call
+    // session or show fake success — so these surface an honest notice and do
+    // nothing else (the mock engine is never invoked, so currentSession stays null
+    // and no fake in-call screen appears). The matching buttons are also disabled +
+    // labelled "בקרוב". The AI-supervision commands (whisper / clear / close) below
+    // ARE wired and stay live. Re-enable each of these when its backend route + SDK
+    // path ships. (Outbound dialing used to be a third `notifyNotWired` caller here;
+    // see AGENTS.md's "Outbound dialing" section for why it was removed rather than
+    // left disabled.)
     private fun notifyNotWired(feature: String) {
         _effects.tryEmit(
             UiEffect.ShowSnackbar("$feature עדיין אינו זמין באפליקציה.")
@@ -527,10 +532,14 @@ class ConsoleViewModel : ViewModel() {
 
     fun takeoverCall(callId: String) = notifyNotWired("השתלטות על שיחה")
 
-    // Free-form dialing (arbitrary phone, no event/guest) does NOT fit the backend
-    // enqueue route and stays gated. The real path is enqueueOutboundCall below —
-    // per an EXISTING guest within an event.
-    fun makeOutboundCall(phone: String, name: String) = notifyNotWired("חיוג יזום חופשי")
+    // There is deliberately no free-form "dial any number" entry point here.
+    // POST /api/console-calls/dial-intent — the only backend route that could ever
+    // back one — accepts nothing but a server-verified {kind:'callback', id} or
+    // {kind:'guest_service', eventId, contactId} target; its own schema comment
+    // states a raw phone number has "NO representation here on purpose" (the
+    // consent/DNC/quiet-hours gate has nothing to resolve a client-typed number
+    // against). See AGENTS.md's "Outbound dialing" section. The real path for an
+    // existing guest is enqueueOutboundCall below.
 
     // Real outbound: enqueue an AI call to an existing guest via the gated worker
     // (POST /api/events/{eventId}/outreach-call). On success the call surfaces in
@@ -582,19 +591,6 @@ class ConsoleViewModel : ViewModel() {
         }
     }
 
-    // In call form inputs
-    fun updateInCallNotes(notes: String) {
-        _uiState.update { it.copy(inCallNotes = notes) }
-    }
-
-    fun updateInCallRsvpAnswer(answer: RsvpAnswer) {
-        _uiState.update { it.copy(inCallRsvpAnswer = answer) }
-    }
-
-    fun updateInCallGuestsCount(count: Int) {
-        _uiState.update { it.copy(inCallGuestsCount = count.coerceAtLeast(0)) }
-    }
-
     fun toggleMute() {
         _uiState.value.currentSession?.let {
             it.mute(!_uiState.value.currentSessionMuted)
@@ -609,24 +605,6 @@ class ConsoleViewModel : ViewModel() {
 
     fun sendDtmf(digit: String) {
         _uiState.value.currentSession?.sendDtmf(digit)
-    }
-
-    fun submitRsvpAndHangup() {
-        val state = _uiState.value
-        val session = state.currentSession
-        if (session != null) {
-            val result = RsvpResult(
-                id = "rsvp-res-${UUID.randomUUID().toString().take(6)}",
-                callId = session.id,
-                guestId = "guest-${UUID.randomUUID().toString().take(4)}",
-                guestName = session.customerName,
-                answer = state.inCallRsvpAnswer,
-                guestsCount = if (state.inCallRsvpAnswer == RsvpAnswer.ATTENDING) state.inCallGuestsCount else 0,
-                notes = state.inCallNotes
-            )
-            rsvpRepo.saveRsvpResult(result)
-            session.hangup()
-        }
     }
 
     fun hangupDirectly() {

@@ -2,14 +2,11 @@ package me.kalfa.agentconsole.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -17,101 +14,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import me.kalfa.agentconsole.domain.model.Campaign
 import me.kalfa.agentconsole.domain.model.CampaignState
 import me.kalfa.agentconsole.ui.theme.ColorSuccess
 import me.kalfa.agentconsole.ui.theme.ColorWarning
-import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun CampaignsScreen(
-    campaigns: List<Campaign>,
-    onToggleCampaign: (String) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-        Column(
-            modifier = modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp)
-        ) {
-            // Header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text(
-                        text = "חיוג אוטומטי",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
-                    )
-                    Text(
-                        text = "ניהול קמפיינים",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                }
-                
-                Box(
-                    modifier = Modifier
-                        .size(42.dp)
-                        .background(
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
-                            shape = RoundedCornerShape(12.dp)
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Campaign,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-
-            if (campaigns.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "אין קמפיינים זמינים",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
-                    )
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    contentPadding = PaddingValues(bottom = 24.dp)
-                ) {
-                    items(campaigns, key = { it.id }) { campaign ->
-                        CampaignCard(
-                            campaign = campaign,
-                            onToggle = { onToggleCampaign(campaign.id) }
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
+// The former top-level `CampaignsScreen` (a cross-event campaign list) was
+// removed from here: it had no NavHost route (AGENTS.md's own "wire it or
+// delete it" note), and — checked before removing — its one reachable piece of
+// UI, [CampaignCard] below, is already live inside `EventDetailScreen`, scoped
+// to one event at a time, which fits this per-event product better than a
+// second, competing cross-event list would. `EventDetailScreen` already wires
+// [CampaignCard]'s `onToggle` to the real `toggleCampaign` (POST
+// /api/campaigns/{id}/status) — nothing here duplicates that.
 @Composable
 fun CampaignCard(
     campaign: Campaign,
@@ -287,38 +204,6 @@ fun CampaignStatusBadge(state: CampaignState) {
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.ExtraBold,
             color = textCol
-        )
-    }
-}
-
-@Preview(showBackground = true)
-@Composable
-fun CampaignsScreenPreview() {
-    MyApplicationTheme {
-        CampaignsScreen(
-            campaigns = listOf(
-                Campaign(
-                    id = "1",
-                    name = "אישורי הגעה חתונת רון וטל",
-                    eventId = "ev-1",
-                    eventName = "חתונה של רון וטל",
-                    state = CampaignState.ACTIVE,
-                    totalTargets = 150,
-                    completedTargets = 95,
-                    runControllable = true
-                ),
-                Campaign(
-                    id = "2",
-                    name = "אישורי הגעה ברית לתינוק לוי",
-                    eventId = "ev-2",
-                    eventName = "ברית לתינוק לוי",
-                    state = CampaignState.PAUSED,
-                    totalTargets = 100,
-                    completedTargets = 45,
-                    runControllable = true
-                )
-            ),
-            onToggleCampaign = {}
         )
     }
 }

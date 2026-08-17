@@ -44,6 +44,34 @@ interface CallSession {
     val isReconnecting: StateFlow<Boolean>
         get() = DefaultSessionFlows.notReconnecting
 
+    /**
+     * Flips to `true` the moment the platform REFUSES a [hold] attempt (the SDK's
+     * `CallCallback.onFailure`, real per-call feedback — `Call.hold` is not a
+     * fire-and-forget command), and back to `false` right before every new attempt.
+     * The reset-before-attempt half is deliberate: a `StateFlow` conflates equal
+     * consecutive values, so without it a SECOND refusal in a row (the value
+     * already sitting at `true`) would never re-emit and a collector watching for
+     * the transition would silently miss it.
+     *
+     * Why this exists at all: `hold()` returns `Unit` — it cannot report failure
+     * through its own call site, and `ActiveCallScreen` used to have no hold
+     * control at all for exactly that reason (see its header comment's former "NO
+     * hold" bullet — "a refused hold is a button that does nothing with no
+     * explanation"). Before this, the SDK's own `isOnHold` was still polled every
+     * second by the durationSec ticker and would silently correct a stale toggle
+     * within ~1s, which fixes the STATE but not the SILENCE — an agent who tapped
+     * hold, watched nothing happen, and got no explanation had no way to tell "the
+     * platform said no" from "I haven't waited long enough". This is the signal a
+     * caller (`ConsoleViewModel`) uses to say so.
+     *
+     * Default (a constant false) keeps mock mode and every other implementer
+     * compiling — see [DefaultSessionFlows] for why it must be a shared value and
+     * not a fresh one. `MockCallSession.hold` never fails, so the default is
+     * correct there, not merely convenient.
+     */
+    val holdRefused: StateFlow<Boolean>
+        get() = DefaultSessionFlows.holdNotRefused
+
     fun mute(muted: Boolean)
     fun hold(held: Boolean)
     fun sendDtmf(digit: String)
@@ -74,6 +102,25 @@ interface CallEngine {
     val dispatchStatuses: StateFlow<Map<String, CallDispatchStatus>>
         get() = DefaultEngineFlows.noDispatchStatuses
     
+    /**
+     * Places a real agent-initiated SDK leg — `VICalls.createCall(destination, ...)`
+     * — and returns the wrapping [CallSession] synchronously, matching the SDK's own
+     * `createCall`/`start()`, which are themselves synchronous; everything after
+     * that (ringing -> connected -> disconnected) arrives through the session's own
+     * listener. [phone] is loosely named for the interface's oldest intended caller
+     * but is really "whatever destination string the Voximplant rule table for
+     * `kalfa-rsvp` is meant to route" — see `voxfiles/applications/…/rules.config.json`
+     * in `beta`: `ct[0-9a-f]+` (a one-time dial token minted by
+     * `POST /api/console-calls/dial-intent`, ConsoleOut rule) or `agent_<uuid>` (a
+     * colleague's own SDK identity, ConsoleInternal rule) both route to
+     * `ConsoleDial.voxengine.js`; anything else falls through to the catch-all
+     * `OutCall` rule and lands in the AI RSVP scenario instead — silently wrong,
+     * not a thrown error. **A raw PSTN phone number the agent typed is NOT a valid
+     * destination and must never be passed here**: `dial-intent`'s own schema
+     * comment states that shape has "no representation … on purpose", by deliberate
+     * platform decision (no code path exists for an unconsent-checked cold call).
+     * The implementation is free to throw for any destination it cannot honour.
+     */
     fun startOutboundCall(phone: String, customerName: String): CallSession
     fun monitorCall(callId: String): CallSession
     fun takeoverCall(callId: String): CallSession
@@ -172,14 +219,15 @@ private object DefaultEngineFlows {
 }
 
 /**
- * The constant flow [CallSession.isReconnecting]'s default hands back. Same rule, and
- * same reason, as [DefaultEngineFlows] and [DefaultPresenceFlows]: an interface holds no
- * backing field, so `get() = MutableStateFlow(false)` would mint a fresh flow on every
- * read — a value that can never change and is never the same object twice, which
- * quietly defeats any `collect` or `combine` built on it.
+ * The constant flows [CallSession.isReconnecting] and [CallSession.holdRefused] hand
+ * back. Same rule, and same reason, as [DefaultEngineFlows] and [DefaultPresenceFlows]:
+ * an interface holds no backing field, so `get() = MutableStateFlow(false)` would mint a
+ * fresh flow on every read — a value that can never change and is never the same object
+ * twice, which quietly defeats any `collect` or `combine` built on it.
  */
 private object DefaultSessionFlows {
     val notReconnecting: StateFlow<Boolean> = MutableStateFlow(false)
+    val holdNotRefused: StateFlow<Boolean> = MutableStateFlow(false)
 }
 
 private object DefaultPresenceFlows {

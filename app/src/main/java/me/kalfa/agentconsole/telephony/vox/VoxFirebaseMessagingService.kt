@@ -20,8 +20,13 @@ import me.kalfa.agentconsole.telemetry.TelemetryEvents
 // is executing — returning early is what tears it down mid-work, not what keeps it
 // alive. So the app-side steps of the six-step sequence run BLOCKING inside
 // onMessageReceived, under a hard timeout: for a killed app, this call is the
-// process's entire lifeline until VoxClientManager.onIncomingCall fires (which, as
-// of this change, nothing has wired yet — see the push-wake handoff report).
+// process's entire lifeline until VoxClientManager.onIncomingCall fires.
+//
+// Corrected 2026-08-17: this comment used to say nothing had wired that callback
+// yet — stale since 2026-08-14, when DependencyContainer's voxClientManager getter
+// assigned it to VoxIncomingCallCoordinator::handleIncomingCall (see AGENTS.md
+// "Known state" #1 and docs/android-presence-and-call-ux.md §3). Not
+// device-verified end to end.
 class VoxFirebaseMessagingService : FirebaseMessagingService() {
 
     override fun onCreate() {

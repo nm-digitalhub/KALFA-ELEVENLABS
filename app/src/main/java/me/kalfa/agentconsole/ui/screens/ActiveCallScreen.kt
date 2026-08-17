@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,6 +18,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledIconToggleButton
@@ -63,12 +66,22 @@ import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
 //
 // An agent mid-call needs three things and does not need a fourth: who they are talking
 // to, how long they have been talking, and a way to stop. Everything here is one of
-// those, plus the two controls that are real:
+// those, plus the controls that are real:
 //
 //  * Duration — from the SDK's own `Call.duration`, not a UI counter (see
 //    VoxCallSession.readDurationSec for the drift this fixes).
 //  * Mute — `Call.muteAudio`, and the displayed state is re-read from `Call.isMuted`
 //    every second rather than assumed from the last tap.
+//  * Hold — `Call.hold`, wired 2026-08-17. Was withheld until it could report its own
+//    failure (see HoldControl's kdoc): `Call.hold`'s `CallCallback.onFailure` is real
+//    per-call feedback, not a fire-and-forget command, and `CallSession.holdRefused`
+//    now surfaces it as an honest Hebrew snackbar (`ConsoleViewModel`) instead of a
+//    button that silently does nothing. The held STATE is made impossible to miss —
+//    `CallStatusPill` replaces "שיחה פעילה" outright while held, it does not just tint
+//    an icon — because an agent who forgets a call is on hold is its own malfunction.
+//    Unaddressed and out of this repo's boundary: there is still no music-on-hold on
+//    this leg, so a held guest hears silence; that is server/VoxEngine-scenario work,
+//    not something this screen can fix.
 //  * Audio route — `AudioDeviceManager`, with the active device read back from the SDK
 //    and its change listener. Renders as UNAVAILABLE, with a reason, whenever the SDK
 //    has not told us what the route is; it never guesses a default.
@@ -80,11 +93,6 @@ import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
 //  * NO DTMF keypad. `Call.sendDTMF` is real SDK API, but nothing on the far end of this
 //    leg consumes tones: the agent leg is bridged to the RSVPAgent scenario, which has
 //    no DTMF handler. A keypad would send digits into nothing and look like it worked.
-//  * NO hold. `Call.hold` is real, but its failure path in VoxCallSession keeps the
-//    prior state and reports nothing, so a refused hold is a button that does nothing
-//    with no explanation. There is also no music-on-hold on this leg — a held guest
-//    hears silence, which on an RSVP call is indistinguishable from a dropped call.
-//    Ship it when it can report its own failure and the guest can be told to hold on.
 //  * NO RSVP capture form. The old InCallScreen's "שמור ונתק" built an RsvpResult with a
 //    FABRICATED guestId and handed it to SupabaseRsvpRepository.saveRsvpResult, which is
 //    an intentionally empty body — RSVP outcomes belong to the ElevenLabs client-tools
@@ -101,10 +109,12 @@ fun ActiveCallScreen(
     visibility: ActiveCallVisibility,
     callState: CallState,
     isMuted: Boolean,
+    isHeld: Boolean,
     isReconnecting: Boolean,
     durationSec: Int,
     audioRoute: VoxAudioController.Route,
     onToggleMute: () -> Unit,
+    onToggleHold: () -> Unit,
     onSelectAudioDevice: (com.voximplant.android.sdk.core.audio.AudioDevice) -> Unit,
     onHangup: () -> Unit,
     modifier: Modifier = Modifier,
@@ -124,6 +134,7 @@ fun ActiveCallScreen(
                 CallStatusPill(
                     visibility = visibility,
                     callState = callState,
+                    isHeld = isHeld,
                     isReconnecting = isReconnecting,
                 )
 
@@ -156,7 +167,12 @@ fun ActiveCallScreen(
 
                 Spacer(modifier = Modifier.height(36.dp))
 
-                MuteControl(isMuted = isMuted, enabled = connected, onToggleMute = onToggleMute)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(32.dp),
+                ) {
+                    MuteControl(isMuted = isMuted, enabled = connected, onToggleMute = onToggleMute)
+                    HoldControl(isHeld = isHeld, enabled = connected, onToggleHold = onToggleHold)
+                }
 
                 Spacer(modifier = Modifier.height(28.dp))
 
@@ -194,19 +210,28 @@ fun ActiveCallScreen(
 }
 
 /**
- * The one line that says what is actually happening. The reconnect case OUTRANKS the
- * call state on purpose: while the media path is down, "שיחה פעילה" is the least useful
- * true statement available and reads as reassurance.
+ * The one line that says what is actually happening. The reconnect case OUTRANKS
+ * everything below it on purpose: while the media path is down, any other label is
+ * the least useful true statement available and reads as reassurance.
+ *
+ * `isHeld` outranks the call-state labels (MONITORED/TAKEN_OVER/plain "active") but
+ * not reconnecting — a held call is still a state the agent chose and can undo by
+ * tapping HoldControl again, while a dropped media path is not. Deliberately a
+ * distinct LABEL, not a tint on the existing one: "an agent who forgets a call is on
+ * hold is its own malfunction" (this file's header) means the held state has to
+ * replace "שיחה פעילה" outright, not sit beside it as a detail easy to miss.
  */
 @Composable
 private fun CallStatusPill(
     visibility: ActiveCallVisibility,
     callState: CallState,
+    isHeld: Boolean,
     isReconnecting: Boolean,
 ) {
     val (label, tint) = when {
         isReconnecting -> "החיבור אבד — מנסים להתחבר מחדש" to ColorDanger
         visibility == ActiveCallVisibility.CONNECTING -> "מתחבר…" to ColorWarning
+        isHeld -> "השיחה מוחזקת" to ColorWarning
         callState == CallState.MONITORED -> "האזנה שקטה" to ColorInfo
         callState == CallState.TAKEN_OVER -> "השתלטות סוכן" to ColorSuccess
         else -> "שיחה פעילה" to ColorSuccess
@@ -298,6 +323,51 @@ private fun MuteControl(isMuted: Boolean, enabled: Boolean, onToggleMute: () -> 
 }
 
 /**
+ * `Call.hold` — same toggle-button shape and semantics as [MuteControl], deliberately:
+ * an agent already knows how the mute button behaves, and a second control that
+ * followed a different interaction pattern would be one more thing to learn mid-call.
+ *
+ * Held state ALSO renders in [CallStatusPill], not only here — the icon change alone
+ * on a small control is easy to miss, and "an agent who forgets a call is on hold is
+ * its own malfunction" (this file's header) is the whole reason this control exists
+ * at all. A refused hold attempt does not change what this button shows (the SDK's
+ * own `isOnHold` — re-polled every second by `VoxCallSession`'s ticker — is the
+ * source of truth here, same as [MuteControl]); it is reported once, as a snackbar,
+ * by `ConsoleViewModel`'s `CallSession.holdRefused` collector.
+ */
+@Composable
+private fun HoldControl(isHeld: Boolean, enabled: Boolean, onToggleHold: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        FilledIconToggleButton(
+            checked = isHeld,
+            onCheckedChange = { onToggleHold() },
+            enabled = enabled,
+            modifier = Modifier
+                .size(72.dp)
+                .semantics {
+                    contentDescription = if (isHeld) "המשך את השיחה" else "החזק את השיחה"
+                },
+            colors = IconButtonDefaults.filledIconToggleButtonColors(
+                checkedContainerColor = ColorWarning,
+                checkedContentColor = Color.White,
+            ),
+        ) {
+            Icon(
+                imageVector = if (isHeld) Icons.Default.PlayArrow else Icons.Default.Pause,
+                contentDescription = null,
+                modifier = Modifier.size(30.dp),
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = if (isHeld) "המשך" else "החזק",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = if (enabled) 0.75f else 0.38f),
+        )
+    }
+}
+
+/**
  * The audio route, as the SDK reports it.
  *
  * Renders one chip per device the SDK actually lists, with the active one selected — so
@@ -368,10 +438,12 @@ private fun ActiveCallScreenPreview() {
             visibility = ActiveCallVisibility.CONNECTED,
             callState = CallState.ACTIVE,
             isMuted = false,
+            isHeld = false,
             isReconnecting = false,
             durationSec = 112,
             audioRoute = VoxAudioController.Route(),
             onToggleMute = {},
+            onToggleHold = {},
             onSelectAudioDevice = {},
             onHangup = {},
         )
@@ -388,10 +460,34 @@ private fun ActiveCallScreenReconnectingPreview() {
             visibility = ActiveCallVisibility.CONNECTED,
             callState = CallState.ACTIVE,
             isMuted = true,
+            isHeld = false,
             isReconnecting = true,
             durationSec = 74,
             audioRoute = VoxAudioController.Route(),
             onToggleMute = {},
+            onToggleHold = {},
+            onSelectAudioDevice = {},
+            onHangup = {},
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun ActiveCallScreenHeldPreview() {
+    MyApplicationTheme {
+        ActiveCallScreen(
+            customerName = "ששון מנחם",
+            customerPhone = "052-999-8888",
+            visibility = ActiveCallVisibility.CONNECTED,
+            callState = CallState.ACTIVE,
+            isMuted = false,
+            isHeld = true,
+            isReconnecting = false,
+            durationSec = 45,
+            audioRoute = VoxAudioController.Route(),
+            onToggleMute = {},
+            onToggleHold = {},
             onSelectAudioDevice = {},
             onHangup = {},
         )
