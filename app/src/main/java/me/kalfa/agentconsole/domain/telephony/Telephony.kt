@@ -271,6 +271,17 @@ interface CallEngine {
     /** Conference in an outside PHONE NUMBER — same contract as [startConsultWithPhone]. */
     suspend fun addToConferenceWithPhone(consoleCallId: String, phone: String): AppResult<Unit> =
         AppResult.Success(Unit)
+
+    /**
+     * Drops the third participant and collapses back to agent<->customer —
+     * POST /api/console-calls/{id}/conference/remove.
+     *
+     * Takes no target: a conference here has at most one additional participant, so
+     * there is nothing to name. The scenario handles both states — still ringing, or
+     * already mixed — and picks the right teardown.
+     */
+    suspend fun removeFromConference(consoleCallId: String): AppResult<Unit> =
+        AppResult.Success(Unit)
 }
 
 /** A colleague a live call can be handed to. Mirrors GET /api/agents/transfer-targets. */

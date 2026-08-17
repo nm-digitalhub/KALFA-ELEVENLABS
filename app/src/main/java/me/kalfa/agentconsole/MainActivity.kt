@@ -415,6 +415,7 @@ class MainActivity : ComponentActivity() {
                         transferTargetsLoading = callState.transferTargetsLoading,
                         transferTargetsFailed = callState.transferTargetsFailed,
                         consultRequested = callState.consultRequested,
+                        conferenceRequested = callState.conferenceRequested,
                         onSendDtmf = { viewModel.sendDtmf(it) },
                         onLoadTransferTargets = { viewModel.loadTransferTargets() },
                         onTransfer = { viewModel.transferTo(it) },
@@ -424,6 +425,7 @@ class MainActivity : ComponentActivity() {
                         onConferencePhone = { viewModel.conferenceWithPhone(it) },
                         onCancelConsult = { viewModel.cancelConsult() },
                         onCompleteConsult = { viewModel.completeConsult() },
+                        onRemoveFromConference = { viewModel.removeFromConference() },
                     )
                 }
 

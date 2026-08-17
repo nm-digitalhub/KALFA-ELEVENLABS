@@ -1279,6 +1279,9 @@ class SupabaseCallEngineImpl(
     override suspend fun addToConferenceWithPhone(consoleCallId: String, phone: String): AppResult<Unit> =
         postCallAction("$consoleCallId/conference", phoneBody(phone))
 
+    override suspend fun removeFromConference(consoleCallId: String): AppResult<Unit> =
+        postCallAction("$consoleCallId/conference/remove")
+
     private fun phoneBody(phone: String): String =
         buildJsonObject { put("to_phone", phone) }.toString()
 

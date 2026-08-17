@@ -159,6 +159,7 @@ fun ActiveCallScreen(
     transferTargetsLoading: Boolean = false,
     transferTargetsFailed: Boolean = false,
     consultRequested: Boolean = false,
+    conferenceRequested: Boolean = false,
     onSendDtmf: (String) -> Unit = {},
     onLoadTransferTargets: () -> Unit = {},
     onTransfer: (String) -> Unit = {},
@@ -168,6 +169,7 @@ fun ActiveCallScreen(
     onConferencePhone: (String) -> Unit = {},
     onCancelConsult: () -> Unit = {},
     onCompleteConsult: () -> Unit = {},
+    onRemoveFromConference: () -> Unit = {},
 ) {
     val connected = visibility == ActiveCallVisibility.CONNECTED
     var keypadOpen by rememberSaveable { mutableStateOf(false) }
@@ -253,6 +255,7 @@ fun ActiveCallScreen(
                     enabled = connected,
                     handoffAvailable = handoffAvailable,
                     consultRequested = consultRequested,
+                    conferenceRequested = conferenceRequested,
                     keypadOpen = keypadOpen,
                     onToggleKeypad = { keypadOpen = !keypadOpen },
                     onOpenPicker = { kind ->
@@ -264,6 +267,7 @@ fun ActiveCallScreen(
                     },
                     onCancelConsult = onCancelConsult,
                     onCompleteConsult = onCompleteConsult,
+                    onRemoveFromConference = onRemoveFromConference,
                 )
 
                 Spacer(modifier = Modifier.height(40.dp))
@@ -371,11 +375,13 @@ private fun HandoffControls(
     enabled: Boolean,
     handoffAvailable: Boolean,
     consultRequested: Boolean,
+    conferenceRequested: Boolean,
     keypadOpen: Boolean,
     onToggleKeypad: () -> Unit,
     onOpenPicker: (HandoffKind) -> Unit,
     onCancelConsult: () -> Unit,
     onCompleteConsult: () -> Unit,
+    onRemoveFromConference: () -> Unit,
 ) {
     val handoffEnabled = enabled && handoffAvailable
 
@@ -406,6 +412,19 @@ private fun HandoffControls(
                 enabled = handoffEnabled,
                 onClick = { onOpenPicker(HandoffKind.CONFERENCE) },
             )
+        }
+
+        // Only reachable once a conference participant was requested. ONE control,
+        // unlike consult's two, because a conference has only one way out: the third
+        // party leaves and the call collapses back to agent<->customer. There is no
+        // "complete" — a conference is not a handoff.
+        if (conferenceRequested) {
+            Spacer(modifier = Modifier.height(14.dp))
+            Button(
+                onClick = onRemoveFromConference,
+                enabled = enabled,
+                shape = RoundedCornerShape(12.dp),
+            ) { Text(text = "הסר מהוועידה") }
         }
 
         // Only reachable once a consult was requested. Both are offered rather than

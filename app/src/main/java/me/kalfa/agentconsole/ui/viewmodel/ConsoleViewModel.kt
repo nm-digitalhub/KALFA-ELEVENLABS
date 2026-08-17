@@ -95,6 +95,15 @@ data class ConsoleUiState(
      * is in progress — and nothing on screen claims the colleague is on the line.
      */
     val consultRequested: Boolean = false,
+    /**
+     * A conference participant has been REQUESTED for this call and not yet removed.
+     *
+     * Same "requested, not confirmed" honesty as [consultRequested]: the device is
+     * told the command reached the live session, never that the third party
+     * answered. It gates the remove control, which the scenario safely ignores when
+     * there is no conference in flight.
+     */
+    val conferenceRequested: Boolean = false,
 )
 
 class ConsoleViewModel : ViewModel() {
@@ -214,6 +223,7 @@ class ConsoleViewModel : ViewModel() {
                         // list is cleared for the same reason, though that one is
                         // cosmetic since the picker reloads on every open.
                         consultRequested = if (session === state.currentSession) state.consultRequested else false,
+                        conferenceRequested = if (session === state.currentSession) state.conferenceRequested else false,
                         transferTargets = if (session === state.currentSession) state.transferTargets else emptyList(),
                         transferTargetsFailed = if (session === state.currentSession) state.transferTargetsFailed else false,
                     )
@@ -717,9 +727,13 @@ class ConsoleViewModel : ViewModel() {
         _uiState.update { it.copy(consultRequested = true) }
     }) { id -> callEngine.startConsult(id, agentId) }
 
-    fun conferenceWith(agentId: String) = runCallAction("צירוף הנציג לשיחה") { id ->
-        callEngine.addToConference(id, agentId)
-    }
+    fun conferenceWith(agentId: String) = runCallAction("צירוף הנציג לשיחה", onSuccess = {
+        _uiState.update { it.copy(conferenceRequested = true) }
+    }) { id -> callEngine.addToConference(id, agentId) }
+
+    fun removeFromConference() = runCallAction("הסרת המשתתף", onSuccess = {
+        _uiState.update { it.copy(conferenceRequested = false) }
+    }) { id -> callEngine.removeFromConference(id) }
 
     // The phone variants. The number is passed through UNVALIDATED on purpose —
     // the server owns that policy (E.164, an Israel-only country allowlist, a
@@ -731,9 +745,9 @@ class ConsoleViewModel : ViewModel() {
         _uiState.update { it.copy(consultRequested = true) }
     }) { id -> callEngine.startConsultWithPhone(id, phone.trim()) }
 
-    fun conferenceWithPhone(phone: String) = runCallAction("צירוף המספר לשיחה") { id ->
-        callEngine.addToConferenceWithPhone(id, phone.trim())
-    }
+    fun conferenceWithPhone(phone: String) = runCallAction("צירוף המספר לשיחה", onSuccess = {
+        _uiState.update { it.copy(conferenceRequested = true) }
+    }) { id -> callEngine.addToConferenceWithPhone(id, phone.trim()) }
 
     fun cancelConsult() = runCallAction("ביטול ההתייעצות", onSuccess = {
         _uiState.update { it.copy(consultRequested = false) }
