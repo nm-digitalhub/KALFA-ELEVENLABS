@@ -278,7 +278,22 @@ content, a locked phone that starts ringing shows the wrong thing — normal app
 an answer/decline prompt — which is worse than not wiring FSI at all.
 
 So: **`ui/screens/IncomingCallScreen.kt`** is new, and deliberately minimal — caller
-label + Answer/Decline, nothing else. No mute/hold/DTMF/keypad, no RSVP-capture form.
+identity + Answer/Decline, nothing else. No mute/hold/DTMF/keypad, no RSVP-capture form.
+
+**Amended 17.8 — "caller identity" is now the name AND the number.** As first shipped
+this screen rendered `displayName` alone, and the number it never showed was our own
+DID anyway: the VoxEngine scenario passed `state.called` as the ring's `callerid`,
+justified at the time by an unverified worry about Voximplant's CallerID rules for an
+intra-app `callUser` and by an assumption that `route-inbound`'s `display_hint` was the
+channel for caller identity — which the app never read. The net effect was an agent
+asked to answer a call knowing nothing about who was on it. Beta commit `3e455e3` now
+passes the caller's own CLI as `callerid` and a `caller_display` label (the guest's
+name when the number is recognised, their E.164 when it is not) as `displayName`; this
+screen renders both, suppressing the number when it is byte-identical to the label so
+an unrecognised caller is not printed twice. `IncomingCallNotificationBuilder` is
+deliberately NOT changed — whether the raw number belongs on a lock-screen
+notification, visible to every app with notification-listener access, is the separate
+privacy decision that builder's own comment already raises for the owner.
 It is rendered by `MainActivity` as a top-level overlay when
 `VoxIncomingCallCoordinator.pendingOffer` is non-null — a new, separate condition from
 the existing `state.currentSession != null && BuildConfig.DEBUG` branch, which this
