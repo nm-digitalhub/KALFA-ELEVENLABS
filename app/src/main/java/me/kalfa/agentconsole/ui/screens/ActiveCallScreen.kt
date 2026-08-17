@@ -1,6 +1,7 @@
 package me.kalfa.agentconsole.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CallMade
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material.icons.filled.GroupAdd
@@ -57,6 +59,7 @@ import me.kalfa.agentconsole.domain.telephony.TransferTarget
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.voximplant.android.sdk.core.audio.AudioDeviceType
 import me.kalfa.agentconsole.domain.model.CallState
 import me.kalfa.agentconsole.telephony.vox.VoxAudioController
 import me.kalfa.agentconsole.telephony.vox.audioDeviceLabelHebrew
@@ -95,9 +98,13 @@ import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
 //    file to the customer leg on `CallEvents.OnHold`, so a held guest no longer hears
 //    silence. Nothing on this screen changed for it — correctly, since it was never
 //    something this screen could fix.
-//  * DTMF keypad — `Call.sendDTMF`, wired 2026-08-17 (see DtmfKeypad). It needs no
-//    server or scenario support: `Call.handleTones` is documented OFF by default, so
-//    tones ride the bridged audio to whatever the customer leg is connected to.
+//  * DTMF keypad — `Call.sendDTMF`, wired 2026-08-17 (see DtmfKeypadSheet). It needs
+//    no server or scenario support: `Call.handleTones` is documented OFF by default,
+//    so tones ride the bridged audio to whatever the customer leg is connected to.
+//    Opens as a PANEL over this screen, not as inline content — the first version
+//    appended it to the Column below and the last row (* 0 #) fell off the bottom of
+//    a real device. It carries mute, speaker and hang-up with it so none of them is
+//    stranded behind it.
 //  * Transfer / consult / conference — the three server-side handoffs. Each POSTs to
 //    /api/console-calls/{id}/… and the VoxEngine scenario does the rewiring; the
 //    device only asks, and nothing here claims the handoff succeeded (see
@@ -251,11 +258,6 @@ fun ActiveCallScreen(
                     onCompleteConsult = onCompleteConsult,
                 )
 
-                if (keypadOpen) {
-                    Spacer(modifier = Modifier.height(16.dp))
-                    DtmfKeypad(enabled = connected, onDigit = onSendDtmf)
-                }
-
                 Spacer(modifier = Modifier.height(40.dp))
 
                 // Always enabled, in every state this screen can be in. Hanging up is the
@@ -278,6 +280,33 @@ fun ActiveCallScreen(
                         fontWeight = FontWeight.Bold,
                     )
                 }
+            }
+
+            if (keypadOpen) {
+                // Resolved here rather than inside the sheet so the sheet stays a
+                // pure renderer and never reaches into the audio stack. `speaker` is
+                // null on a device that reports no speaker route at all, which
+                // disables the control instead of leaving it inert.
+                val speaker = audioRoute.devices.firstOrNull { it.type == AudioDeviceType.Speaker }
+                val speakerOn = audioRoute.active?.type == AudioDeviceType.Speaker
+                // Toggling OFF returns to the earpiece, the only route guaranteed to
+                // exist on a phone — not "the previously active one", which may have
+                // been a Bluetooth headset that has since disconnected.
+                val earpiece = audioRoute.devices.firstOrNull { it.type == AudioDeviceType.Earpiece }
+                DtmfKeypadSheet(
+                    enabled = connected,
+                    isMuted = isMuted,
+                    speakerOn = speakerOn,
+                    onToggleSpeaker = when {
+                        speakerOn && earpiece != null -> ({ onSelectAudioDevice(earpiece) })
+                        !speakerOn && speaker != null -> ({ onSelectAudioDevice(speaker) })
+                        else -> null
+                    },
+                    onDigit = onSendDtmf,
+                    onToggleMute = onToggleMute,
+                    onHangup = onHangup,
+                    onDismiss = { keypadOpen = false },
+                )
             }
 
             pickerFor?.let { kind ->
@@ -427,70 +456,260 @@ private fun SecondaryCallAction(
 }
 
 /**
- * A standard 12-key DTMF pad.
+ * The 12-key DTMF pad, as a panel that rises over the call screen.
+ *
+ * A SHEET, not inline content, and that is a correction rather than a preference.
+ * The first version appended the keypad to this screen's centred Column, which has
+ * no scroll: on a real device the last row (* 0 #) fell off the bottom edge —
+ * exactly the keys an IVR asks for. Reported with a screenshot on 2026-08-17, next
+ * to the Samsung dialer's own behaviour, which is the shape copied here: the pad
+ * rises from the bottom over the call, and it brings mute and hang-up with it so
+ * neither is stranded behind it.
+ *
+ * Hang-up in particular is not decoration. This file's own rule is that ending a
+ * call must never be unavailable in any state the screen can be in, and a panel
+ * covering the red button would have broken that for as long as it was open.
  *
  * Fire-and-forget by design, matching the SDK: `Call.sendDTMF` returns Unit and
  * reports nothing back, so there is no success to display and no failure to catch.
- * What the agent gets instead is the digit echoed in the row above the keys — the
- * only honest feedback available is "the app registered your tap".
+ * The digits echoed above the keys are the only honest feedback available — "the
+ * app registered your tap", not "the far end heard it".
  *
  * Needs NO server or scenario support: `Call.handleTones` is documented as OFF by
  * default, so tones travel in the bridged audio to whatever is on the other end
  * (an IVR the agent is navigating) untouched by VoxEngine.
  */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-private fun DtmfKeypad(enabled: Boolean, onDigit: (String) -> Unit) {
+private fun DtmfKeypadSheet(
+    enabled: Boolean,
+    isMuted: Boolean,
+    speakerOn: Boolean,
+    /**
+     * Null when the SDK has not offered a speaker device, which disables the control
+     * rather than having it silently do nothing. Same discipline as AudioRoutePicker,
+     * which renders UNAVAILABLE instead of guessing a default route.
+     */
+    onToggleSpeaker: (() -> Unit)?,
+    onDigit: (String) -> Unit,
+    onToggleMute: () -> Unit,
+    onHangup: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     var entered by rememberSaveable { mutableStateOf("") }
 
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        // An LTR island: a dialled sequence reads left-to-right regardless of the
-        // Hebrew page around it — the same treatment the phone number gets above.
-        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-            Text(
-                text = entered.ifBlank { " " },
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
-                modifier = Modifier.height(32.dp),
-            )
-        }
-        Spacer(modifier = Modifier.height(6.dp))
-        // Explicit LTR for the GRID too: a keypad's layout is universal — 1 is
-        // top-left in every locale — and inheriting RTL would mirror it into 3-2-1.
-        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                DTMF_ROWS.forEach { row ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        row.forEach { digit ->
-                            Button(
-                                onClick = {
-                                    onDigit(digit)
-                                    // Bounded so a long IVR session cannot grow this
-                                    // line until it wraps and shifts the keys.
-                                    entered = (entered + digit).takeLast(20)
-                                },
-                                enabled = enabled,
-                                shape = RoundedCornerShape(14.dp),
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-                                modifier = Modifier
-                                    .size(width = 68.dp, height = 52.dp)
-                                    .semantics { contentDescription = "חייג $digit" },
-                            ) {
-                                Text(text = digit, style = MaterialTheme.typography.titleMedium)
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // An LTR island: a dialled sequence reads left-to-right regardless of
+            // the Hebrew around it — the same treatment the phone number gets.
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                Text(
+                    text = entered.ifBlank { " " },
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.height(40.dp),
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Explicit LTR for the GRID: a keypad's layout is universal — 1 is
+            // top-left in every locale, on every physical phone — and inheriting this
+            // screen's RTL would mirror it into 3-2-1. Note this is about the KEY
+            // ORDER only; the Hebrew letters printed on the keys run the other way,
+            // which is DTMF_ROWS' own business (see its kdoc).
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    DTMF_ROWS.forEach { row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                            row.forEach { key ->
+                                DtmfKeyButton(
+                                    key = key,
+                                    enabled = enabled,
+                                    onClick = {
+                                        onDigit(key.digit)
+                                        // Bounded so a long IVR session cannot grow
+                                        // this line until it wraps and shifts the
+                                        // keys underneath the agent's finger.
+                                        entered = (entered + key.digit).takeLast(20)
+                                    },
+                                )
                             }
                         }
+                        Spacer(modifier = Modifier.height(4.dp))
                     }
-                    Spacer(modifier = Modifier.height(10.dp))
                 }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                KeypadAction(
+                    icon = if (isMuted) Icons.Default.MicOff else Icons.Default.Mic,
+                    label = if (isMuted) "בטל השתקה" else "השתק",
+                    enabled = enabled,
+                    // Tinted only while ON, so "muted" is visible at a glance rather
+                    // than needing the label read.
+                    tint = if (isMuted) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurface,
+                    onClick = onToggleMute,
+                )
+                KeypadAction(
+                    icon = Icons.Default.Dialpad,
+                    label = "הסתר",
+                    enabled = true,
+                    // The accent colour marks which control closes this panel — the
+                    // same role the green dialpad plays in the platform dialer.
+                    tint = MaterialTheme.colorScheme.primary,
+                    onClick = onDismiss,
+                )
+                KeypadAction(
+                    icon = Icons.AutoMirrored.Filled.VolumeUp,
+                    label = "רמקול",
+                    enabled = enabled && onToggleSpeaker != null,
+                    tint = if (speakerOn) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface,
+                    onClick = { onToggleSpeaker?.invoke() },
+                )
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+            // Round, and inside this panel rather than behind it. This file's standing
+            // rule is that hanging up must never be unavailable in any state the
+            // screen can be in — a sheet covering the red button would have broken
+            // that for as long as it was open. Always enabled, like its twin behind:
+            // if the leg is in a state the app has mis-modelled, the agent still has
+            // to be able to get out of it.
+            Button(
+                onClick = onHangup,
+                colors = ButtonDefaults.buttonColors(containerColor = ColorDanger),
+                shape = androidx.compose.foundation.shape.CircleShape,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                modifier = Modifier
+                    .size(72.dp)
+                    .semantics { contentDescription = "נתק את השיחה" },
+            ) {
+                Icon(
+                    imageVector = Icons.Default.CallEnd,
+                    contentDescription = null,
+                    modifier = Modifier.size(30.dp),
+                )
             }
         }
     }
 }
 
+/**
+ * A single keypad key: a large digit with its letter groups beneath, and NO button
+ * chrome.
+ *
+ * Bare on purpose. Twelve filled buttons read as twelve competing actions; a physical
+ * keypad — and every platform dialer copying one — is a field of digits, and that is
+ * what makes it recognisable at a glance mid-call. The touch target is still a full
+ * 84×64dp with a ripple, so nothing is lost but the paint.
+ */
+@Composable
+private fun DtmfKeyButton(key: DtmfKey, enabled: Boolean, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .size(width = 84.dp, height = 64.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .semantics { contentDescription = "חייג ${key.digit}" },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            text = key.digit,
+            fontSize = 30.sp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.4f),
+        )
+        if (key.latin.isNotEmpty()) {
+            Text(
+                text = key.latin,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 0.7f else 0.3f),
+            )
+        }
+        if (key.hebrew.isNotEmpty()) {
+            Text(
+                text = key.hebrew,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 0.7f else 0.3f),
+            )
+        }
+    }
+}
+
+/** An icon-over-label control in the keypad's bottom row. Same bare treatment as the keys. */
+@Composable
+private fun KeypadAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean,
+    tint: Color,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .semantics { contentDescription = label },
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = if (enabled) tint else tint.copy(alpha = 0.35f),
+            modifier = Modifier.size(26.dp),
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 0.9f else 0.4f),
+        )
+    }
+}
+
+/**
+ * One key: the digit, and the letters printed under it on a physical phone.
+ *
+ * THE HEBREW RUNS RIGHT-TO-LEFT ACROSS THE KEYPAD, and that is deliberate, not a
+ * transcription error. Copied verbatim from the Samsung dialer in a Hebrew locale
+ * (owner screenshot, 2026-08-17): 3 carries אבג and 2 carries דהו; 6 carries זחט,
+ * 5 יכךל, 4 מםנן; 9 סעפף, 8 צץק, 7 רשת.
+ *
+ * Read each row from the RIGHT — the direction Hebrew reads — and the alphabet is in
+ * plain ascending order: אבג דהו · זחט יכךל מםנן · סעפף צץק רשת. The digits and the
+ * Latin groups stay left-to-right, because those read that way. So one keypad carries
+ * both directions at once, each label flowing the way its own script does.
+ *
+ * This was initially dismissed as an RTL rendering artefact and "corrected" to
+ * ascending-by-digit. It is not an artefact: the middle key of each row (5, 8) is
+ * identical under both readings and only the outer two swap, which is exactly what a
+ * genuine row reversal looks like and exactly what a renderer bug would not produce
+ * so consistently. The letter count corroborates the set: 27 glyphs, the 22 letters
+ * plus all 5 final forms, each appearing once.
+ *
+ * Decorative, not functional — DTMF sends the digit — but they are what makes a
+ * keypad look like a keypad, which is the whole point of matching the platform dialer.
+ */
+private data class DtmfKey(val digit: String, val latin: String = "", val hebrew: String = "")
+
 private val DTMF_ROWS = listOf(
-    listOf("1", "2", "3"),
-    listOf("4", "5", "6"),
-    listOf("7", "8", "9"),
-    listOf("*", "0", "#"),
+    listOf(DtmfKey("1"), DtmfKey("2", "ABC", "דהו"), DtmfKey("3", "DEF", "אבג")),
+    listOf(DtmfKey("4", "GHI", "מםנן"), DtmfKey("5", "JKL", "יכךל"), DtmfKey("6", "MNO", "זחט")),
+    listOf(DtmfKey("7", "PQRS", "רשת"), DtmfKey("8", "TUV", "צץק"), DtmfKey("9", "WXYZ", "סעפף")),
+    listOf(DtmfKey("*"), DtmfKey("0", "+"), DtmfKey("#")),
 )
 
 /**
