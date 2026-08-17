@@ -36,6 +36,15 @@ class VoxIncomingCallCoordinator(
         val session: VoxCallSession,
         val displayName: String,
         val number: String,
+        /**
+         * The caller's number formatted for a human to read, or "" when there is
+         * nothing to show. This is what the ring screen renders — [number] is the
+         * raw SDK value and stays as the diagnostic/fallback.
+         *
+         * See [displayNumberFrom] for where it comes from and why it is not simply
+         * [number].
+         */
+        val displayNumber: String,
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -60,6 +69,41 @@ class VoxIncomingCallCoordinator(
         IncomingCallNotificationBuilder.ensureChannel(context)
     }
 
+    /**
+     * The caller's number to put in front of the agent, or "" for none.
+     *
+     * The server decides this, not the device, and sends it in the
+     * `X-Kalfa-Caller-Number` SIP header that the ConsoleInbound VoxEngine scenario
+     * attaches via `callUser`'s `extraHeaders`. It is an E.164 when the CLI parsed,
+     * and the literal `withheld` when it did not — stated explicitly so that "the
+     * caller hid their number" is distinguishable from "the header never arrived",
+     * which are the same absence otherwise and want opposite handling.
+     *
+     * WHY NOT JUST `call.number`. On a `callUser` leg that mirrors whatever the
+     * scenario passed as `callerid`, which is measured (`call.offer numlen` went
+     * 11 → 12 across the 17.8 deploy: our own DID before, the caller's number
+     * after). But the scenario has to pass SOME callerid, and for a withheld caller
+     * it falls back to our DID — so trusting `call.number` blindly would print OUR
+     * number as the caller's, a sharper version of the bug this all started with.
+     * It is kept as the fallback for the one case the header cannot cover: an
+     * incoming call placed by a scenario version that predates the header.
+     *
+     * Header lookup is case-insensitive. SIP header names are case-insensitive by
+     * RFC 3261 §7.3.1 and nothing promises this SDK preserves the sender's casing,
+     * so matching the exact string would be relying on an accident.
+     */
+    private fun displayNumberFrom(headers: Map<String, String>, call: Call): String {
+        val header = headers.entries
+            .firstOrNull { it.key.equals(CALLER_NUMBER_HEADER, ignoreCase = true) }
+            ?.value
+            ?.trim()
+        return when {
+            header == null -> call.number.trim()   // pre-header scenario — best effort
+            header.equals(WITHHELD, ignoreCase = true) -> ""
+            else -> header
+        }
+    }
+
     // The SDK's IncomingCallListener callback, forwarded via VoxClientManager. Wraps
     // the raw Call in the EXISTING VoxCallSession immediately (state starts RINGING)
     // so an abandoned-before-answer call is observed through the same CallListener
@@ -71,6 +115,7 @@ class VoxIncomingCallCoordinator(
             session = session,
             displayName = call.remoteDisplayName ?: "",
             number = call.number,
+            displayNumber = displayNumberFrom(headers, call),
         )
         // KNOWN GAP, logged rather than fixed: a second offer arriving while one is
         // still pending REPLACES it. Offer A's SDK Call is still live and still
@@ -98,15 +143,29 @@ class VoxIncomingCallCoordinator(
         }
         _pendingOffer.value = offer
 
-        // `named` and `numlen` rather than the values themselves: remoteDisplayName
-        // and number are guest PII and must never reach a log file. Whether they
-        // were PRESENT is still diagnostic — an offer arriving with neither is a
-        // different shape of problem from one arriving with both.
+        // `named`/`numlen`/`hdrnum` rather than the values themselves:
+        // remoteDisplayName and number are guest PII and must never reach a log
+        // file. Whether they were PRESENT is still diagnostic — an offer arriving
+        // with neither is a different shape of problem from one arriving with both.
+        //
+        // `hdrnum` is the one fact the next live call has to settle: that
+        // `extraHeaders` set by a VoxEngine `callUser` actually reaches this
+        // SDK's IncomingCallListener. The vendor documents the mechanism for
+        // "a SIP phone or WEB SDK" and says nothing explicit about Android, so
+        // it is INFERRED until this reads `hdr` rather than `fallback`.
+        // `fallback` means the number on screen came from `Call.number` instead
+        // — which is right on an ordinary call and WRONG on a withheld one, so
+        // this is worth knowing rather than discovering from a screenshot.
         Telemetry.emit(
             TelemetryEvents.CALL_OFFER,
             "id" to shortId(offer.callId),
             "named" to offer.displayName.isNotBlank().toString(),
             "numlen" to offer.number.length.toString(),
+            "hdrnum" to when {
+                headers.keys.none { it.equals(CALLER_NUMBER_HEADER, ignoreCase = true) } -> "fallback"
+                offer.displayNumber.isBlank() -> "withheld"
+                else -> "hdr"
+            },
         )
 
         // Read just before the notification is posted, because it decides whether
@@ -321,6 +380,13 @@ class VoxIncomingCallCoordinator(
 
     private companion object {
         const val TAG = "VoxIncomingCall"
+
+        // Contract with ConsoleInbound.voxengine.js's ringIdentity() — both sides
+        // carry the same two literals and a comment pointing at the other. Changing
+        // either without the other silently loses the number from the ring screen,
+        // which is why they are named constants here rather than inline strings.
+        const val CALLER_NUMBER_HEADER = "X-Kalfa-Caller-Number"
+        const val WITHHELD = "withheld"
     }
 }
 

@@ -289,14 +289,34 @@ rules for an intra-app `callUser`, and by an assumption that `route-inbound`'s
 effect was an agent asked to answer a call knowing nothing about who was on it (owner
 report: "המספר המוצג הוא המספר שלנו ולא המספר טלפון שמחייג").
 
-Beta commit `3e455e3` fixes it server-side. The scenario now passes the caller's own
-CLI as `callerid` and a single server-decided `caller_display` label as `displayName` —
-the guest's name when `route-inbound` recognises the number, their E.164 when it does
-not, `"מספר חסוי"` when the CLI was withheld. All three arrive here as
-`remoteDisplayName` and are correct as received, which is why this screen still takes
-one identity field and not two. A draft that also rendered `IncomingOffer.number`
-underneath was reverted before deploy; the file's own header records the two ways that
-comparison produces visible nonsense.
+Beta commit `3e455e3` fixed the label server-side: the scenario passes the caller's own
+CLI as `callerid` and a server-decided `caller_display` as `displayName` — the guest's
+full name when `route-inbound` recognises the number, their E.164 when it does not,
+`"מספר חסוי"` when the CLI was withheld.
+
+**The live call then showed the label is not enough on its own** ("השם לא מספיק לדעתי,
+חובה תמיד להציג את המספר ממנו השיחה מתקבלת"). An agent may want to call back, and a
+name we got wrong is worse than no name if there is no number beside it to check it
+against. So the screen now renders two lines, from two fields:
+
+| line | source | withheld caller |
+| --- | --- | --- |
+| name | SIP display name ← `caller_display` | `"מספר חסוי"` |
+| number | `X-Kalfa-Caller-Number` SIP header ← `caller_number` | header reads `withheld`, no line drawn |
+
+The number rides its own header rather than being folded into the display name, because
+a display name is one string and this needs two independently styled lines. The scenario
+attaches it through `callUser`'s `extraHeaders`; `VoxClientManager`'s
+`IncomingCallListener` already received a headers map and forwarded it — until now
+`VoxIncomingCallCoordinator` logged only its size.
+
+Two things about that table are load-bearing. The header value is ASCII (an E.164 or the
+literal `withheld`), so unlike the display name it raises no encoding question. And the
+withheld case is stated in-band rather than left as an absent header, because an absent
+header would be indistinguishable from a scenario that predates this contract — where
+falling back to `Call.number` is right — while on a withheld call that same fallback
+yields *our own DID*. The `hdrnum=` field on the `call.offer` telemetry event reports
+which of the three paths a given call took.
 
 `IncomingCallNotificationBuilder` is deliberately NOT changed. Whether the raw number
 belongs on a lock-screen notification, readable by every app holding

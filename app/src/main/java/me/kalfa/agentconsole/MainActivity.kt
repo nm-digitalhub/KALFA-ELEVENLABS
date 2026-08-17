@@ -411,6 +411,7 @@ class MainActivity : ComponentActivity() {
                 if (pendingOffer != null) {
                     IncomingCallScreen(
                         displayName = pendingOffer?.displayName.orEmpty(),
+                        displayNumber = pendingOffer?.displayNumber.orEmpty(),
                         onAnswer = { pendingOffer?.let { incomingCallCoordinator?.answer(it.callId) } },
                         onDecline = { pendingOffer?.let { incomingCallCoordinator?.decline(it.callId) } }
                     )
