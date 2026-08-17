@@ -53,7 +53,7 @@ class VoxCallSession(
     private val _isHeld = MutableStateFlow(call.isOnHold)
     override val isHeld: StateFlow<Boolean> = _isHeld.asStateFlow()
 
-    private val _durationSec = MutableStateFlow(readDurationSec())
+    private val _durationSec = MutableStateFlow(readDurationSec(fallback = 0))
     override val durationSec: StateFlow<Int> = _durationSec.asStateFlow()
 
     private val _isReconnecting = MutableStateFlow(call.state == VoxCallState.Reconnecting)
@@ -144,17 +144,34 @@ class VoxCallSession(
      * leg connects and after it ends. No device and no `javap` here to check, so the
      * value is clamped to a non-negative Int and a read that throws keeps the last good
      * value instead of resetting the display to zero.
+     *
+     * The [fallback] parameter is not a nicety — it is the fix for a crash that killed
+     * the app on EVERY incoming call, measured 2026-08-17 from the device's own
+     * `app.crash` line: `NullPointerException … at=VoxCallSession.readDurationSec:150`,
+     * 2ms after `vox.incoming_call`.
+     *
+     * The default used to be `_durationSec.value`, and the first caller of this function
+     * is `_durationSec`'s OWN initializer (see the property above). So constructing a
+     * session read a `val` that was still null, on a line that only exists to provide a
+     * safe fallback. Worse than a rare race: `getOrDefault`'s argument is evaluated
+     * EAGERLY, before the result is even inspected, so the crash did not need
+     * `call.duration` to fail — it fired on the happy path, every time, which is why no
+     * incoming call had ever survived long enough to be answered.
+     *
+     * Passing 0 explicitly from the initializer keeps the ticker's "keep the last good
+     * value" behaviour for every later call while removing the self-reference from the
+     * one call that cannot have one.
      */
-    private fun readDurationSec(): Int = runCatching {
+    private fun readDurationSec(fallback: Int): Int = runCatching {
         (call.duration / 1000L).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
-    }.getOrDefault(_durationSec.value)
+    }.getOrDefault(fallback)
 
     private fun startTicker() {
         ticker?.cancel()
         ticker = scope.launch {
             while (isActive) {
                 delay(1000)
-                _durationSec.value = readDurationSec()
+                _durationSec.value = readDurationSec(fallback = _durationSec.value)
                 // Re-read the toggles from the SDK on the same beat rather than trusting
                 // what this class last wrote. `hold`'s failure path deliberately keeps
                 // the prior value (holdRefused is the separate signal for "why nothing
