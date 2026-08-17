@@ -873,9 +873,14 @@ private fun ConsoleNavHost(
                 )
             } else {
                 HistoryScreen(
-                    eventOptions = eventOptions,
-                    selectedEventId = filterId,
-                    onSelectEvent = { viewModel.setEventFilter(it) },
+                    // No event picker and no RSVP list here any more — see the
+                    // HistoryScreen kdoc. The one that used to sit above this list
+                    // never filtered it (this call site passed state.consoleHistory
+                    // through unfiltered while filtering only the RSVP tab beside
+                    // it), and the axis was wrong regardless: 28 of 1,241 inbound
+                    // calls in a week carry an event.
+                    filter = state.consoleHistoryFilter,
+                    onFilterChange = { viewModel.setConsoleHistoryFilter(it) },
                     onDialFromHistory = { record ->
                         val eventId = record.eventId
                         val contactId = record.contactId
@@ -895,7 +900,8 @@ private fun ConsoleNavHost(
                     },
                     onRefreshHistory = { viewModel.loadConsoleHistory() },
                     callHistory = state.consoleHistory,
-                    rsvpResults = filteredRsvp,
+                    loading = state.consoleHistoryLoading,
+                    failed = state.consoleHistoryFailed,
                     modifier = contentModifier
                 )
             }

@@ -320,8 +320,9 @@ interface CallEngine {
      * without name or number because that feed carries no PII. These are the calls a
      * human actually took or placed, with who each one was with.
      */
-    suspend fun loadCallHistory(): AppResult<List<ConsoleCallRecord>> =
-        AppResult.Success(emptyList())
+    suspend fun loadCallHistory(
+        filter: ConsoleHistoryFilter = ConsoleHistoryFilter(),
+    ): AppResult<List<ConsoleCallRecord>> = AppResult.Success(emptyList())
 
     /**
      * Calls a past contact back, by the pair the history row carries.
@@ -346,20 +347,94 @@ interface CallEngine {
  * number — for someone who has never been a customer that IS their identity. [phone]
  * is null only when the caller withheld it.
  */
+/**
+ * How the call log is narrowed.
+ *
+ * Time, outcome and direction — the axes a phone log is actually read along. It
+ * REPLACES an event picker that sat above this list, and the replacement is not a
+ * matter of taste: that picker filtered nothing (MainActivity passed the unfiltered
+ * list straight through while filtering only the RSVP tab beside it), and even
+ * working it would have been the wrong question. Measured on the live database
+ * 2026-08-17: of 1,241 inbound calls in a week, 28 had any event attached. An axis
+ * that classifies 2% of the rows leaves 98% in an "other" pile.
+ *
+ * Every filter here is applied SERVER-SIDE. Narrowing a page of rows already in
+ * hand would answer "no calls" for a range full of them, which is the failure this
+ * screen just had in another form.
+ */
+enum class HistoryRange(val labelHebrew: String, val days: Int) {
+    TODAY("היום", 1),
+    WEEK("שבוע", 7),
+    MONTH("חודש", 30),
+}
+
+enum class HistoryOutcome(val labelHebrew: String, val wire: String?) {
+    ALL("הכל", null),
+    ANSWERED("נענו", "answered"),
+    MISSED("לא נענו", "missed"),
+}
+
+enum class HistoryDirection(val labelHebrew: String, val wire: String?) {
+    ALL("הכל", null),
+    INBOUND("נכנסות", "inbound"),
+    OUTBOUND("יוצאות", "outbound"),
+}
+
+data class ConsoleHistoryFilter(
+    val range: HistoryRange = HistoryRange.WEEK,
+    val outcome: HistoryOutcome = HistoryOutcome.ALL,
+    val direction: HistoryDirection = HistoryDirection.ALL,
+) {
+    /** True when nothing is narrowed — used to word the empty state honestly. */
+    val isDefault: Boolean
+        get() = outcome == HistoryOutcome.ALL && direction == HistoryDirection.ALL
+}
+
+/**
+ * What Voximplant reports happened, per call.
+ *
+ * FOUR values, not two, because "not answered" covered populations that call for
+ * opposite responses. Measured over 1,913 sessions in one week (2026-08-17):
+ * ANSWERED 12, MISSED 157, ABANDONED 1,073, REJECTED 671. Folding the last two in
+ * with MISSED is what made the one list worth acting on unreadable.
+ */
+enum class CallOutcome(val wire: String) {
+    /** An agent was on the call. */
+    ANSWERED("answered"),
+    /** Agents were rung, nobody picked up. The list to act on. */
+    MISSED("missed"),
+    /** We answered — disclosure, hold music — and the caller hung up before any
+     *  agent was rung. A real person who gave up. */
+    ABANDONED("abandoned"),
+    /** Never answered at all; the platform refused the leg. Flood traffic. */
+    REJECTED("rejected"),
+    /** Outbound that never connected. */
+    FAILED("failed"),
+    UNKNOWN("unknown");
+
+    companion object {
+        fun fromWire(v: String?): CallOutcome = entries.firstOrNull { it.wire == v } ?: UNKNOWN
+    }
+}
+
 data class ConsoleCallRecord(
     val id: String,
     val inbound: Boolean,
+    /** Voximplant's own verdict, not ours. See [CallOutcome]. */
+    val outcome: CallOutcome = CallOutcome.UNKNOWN,
     /**
-     * WHY the call ended, as the server recorded it: 'no_agent', 'caller_hangup',
-     * 'operator_hangup', or one of those with the platform's own code folded in —
-     * 'operator_failed:busy', 'caller_hangup:sip_503'.
-     *
-     * Carried because `answered` alone collapses outcomes an agent needs apart. A
-     * call that rang out because nobody was free and one the caller abandoned after
-     * two seconds are both "not answered", and only one of them is the console's
-     * fault.
+     * The SIP code that decided it — 480 the agent's app was offline, 603 declined,
+     * 486 busy, 200 normal. Per LEG, from the platform, which is strictly more than
+     * the single reason string our own table used to record for a whole session.
      */
-    val endedReason: String?,
+    val endCode: Int? = null,
+    val endDetails: String? = null,
+    /** How many agents were rung. 0 with outcome ABANDONED means nobody was. */
+    val agentLegsTried: Int = 0,
+    /** Seconds an agent was actually on the call — not the session length, which
+     *  includes the disclosure and the hold music nobody was listening to. */
+    val talkSec: Int = 0,
+    val hasRecording: Boolean = false,
     val name: String?,
     val phone: String?,
     val startedAt: String,

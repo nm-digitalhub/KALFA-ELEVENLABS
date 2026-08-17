@@ -1,9 +1,11 @@
 package me.kalfa.agentconsole.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -12,7 +14,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
@@ -20,19 +21,49 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import me.kalfa.agentconsole.domain.model.*
+import me.kalfa.agentconsole.domain.telephony.CallOutcome
 import me.kalfa.agentconsole.domain.telephony.ConsoleCallRecord
+import me.kalfa.agentconsole.domain.telephony.ConsoleHistoryFilter
+import me.kalfa.agentconsole.domain.telephony.HistoryDirection
+import me.kalfa.agentconsole.domain.telephony.HistoryOutcome
+import me.kalfa.agentconsole.domain.telephony.HistoryRange
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import me.kalfa.agentconsole.ui.theme.*
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * The call log.
+ *
+ * WHAT THIS SCREEN STOPPED BEING, because two things were removed rather than
+ * restyled and the reasons are not cosmetic.
+ *
+ * 1. AN EVENT FILTER SAT ABOVE THE LIST AND FILTERED NOTHING. `EventFilterChips`
+ *    was rendered above both tabs, but MainActivity passed `state.consoleHistory`
+ *    through unfiltered while filtering only the RSVP list beside it. Tapping an
+ *    event changed the screen not at all — a control that appears to work and does
+ *    not, which is worse than an absent one because it makes an empty result
+ *    unreadable: no way to tell "no calls" from "the filter is broken".
+ *
+ *    Working, it would still have been the wrong axis. Measured on the live
+ *    database 2026-08-17: of 1,241 inbound calls in one week, 28 carried an event.
+ *    This is a business phone line, not an event guest list, and 98% of what rings
+ *    it has nothing to do with any event. It is replaced by the axes a phone log is
+ *    actually read along — time, outcome, direction.
+ *
+ * 2. THE RSVP TAB IS GONE. It rendered guest names, head counts and free-text
+ *    notes ("בקשת מנה טבעונית אחת") — personal data belonging to a CUSTOMER'S
+ *    GUESTS, on the owner's call archive. A guest is not our customer; they are our
+ *    customer's invitee, and their dietary preferences have no business on a screen
+ *    about telephony. The aggregate RSVP read-out on the dashboard is untouched:
+ *    counts are not identities.
+ *
+ * What remains is one list, and every row's identity is the NUMBER.
+ */
 @Composable
 fun HistoryScreen(
-    eventOptions: List<Pair<String, String>> = emptyList(),
-    selectedEventId: String? = null,
-    onSelectEvent: (String?) -> Unit = {},
+    filter: ConsoleHistoryFilter = ConsoleHistoryFilter(),
+    onFilterChange: (ConsoleHistoryFilter) -> Unit = {},
     onDialFromHistory: (ConsoleCallRecord) -> Unit = {},
     /**
      * Loads the list. NOT optional in practice, and its absence is why this screen
@@ -43,16 +74,14 @@ fun HistoryScreen(
      */
     onRefreshHistory: () -> Unit = {},
     callHistory: List<ConsoleCallRecord>,
-    rsvpResults: List<RsvpResult>,
+    loading: Boolean = false,
+    failed: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    var selectedTab by remember { mutableStateOf(0) }
-    val tabTitles = listOf("יומן שיחות", "תוצאות אישור הגעה")
-
-    // Loaded when the screen appears. Same idiom the dashboard's missed-call card
-    // uses, and for the same reason: a call list is stale within minutes and the
-    // agent's own arrival is the moment they care about it.
-    LaunchedEffect(Unit) { onRefreshHistory() }
+    // Re-runs when the filter changes, because the filter is applied SERVER-SIDE.
+    // Narrowing the page already in hand would report "no calls" for a range full of
+    // them — the server returns a bounded page, not the whole history.
+    LaunchedEffect(filter) { onRefreshHistory() }
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Column(
@@ -60,7 +89,6 @@ fun HistoryScreen(
                 .fillMaxSize()
                 .padding(horizontal = 16.dp)
         ) {
-            // Header
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -70,18 +98,18 @@ fun HistoryScreen(
             ) {
                 Column {
                     Text(
-                        text = "ארכיון ודוחות",
+                        text = "ארכיון",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
                     )
                     Text(
-                        text = "היסטוריית פעילות",
+                        text = "יומן שיחות",
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onBackground
                     )
                 }
-                
+
                 Box(
                     modifier = Modifier
                         .size(42.dp)
@@ -99,38 +127,109 @@ fun HistoryScreen(
                 }
             }
 
-            // Tab Row
-            TabRow(
-                selectedTabIndex = selectedTab,
-                containerColor = Color.Transparent,
-                divider = { Divider(color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.05f)) },
-                modifier = Modifier.padding(bottom = 16.dp)
-            ) {
-                tabTitles.forEachIndexed { index, title ->
-                    Tab(
-                        selected = selectedTab == index,
-                        onClick = { selectedTab = index },
-                        text = {
-                            Text(
-                                text = title,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Normal,
-                                color = if (selectedTab == index) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-                            )
-                        }
+            HistoryFilterBar(filter = filter, onChange = onFilterChange)
+
+            Box(modifier = Modifier.weight(1f)) {
+                when {
+                    // Order matters: a failed read must never be shown as an empty
+                    // log. "Nobody called" and "we could not find out" are opposite
+                    // facts and an agent acts on them differently.
+                    failed -> HistoryNotice(
+                        text = "לא ניתן לטעון את יומן השיחות.",
+                        actionLabel = "נסה שוב",
+                        onAction = onRefreshHistory,
                     )
+                    loading && callHistory.isEmpty() -> Box(
+                        Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) { CircularProgressIndicator() }
+                    callHistory.isEmpty() -> HistoryNotice(
+                        // Worded from the filter, so an empty result is attributable.
+                        // "אין שיחות" under an active filter reads as a broken screen.
+                        text = if (filter.isDefault) {
+                            "אין שיחות ב${filter.range.labelHebrew} האחרון."
+                        } else {
+                            "אין שיחות שמתאימות לסינון שנבחר."
+                        },
+                        actionLabel = if (filter.isDefault) null else "נקה סינון",
+                        onAction = { onFilterChange(ConsoleHistoryFilter(range = filter.range)) },
+                    )
+                    else -> CallHistoryList(callHistory = callHistory, onDial = onDialFromHistory)
                 }
             }
+        }
+    }
+}
 
-            EventFilterChips(events = eventOptions, selectedEventId = selectedEventId, onSelect = onSelectEvent)
+/**
+ * Time, outcome, direction.
+ *
+ * Horizontally scrollable rather than wrapped: on a narrow phone in RTL a wrapping
+ * chip row reflows as options are toggled, and a control that moves under the
+ * thumb between taps is how an agent selects the wrong one.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HistoryFilterBar(
+    filter: ConsoleHistoryFilter,
+    onChange: (ConsoleHistoryFilter) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            HistoryRange.entries.forEach { r ->
+                FilterChip(
+                    selected = filter.range == r,
+                    onClick = { onChange(filter.copy(range = r)) },
+                    label = { Text(r.labelHebrew) },
+                )
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            // ALL is the default and needs no chip of its own on either axis — it is
+            // expressed by nothing being selected, which keeps the row short enough
+            // to read without scrolling in the common case.
+            HistoryOutcome.entries.filter { it != HistoryOutcome.ALL }.forEach { o ->
+                FilterChip(
+                    selected = filter.outcome == o,
+                    onClick = {
+                        onChange(filter.copy(outcome = if (filter.outcome == o) HistoryOutcome.ALL else o))
+                    },
+                    label = { Text(o.labelHebrew) },
+                )
+            }
+            HistoryDirection.entries.filter { it != HistoryDirection.ALL }.forEach { d ->
+                FilterChip(
+                    selected = filter.direction == d,
+                    onClick = {
+                        onChange(filter.copy(direction = if (filter.direction == d) HistoryDirection.ALL else d))
+                    },
+                    label = { Text(d.labelHebrew) },
+                )
+            }
+        }
+    }
+}
 
-            // Tab Content
-            Box(modifier = Modifier.weight(1f)) {
-                if (selectedTab == 0) {
-                    CallHistoryList(callHistory = callHistory, onDial = onDialFromHistory)
-                } else {
-                    RsvpResultsList(rsvpResults = rsvpResults)
-                }
+@Composable
+private fun HistoryNotice(text: String, actionLabel: String?, onAction: () -> Unit) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(text = text, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f))
+            if (actionLabel != null) {
+                TextButton(onClick = onAction) { Text(actionLabel) }
             }
         }
     }
@@ -180,42 +279,35 @@ private fun formatCallTime(isoUtc: String): String {
 /**
  * What actually happened to a call, in one phrase an agent can act on.
  *
- * "לא נענתה" was all this screen could say, and it covered four different events:
- * nobody was free, the caller gave up, the agent's own phone was busy, the number
- * did not exist. Only one of those is the console's fault and only one is worth
- * ringing back immediately.
+ * FROM VOXIMPLANT'S VERDICT, not from a reason string we composed. "לא נענתה" used
+ * to cover four unrelated events and the server could not tell them apart either,
+ * because it was reading `answered_at` — a column set when the SCENARIO answered.
  *
- * The server sends `reason` and, when the network said something, `reason:detail` —
- * the detail coming from the platform's own status code (486 busy, 480 unavailable,
- * 404 invalid number, 603 rejected, 408 no answer). Read the DETAIL first: it is the
- * more specific fact, and "busy" tells an agent more than "the leg failed".
+ * The four outcomes are separated on facts the platform reports per leg, and the
+ * Hebrew says which:
+ *   MISSED     agents were rung, nobody picked up   ← the only one to act on
+ *   ABANDONED  we answered, the caller gave up      ← nothing was ever offered
+ *   REJECTED   never answered at all                ← flood traffic
  *
- * An unrecognised value falls through to the plain answered/not-answered wording
- * rather than being shown raw. A Hebrew UI must not surface `caller_hangup:sip_503`
- * to an agent — that string is for a bug report, and it is still in the row for one.
+ * The SIP code refines MISSED only, because that is the case where WHY changes what
+ * an agent does: 480 means the app was asleep (ring again, it may wake), 603 means
+ * someone actively declined (ringing again is unlikely to help).
  */
-private fun callStatusLabel(answered: Boolean, endedReason: String?): Pair<String, Boolean> {
-    val detail = endedReason?.substringAfter(':', "")?.takeIf { it.isNotBlank() }
-    val base = endedReason?.substringBefore(':')
-
-    // Detail first — the network's own word beats our name for which leg dropped.
-    when (detail) {
-        "busy" -> return "תפוס" to false
-        "unavailable" -> return "לא זמין" to false
-        "invalid_number" -> return "מספר לא תקין" to false
-        "rejected" -> return "נדחתה" to false
-        "no_answer" -> return "לא ענה" to false
-        "no_funds" -> return "אין יתרה" to false
+private fun callStatusLabel(call: ConsoleCallRecord): Pair<String, Boolean> = when (call.outcome) {
+    CallOutcome.ANSWERED -> "נענתה" to true
+    CallOutcome.MISSED -> when (call.endCode) {
+        480 -> "לא נענתה · האפליקציה לא זמינה" to false
+        486 -> "לא נענתה · תפוס" to false
+        603 -> "לא נענתה · נדחתה" to false
+        408 -> "לא נענתה · אין מענה" to false
+        else -> "לא נענתה" to false
     }
-
-    return when (base) {
-        // The console had nobody to give it to — the one outcome that is ours.
-        "no_agent" -> "לא נמצא נציג" to false
-        "caller_hangup" -> if (answered) "הלקוח ניתק" to true else "המתקשר ויתר" to false
-        "operator_hangup" -> "הסתיימה" to true
-        "safety_net_timeout" -> "נותקה בזמן קצוב" to false
-        else -> if (answered) "נענתה" to true else "לא נענתה" to false
-    }
+    CallOutcome.ABANDONED -> "המתקשר ניתק לפני מענה" to false
+    CallOutcome.REJECTED -> "נדחתה במרכזייה" to false
+    CallOutcome.FAILED -> "לא התחברה" to false
+    // Never invent a verdict. An unknown outcome falls back to the one fact still
+    // in hand rather than to a guess dressed as a status.
+    CallOutcome.UNKNOWN -> if (call.answered) "נענתה" to true else "לא נענתה" to false
 }
 
 /** "3:05", not "185 שניות" — the form every phone shows a call length in. */
@@ -229,18 +321,12 @@ fun CallHistoryList(
     callHistory: List<ConsoleCallRecord>,
     onDial: (ConsoleCallRecord) -> Unit = {},
 ) {
-    if (callHistory.isEmpty()) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(text = "אין שיחות בהיסטוריה", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f))
-        }
-    } else {
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            contentPadding = PaddingValues(bottom = 24.dp)
-        ) {
-            items(callHistory, key = { it.id }) { call ->
-                ConsoleCallCard(call = call, onDial = { onDial(call) })
-            }
+    LazyColumn(
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(bottom = 24.dp)
+    ) {
+        items(callHistory, key = { it.id }) { call ->
+            ConsoleCallCard(call = call, onDial = { onDial(call) })
         }
     }
 }
@@ -248,17 +334,15 @@ fun CallHistoryList(
 /**
  * One past call.
  *
- * WHAT CHANGED, because the shape looks similar and the content does not. This card
- * used to render `Call.customerName` and `Call.customerPhone` from the
- * `console_call_feed` mapper, which hardcodes them to "אורח" and "" — so every row in
- * the app's entire history read "אורח" above a blank line. It now takes a
- * ConsoleCallRecord from /api/agents/call-history, which carries the real name and
- * number of the person on the call.
+ * THE NUMBER IS THE IDENTITY. A name appears above it only when the caller is
+ * someone this business actually knows, and it is never a guest's name: a guest
+ * belongs to a customer's event, and reading their name off an unrelated invite
+ * list is how this card came to greet the owner's own phone as "מבורך קלפה" —
+ * a label from a brit that had nothing to do with the call.
  *
- * The title falls back to the NUMBER when there is no name, rather than to a
- * placeholder. For a caller who has never been a customer the number is their whole
- * identity, and "אורח" would be strictly less information wearing the appearance of
- * more.
+ * So the fallback is not a placeholder. For a caller who has never been a customer
+ * the number IS their whole identity, and "אורח" would be strictly less information
+ * wearing the appearance of more.
  */
 @Composable
 fun ConsoleCallCard(call: ConsoleCallRecord, onDial: () -> Unit = {}) {
@@ -306,25 +390,35 @@ fun ConsoleCallCard(call: ConsoleCallRecord, onDial: () -> Unit = {}) {
             }
 
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = call.name ?: call.phone ?: "מספר חסוי",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                // The number, but only when it is not already the title — printing it
-                // twice for an unrecognised caller reads as a rendering fault.
-                if (call.phone != null && call.name != null) {
+                // LTR island: a phone number reordered by the RTL layout is not the
+                // number that was dialled.
+                if (call.name != null) {
+                    Text(
+                        text = call.name,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                         Text(
-                            text = call.phone,
+                            text = call.phone ?: "",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                         )
                     }
+                } else {
+                    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                        Text(
+                            text = call.phone ?: "מספר חסוי",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-                val (statusText, statusGood) = callStatusLabel(call.answered, call.endedReason)
+                val (statusText, statusGood) = callStatusLabel(call)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = statusText,
@@ -334,18 +428,26 @@ fun ConsoleCallCard(call: ConsoleCallRecord, onDial: () -> Unit = {}) {
                         // label alone is readable to someone who cannot tell the two
                         // apart.
                         color = if (statusGood) ColorSuccess else ColorDanger,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
                     )
                     Text(
                         text = buildString {
                             append(" · ")
                             append(formatCallTime(call.startedAt))
-                            if (call.answered && call.durationSec > 0) {
+                            // TALK time, not session length. The session includes the
+                            // disclosure and the hold music, so a call nobody answered
+                            // still ran 30 seconds — printing that as a duration reads
+                            // as a conversation that never happened.
+                            if (call.talkSec > 0) {
                                 append(" · ")
-                                append(formatDuration(call.durationSec))
+                                append(formatDuration(call.talkSec))
                             }
                         },
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+                        maxLines = 1,
                     )
                 }
             }
@@ -372,145 +474,65 @@ fun ConsoleCallCard(call: ConsoleCallRecord, onDial: () -> Unit = {}) {
     }
 }
 
-@Composable
-fun RsvpResultsList(rsvpResults: List<RsvpResult>) {
-    if (rsvpResults.isEmpty()) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(text = "אין תוצאות אישור הגעה", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f))
-        }
-    } else {
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            contentPadding = PaddingValues(bottom = 24.dp)
-        ) {
-            items(rsvpResults) { result ->
-                RsvpResultCard(result = result)
-            }
-        }
-    }
-}
-
-@Composable
-fun RsvpResultCard(result: RsvpResult) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        shape = RoundedCornerShape(24.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = result.guestName,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                
-                RsvpAnswerBadge(answer = result.answer)
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "אורחים מגיעים: ${if (result.answer == RsvpAnswer.ATTENDING) result.guestsCount else 0}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                )
-            }
-
-            if (result.notes.isNotBlank()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                            RoundedCornerShape(8.dp)
-                        )
-                        .padding(8.dp)
-                ) {
-                    Text(
-                        text = "הערות: ${result.notes}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun RsvpAnswerBadge(answer: RsvpAnswer) {
-    val (bg, textCol) = when (answer) {
-        RsvpAnswer.ATTENDING -> ColorSuccess.copy(alpha = 0.15f) to ColorSuccess
-        RsvpAnswer.DECLINED -> ColorDanger.copy(alpha = 0.15f) to ColorDanger
-        RsvpAnswer.MAYBE -> ColorWarning.copy(alpha = 0.15f) to ColorWarning
-        RsvpAnswer.CALLBACK -> ColorInfo.copy(alpha = 0.15f) to ColorInfo
-    }
-
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(bg)
-            .padding(horizontal = 8.dp, vertical = 4.dp)
-    ) {
-        Text(
-            text = answer.labelHebrew,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.ExtraBold,
-            color = textCol
-        )
-    }
-}
-
 @Preview(showBackground = true)
 @Composable
 fun HistoryScreenPreview() {
     MyApplicationTheme {
         HistoryScreen(
             callHistory = listOf(
+                // Numbers only, both of them. The preview used to carry a guest's real
+                // name lifted from an event — the exact defect this screen was rebuilt
+                // to remove, sitting in the file as the example to copy.
                 ConsoleCallRecord(
                     id = "1",
                     inbound = true,
-                    name = "מבורך קלפה",
-                    endedReason = "caller_hangup",
+                    outcome = CallOutcome.ANSWERED,
+                    endCode = 200,
+                    agentLegsTried = 1,
+                    talkSec = 185,
+                    name = null,
                     phone = "+972536212562",
                     startedAt = "2026-08-17T16:42:22",
-                    durationSec = 185,
+                    durationSec = 201,
                     answered = true,
-                    eventId = "e-1",
-                    contactId = "c-1",
+                    eventId = null,
+                    contactId = null,
                 ),
                 ConsoleCallRecord(
                     id = "2",
                     inbound = true,
-                    // No name: the number becomes the title, which is the case this
-                    // whole change exists for.
+                    // A real missed call: two agents rung, the last one's phone was
+                    // asleep. This is the row the whole screen exists for.
+                    outcome = CallOutcome.MISSED,
+                    endCode = 480,
+                    agentLegsTried = 2,
+                    talkSec = 0,
                     name = null,
-                    // The case the whole status change exists for: not answered, and
-                    // the reason says which kind.
-                    endedReason = "no_agent",
                     phone = "+972501234567",
                     startedAt = "2026-08-17T14:10:00",
-                    durationSec = 0,
+                    durationSec = 32,
+                    answered = false,
+                    eventId = null,
+                    contactId = null,
+                ),
+                ConsoleCallRecord(
+                    id = "3",
+                    inbound = true,
+                    // 1,073 of these in the measured week, and they are NOT misses:
+                    // the caller heard us and hung up before anyone was rung.
+                    outcome = CallOutcome.ABANDONED,
+                    endCode = 200,
+                    agentLegsTried = 0,
+                    talkSec = 0,
+                    name = null,
+                    phone = "+972521112233",
+                    startedAt = "2026-08-17T11:05:00",
+                    durationSec = 12,
                     answered = false,
                     eventId = null,
                     contactId = null,
                 ),
             ),
-            rsvpResults = listOf(
-                RsvpResult("1", "c1", "g1", "שמעון ישראלי", RsvpAnswer.ATTENDING, 3, "בקשת מנה טבעונית אחת")
-            )
         )
     }
 }
@@ -519,12 +541,12 @@ fun HistoryScreenPreview() {
 // ConsoleCallCard above rather than merged with it: the two render different things
 // from different tables — this one a `call_attempts` row from console_call_feed (an
 // AI RSVP call, no PII by design), that one a `console_calls` row a human took, with
-// the caller's real name and number. Merging them would mean one card pretending it
-// knows an identity it was never given.
+// the caller's real number.
 //
 // NOTE this card still shows "אורח" and a blank number for every row, because its
-// mapper hardcodes both — the same defect the console history just stopped having.
-// Fixing it is a separate change against the event surface, not a rename here.
+// mapper hardcodes both. It lives on the EVENT surface, where an event and its
+// guests are the subject and that framing is correct — which is exactly why it was
+// wrong on the call log. Fixing its blank number is a separate change there.
 @Composable
 fun HistoryCallCard(call: Call, onClick: () -> Unit = {}) {
     Card(
@@ -564,7 +586,7 @@ fun HistoryCallCard(call: Call, onClick: () -> Unit = {}) {
                             modifier = Modifier.size(18.dp)
                         )
                     }
-                    
+
                     Column {
                         Text(
                             text = call.customerName,
@@ -612,10 +634,10 @@ fun HistoryCallCard(call: Call, onClick: () -> Unit = {}) {
                 // Handled By tag
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
                         .background(
-                            if (call.handledBy == "ai") MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                            else MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f)
+                            color = if (call.handledBy == "ai") MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                            else MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(6.dp)
                         )
                         .padding(horizontal = 8.dp, vertical = 4.dp)
                 ) {
@@ -630,4 +652,3 @@ fun HistoryCallCard(call: Call, onClick: () -> Unit = {}) {
         }
     }
 }
-

@@ -1496,10 +1496,18 @@ class SupabaseCallEngineImpl(
 
     // ── Call history ──────────────────────────────────────────────────────────
 
-    override suspend fun loadCallHistory(): AppResult<List<me.kalfa.agentconsole.domain.telephony.ConsoleCallRecord>> = try {
+    override suspend fun loadCallHistory(
+        filter: me.kalfa.agentconsole.domain.telephony.ConsoleHistoryFilter,
+    ): AppResult<List<me.kalfa.agentconsole.domain.telephony.ConsoleCallRecord>> = try {
         val jwt = getJwt()
         val resp = httpClient.get("https://beta.kalfa.me/api/agents/call-history") {
             header(HttpHeaders.Authorization, "Bearer $jwt")
+            // Server-side, always. The route returns a bounded page, so narrowing
+            // here would answer "no calls" for a range that has plenty just beyond
+            // the page boundary.
+            parameter("days", filter.range.days)
+            filter.outcome.wire?.let { parameter("outcome", it) }
+            filter.direction.wire?.let { parameter("direction", it) }
         }
         if (resp.status.value in 200..299) {
             val parsed = Json.parseToJsonElement(resp.bodyAsText())
@@ -1511,15 +1519,29 @@ class SupabaseCallEngineImpl(
                     me.kalfa.agentconsole.domain.telephony.ConsoleCallRecord(
                         id = id,
                         inbound = o["direction"]?.jsonPrimitive?.contentOrNull == "inbound",
-                        endedReason = o["ended_reason"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
+                        // Voximplant's per-leg verdict. An unrecognised value maps to
+                        // UNKNOWN rather than to MISSED — inventing a missed call is
+                        // the one wrong answer this screen must not give.
+                        outcome = me.kalfa.agentconsole.domain.telephony.CallOutcome
+                            .fromWire(o["outcome"]?.jsonPrimitive?.contentOrNull),
+                        endCode = o["end_code"]?.jsonPrimitive?.contentOrNull?.toIntOrNull(),
+                        endDetails = o["end_details"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
+                        agentLegsTried = o["agent_legs_tried"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0,
+                        talkSec = o["talk_sec"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0,
+                        hasRecording = o["has_recording"]?.jsonPrimitive?.contentOrNull == "true",
                         // null, NOT a placeholder: the screen decides what to show when
-                        // there is no name, and "אורח" baked in here would be
-                        // indistinguishable from a guest actually called that.
+                        // there is no name. Most callers on a business line have none,
+                        // and that is the normal case rather than a gap to fill.
                         name = o["name"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
                         phone = o["phone"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
                         startedAt = o["started_at"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                         durationSec = o["duration_sec"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0,
                         answered = o["answered"]?.jsonPrimitive?.contentOrNull == "true",
+                        // Voximplant has no event or contact of ours, so these are
+                        // absent by construction now — and with them the call-back
+                        // button, which dial-intent gates on exactly this pair. That
+                        // gap is real and named in the plan (§7); it is not silently
+                        // worked around here.
                         eventId = o["event_id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
                         contactId = o["contact_id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
                     )

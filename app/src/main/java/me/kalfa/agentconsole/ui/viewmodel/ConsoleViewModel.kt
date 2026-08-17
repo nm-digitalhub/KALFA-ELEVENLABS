@@ -131,6 +131,9 @@ data class ConsoleUiState(
     // calls, no PII) and still feeds the event surfaces.
     val consoleHistory: List<ConsoleCallRecord> = emptyList(),
     val consoleHistoryFailed: Boolean = false,
+    val consoleHistoryLoading: Boolean = false,
+    /** Applied server-side — see ConsoleHistoryFilter for why not in-memory. */
+    val consoleHistoryFilter: ConsoleHistoryFilter = ConsoleHistoryFilter(),
     /**
      * A dial the server refused ONLY because of the hour, held here so the agent can
      * confirm it.
@@ -781,20 +784,41 @@ class ConsoleViewModel : ViewModel() {
     //    exact failure mode CallSession.holdRefused exists to prevent.
 
     fun loadConsoleHistory() {
+        val filter = _uiState.value.consoleHistoryFilter
         viewModelScope.launch {
-            when (val result = callEngine.loadCallHistory()) {
+            _uiState.update { it.copy(consoleHistoryLoading = true) }
+            when (val result = callEngine.loadCallHistory(filter)) {
                 is AppResult.Success -> _uiState.update {
-                    it.copy(consoleHistory = result.value, consoleHistoryFailed = false)
+                    it.copy(
+                        consoleHistory = result.value,
+                        consoleHistoryFailed = false,
+                        consoleHistoryLoading = false,
+                    )
                 }
                 is AppResult.Failure -> _uiState.update {
-                    // The list is NOT cleared on failure: a stale history is still a
-                    // true record of calls that happened, unlike a stale transfer
-                    // target list where acting on it produces an error. The flag is
-                    // what tells the screen it may be out of date.
-                    it.copy(consoleHistoryFailed = true)
+                    // The list IS cleared on failure here, unlike the general
+                    // stale-is-better rule, because the list on screen answers a
+                    // FILTER. Keeping the previous filter's rows under new chips
+                    // shows an agent a confident, wrong answer to the question they
+                    // just asked. The flag drives an explicit error state instead.
+                    it.copy(
+                        consoleHistory = emptyList(),
+                        consoleHistoryFailed = true,
+                        consoleHistoryLoading = false,
+                    )
                 }
             }
         }
+    }
+
+    /**
+     * Narrows the log. The load is NOT triggered here — the screen re-runs it from
+     * `LaunchedEffect(filter)`, so a filter restored on recomposition fetches by the
+     * same path as one the agent just tapped, rather than by a second one that can
+     * drift from it.
+     */
+    fun setConsoleHistoryFilter(filter: ConsoleHistoryFilter) {
+        _uiState.update { it.copy(consoleHistoryFilter = filter) }
     }
 
     /**
