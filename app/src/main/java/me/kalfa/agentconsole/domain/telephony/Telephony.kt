@@ -318,7 +318,10 @@ interface CallEngine {
     suspend fun dialManual(phone: String, confirmOutsideHours: Boolean = false): AppResult<Unit> =
         AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.Unknown)
 
-    suspend fun returnCallback(callbackId: String, confirmOutsideHours: Boolean = false): AppResult<Unit> =
+    suspend fun returnCallback(
+        callbackId: String,
+        confirmOutsideHours: Boolean = false,
+    ): AppResult<Unit> =
         AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.Unknown)
 
     // ── Call history ──────────────────────────────────────────────────────────

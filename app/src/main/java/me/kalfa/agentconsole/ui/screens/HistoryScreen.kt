@@ -73,6 +73,8 @@ fun HistoryScreen(
      * made it invisible to every gate — it compiled, it tested, it rendered.
      */
     onRefreshHistory: () -> Unit = {},
+    /** Dials a number the agent typed. See ManualDialSheet. */
+    onDialManual: (String) -> Unit = {},
     callHistory: List<ConsoleCallRecord>,
     loading: Boolean = false,
     failed: Boolean = false,
@@ -80,6 +82,7 @@ fun HistoryScreen(
 ) {
     var showFilterSheet by remember { mutableStateOf(false) }
     var openCall by remember { mutableStateOf<ConsoleCallRecord?>(null) }
+    var showDialpad by remember { mutableStateOf(false) }
 
     // Re-runs when the filter changes, because the filter is applied SERVER-SIDE.
     // Narrowing the page already in hand would report "no calls" for a range full of
@@ -97,6 +100,16 @@ fun HistoryScreen(
         )
     }
 
+    if (showDialpad) {
+        ManualDialSheet(
+            onDial = {
+                onDialManual(it)
+                showDialpad = false
+            },
+            onDismiss = { showDialpad = false },
+        )
+    }
+
     openCall?.let { selected ->
         CallDetailSheet(
             call = selected,
@@ -109,8 +122,9 @@ fun HistoryScreen(
     }
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+      Box(modifier = modifier.fillMaxSize()) {
         Column(
-            modifier = modifier
+            modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp)
         ) {
@@ -191,6 +205,20 @@ fun HistoryScreen(
                 }
             }
         }
+
+        // A call log you cannot dial FROM is a list. Every row already offers a
+        // call-back; this is the number nobody has called us from yet, which had
+        // no way in at all until dial-intent gained the `manual` shape.
+        FloatingActionButton(
+            onClick = { showDialpad = true },
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(24.dp)
+                .semantics { contentDescription = "חיוג למספר חדש" },
+        ) {
+            Icon(Icons.Default.Dialpad, contentDescription = null)
+        }
+      }
     }
 }
 

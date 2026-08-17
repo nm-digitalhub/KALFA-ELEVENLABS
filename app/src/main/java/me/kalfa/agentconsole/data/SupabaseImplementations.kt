@@ -1441,7 +1441,10 @@ class SupabaseCallEngineImpl(
             }.toString(),
         )
 
-    override suspend fun returnCallback(callbackId: String, confirmOutsideHours: Boolean): AppResult<Unit> =
+    override suspend fun returnCallback(
+        callbackId: String,
+        confirmOutsideHours: Boolean,
+    ): AppResult<Unit> =
         dialViaIntent(
             buildJsonObject {
                 put("kind", "returned_call")
@@ -1457,6 +1460,16 @@ class SupabaseCallEngineImpl(
      * two-step shape is the consent model and duplicating it is how one copy quietly
      * loses a step. [body] names WHO in dial-intent's own vocabulary; this function
      * never sees a phone number and could not dial one if it did.
+     */
+    /**
+     * Places a dial and shows the number THE SERVER SAYS it is ringing.
+     *
+     * The display value is read out of the dial-intent response, never passed in
+     * by the caller. An earlier version threaded it down from the screen — the
+     * typed digits, or the phone on the history row — and that is two sources of
+     * truth for one call: the server resolves which number to RING, the device
+     * decided which to SHOW, and a stale row or a differently-resolved target
+     * means an agent reads one number while another is dialled.
      */
     private suspend fun dialViaIntent(body: String): AppResult<Unit> = try {
         // PHASE-BY-PHASE, because "the dial failed" named an operation with three
@@ -1505,8 +1518,13 @@ class SupabaseCallEngineImpl(
                 else -> AppResult.Failure(failureForStatus(resp.status.value))
             }
         } else {
-            val token = Json.parseToJsonElement(resp.bodyAsText())
-                .jsonObject["dial"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            val ok = Json.parseToJsonElement(resp.bodyAsText()).jsonObject
+            val token = ok["dial"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            // Canonical, from the side that decided it. Absent on a server that
+            // predates the field, in which case the screen falls back to the
+            // routing token exactly as it did before — ugly, but never WRONG,
+            // which a number from a different source could be.
+            val displayPhone = ok["target_phone"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
             if (token == null) {
                 // A 2xx with no token is a contract break, not a refusal — refusals
                 // arrive as non-2xx. Surfaced rather than swallowed into "nothing
@@ -1534,7 +1552,10 @@ class SupabaseCallEngineImpl(
                     )
                     placed.fold(
                         onSuccess = { call ->
-                            val session = me.kalfa.agentconsole.telephony.vox.VoxCallSession(call)
+                            val session = me.kalfa.agentconsole.telephony.vox.VoxCallSession(
+                                call = call,
+                                displayPhoneOverride = displayPhone,
+                            )
                             // Attached BEFORE start(): the session must already be the
                             // current one when the SDK begins emitting state, or the
                             // first transitions land with nothing observing them and

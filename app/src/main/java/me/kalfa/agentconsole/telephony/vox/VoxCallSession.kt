@@ -38,12 +38,32 @@ class VoxCallSession(
     private val call: Call,
     private val connectedState: CallState = CallState.ACTIVE,
     override val consoleCallId: String? = null,
+    /**
+     * What to SHOW as the other party, when the caller knows and `call.number`
+     * cannot.
+     *
+     * An outbound console leg is created with `VICalls.createCall(dialToken)`, so
+     * `call.number` is the ROUTING TOKEN — `ct` followed by 64 hex characters. The
+     * active-call screen rendered that verbatim, under the name "אורח", and the
+     * owner reported exactly that: "מופיע אורח ושורה של מספרים ואותיות במקום המספר
+     * אליו השיחה יצאה".
+     *
+     * The caller always knows better here: a manual dial has the number that was
+     * typed, and a call-back from the log has the row's own number. Passing it in
+     * beats guessing, and beats asking the SDK for something it was never given.
+     */
+    private val displayPhoneOverride: String? = null,
+    private val displayNameOverride: String? = null,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob()),
 ) : CallSession {
 
     override val id: String = call.id
-    override val customerPhone: String = call.number
-    override val customerName: String = call.remoteDisplayName ?: "אורח"
+    override val customerPhone: String = displayPhoneOverride ?: call.number
+    // Falls back to the NUMBER, never to "אורח". A guest is a customer's invitee
+    // and has no business naming a call this console placed; on a business line
+    // most numbers have no name at all, and the number is the identity.
+    override val customerName: String =
+        displayNameOverride ?: call.remoteDisplayName ?: displayPhoneOverride ?: ""
 
     private val _state = MutableStateFlow(mapState(call.state))
     override val state: StateFlow<CallState> = _state.asStateFlow()

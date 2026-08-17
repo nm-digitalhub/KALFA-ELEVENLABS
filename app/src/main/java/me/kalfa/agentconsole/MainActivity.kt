@@ -910,6 +910,7 @@ private fun ConsoleNavHost(
                         }
                     },
                     onRefreshHistory = { viewModel.loadConsoleHistory() },
+                    onDialManual = { viewModel.dialManual(it) },
                     callHistory = state.consoleHistory,
                     loading = state.consoleHistoryLoading,
                     failed = state.consoleHistoryFailed,
