@@ -1455,9 +1455,12 @@ class SupabaseCallEngineImpl(
             // failure so the UI can ask rather than announce — every other reason
             // (dnc, opted_out, quiet_hours for Shabbat, attempt_cap) is final and
             // must keep reading as final.
-            val reason = runCatching {
-                Json.parseToJsonElement(resp.bodyAsText()).jsonObject["reason"]?.jsonPrimitive?.contentOrNull
-            }.getOrNull()
+            val body = runCatching { Json.parseToJsonElement(resp.bodyAsText()).jsonObject }.getOrNull()
+            val reason = body?.get("reason")?.jsonPrimitive?.contentOrNull
+            // Voximplant's own error number when the refusal came from the platform.
+            // Carried to the screen because for the faults an agent cannot fix, the
+            // code IS the diagnosis.
+            val voxCode = body?.get("vox_code")?.jsonPrimitive?.contentOrNull?.toIntOrNull()
             when {
                 reason == "outside_hours" ->
                     AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.OutsideCallHours)
@@ -1466,7 +1469,9 @@ class SupabaseCallEngineImpl(
                 // looking in the wrong place entirely. Carried through so the screen
                 // can name what actually happened.
                 reason != null && resp.status.value == 403 ->
-                    AppResult.Failure(me.kalfa.agentconsole.domain.error.AppFailure.DialRefused(reason))
+                    AppResult.Failure(
+                        me.kalfa.agentconsole.domain.error.AppFailure.DialRefused(reason, voxCode)
+                    )
                 else -> AppResult.Failure(failureForStatus(resp.status.value))
             }
         } else {

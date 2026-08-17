@@ -49,7 +49,7 @@ sealed interface AppFailure {
      * table. A refusal that misnames itself costs more than one that simply says
      * "no".
      */
-    data class DialRefused(val reason: String) : AppFailure
+    data class DialRefused(val reason: String, val voxCode: Int? = null) : AppFailure
 
     data object CampaignHoldRequired : AppFailure
     data object NoActiveCampaign : AppFailure

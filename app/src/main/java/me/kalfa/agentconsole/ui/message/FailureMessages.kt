@@ -28,21 +28,62 @@ fun AppFailure.toHebrewMessage(context: FailureContext): String =
         // הרשאה" until 2026-08-17, when a missed-call return failing with
         // `not_found` sent the owner looking for a permissions problem that did not
         // exist. The reason codes are dial-intent's own and are stable.
-        is AppFailure.DialRefused -> when (reason) {
-            "dnc" -> "המספר נמצא ברשימת החסומים ולא ניתן לחייג אליו."
-            "opted_out" -> "האדם ביקש להסיר את מספרו ולא ניתן לחייג אליו."
-            "quiet_hours" -> "לא ניתן לחייג כעת — שבת או חג."
-            "not_found" -> "לא נמצאה שיחה מתאימה לחיוג חוזר."
-            "stale" -> "השיחה ישנה מכדי לחזור אליה מכאן."
-            "attempt_cap" -> "בוצעו כבר מספר ניסיונות חיוג לשיחה הזו."
-            "invalid_phone" -> "השיחה הגיעה ממספר חסוי — אין לאן לחזור."
-            "not_open" -> "הבקשה כבר טופלה."
-            "not_linked", "event_not_active", "past_event_day" ->
-                "לא ניתן לחייג לפי כללי האירוע."
-            "lookup_failed" -> "לא ניתן לאמת את פרטי השיחה כרגע. נסה שוב."
-            // An unknown code is reported as a refusal WITHOUT inventing a cause —
-            // and carries the raw code, so a bug report names it.
-            else -> "לא ניתן לחייג כעת ($reason)."
+        // ONE MESSAGE PER REASON, and the platform's code named where it is the
+        // diagnosis. Every 403 used to render as "אין לך הרשאה", so a return that
+        // failed with `not_found` reported a permissions problem; then an interim
+        // version collapsed six upstream faults into "נסה שוב", which is advice
+        // that is simply false for a rejected service account.
+        //
+        // The line each one draws is whether RETRYING HELPS, and that is decided
+        // by what the code actually means rather than by grouping.
+        is AppFailure.DialRefused -> {
+            val code = voxCode?.let { " (קוד $it)" } ?: ""
+            when (reason) {
+                // ── consent and eligibility: final, and about the person ──────
+                "dnc" -> "המספר נמצא ברשימת החסומים ולא ניתן לחייג אליו."
+                "opted_out" -> "האדם ביקש להסיר את מספרו ולא ניתן לחייג אליו."
+                "quiet_hours" -> "לא ניתן לחייג כעת — שבת או חג."
+                "attempt_cap" -> "בוצעו כבר מספר ניסיונות חיוג לשיחה הזו."
+                "not_open" -> "הבקשה כבר טופלה."
+                "not_linked", "event_not_active", "past_event_day" ->
+                    "לא ניתן לחייג לפי כללי האירוע."
+
+                // ── about the CALL being returned: final, and each one distinct ─
+                "not_found" -> "לא נמצאה שיחה עם המזהה הזה$code."
+                "invalid_session_id" -> "מזהה השיחה אינו תקין."
+                "not_inbound" -> "זו שיחה יוצאת שביצענו — אין למי לחזור."
+                "out_of_window", "stale" -> "השיחה ישנה מכדי לחזור אליה מכאן."
+                "withheld_number", "invalid_phone" ->
+                    "השיחה הגיעה ממספר חסוי — אין לאן לחזור."
+
+                // ── WAITING HELPS. Only these three say so. ───────────────────
+                "rate_limited" ->
+                    "יותר מדי בקשות לספק הטלפוניה$code. המתן דקה ונסה שוב."
+                "duplicate_request" ->
+                    "אותה בקשה נשלחה זה עתה$code. המתן מספר שניות ונסה שוב."
+                "lookup_failed" -> "לא ניתן לאמת את פרטי השיחה כרגע. נסה שוב."
+                "network_error" -> "אין תקשורת עם ספק הטלפוניה. בדוק את החיבור ונסה שוב."
+
+                // ── NOT ours to retry. Saying "נסה שוב" here would be false. ──
+                "platform_fault" ->
+                    "תקלה אצל ספק הטלפוניה$code. לא בצד שלנו — נסה שוב בעוד מספר דקות, ואם חוזר יש לדווח."
+                "token_expired" ->
+                    "אימות מול ספק הטלפוניה פג$code. נדרש טיפול — יש לדווח."
+                "config_fault" ->
+                    "תקלת הגדרות מול ספק הטלפוניה$code. אין טעם לנסות שוב — יש לדווח."
+                "bad_request" ->
+                    "שגיאה בבקשה שנשלחה לספק$code. באג במערכת — יש לדווח."
+
+                // Normally intercepted upstream and turned into OutsideCallHours,
+                // which asks the agent to confirm instead of announcing a refusal.
+                // Here as a safety net: if it ever reaches this branch it must read
+                // as Hebrew, not as a raw reason code in parentheses.
+                "outside_hours" -> "השעה מחוץ לשעות החיוג הרגילות (08:00–19:00)."
+
+                // An unknown code is reported as a refusal WITHOUT inventing a
+                // cause, and carries both names so a bug report can quote them.
+                else -> "לא ניתן לחייג כעת ($reason$code)."
+            }
         }
         AppFailure.NotFound -> when (context) {
             FailureContext.GUEST_CALL -> "האורח לא נמצא."
