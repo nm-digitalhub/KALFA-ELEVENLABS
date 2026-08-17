@@ -84,10 +84,42 @@ class VoxSilentLoginTest {
     // and only one of them is evidence about the tokens. Both bounded callers
     // (PresenceActions' 15s heartbeat budget, VoxFirebaseMessagingService's 9s) unwind
     // through the cancellation branch on a slow network.
+    //
+    // NARROWED, and these assertions moved with it: this used to accept ANY
+    // non-cancellation throwable as proof, including a bare IllegalStateException.
+    // That is what made a network blip cost the device its identity — the tokens
+    // were discarded on evidence the platform never gave. The predicate now reads
+    // VoxAuthException.Sdk.credentialRejected, which VoxClientManager sets from
+    // LoginError.rejectsStoredCredential(): true for TokenExpired and
+    // InvalidPassword, false for NetworkIssues / Timeout / MauAccessDenied /
+    // AccountFrozen / InternalError and the rest.
+    //
+    // Both directions are pinned deliberately. Asserting only the `true` case would
+    // let the predicate widen back to "anything that is not a cancellation" without
+    // a single test turning red, which is precisely the regression this narrowing
+    // was written to prevent.
     @Test
-    fun `a platform rejection proves the stored tokens are dead`() {
-        assertTrue(refreshFailureProvesTokensDead(VoxAuthException.Sdk("refreshToken: TokenExpired")))
-        assertTrue(refreshFailureProvesTokensDead(IllegalStateException("anything else")))
+    fun `only a flagged credential rejection proves the stored tokens are dead`() {
+        assertTrue(
+            "an SDK error the platform flagged as rejecting the credential IS evidence",
+            refreshFailureProvesTokensDead(
+                VoxAuthException.Sdk("refreshToken: TokenExpired", credentialRejected = true),
+            ),
+        )
+    }
+
+    @Test
+    fun `an unflagged SDK failure proves nothing and must not discard the tokens`() {
+        // The same exception TYPE as the case above, differing only in the flag —
+        // a transport-level failure reaching the same catch as a real rejection.
+        assertFalse(
+            refreshFailureProvesTokensDead(VoxAuthException.Sdk("refreshToken: NetworkIssues")),
+        )
+    }
+
+    @Test
+    fun `a throwable from outside the SDK boundary proves nothing about the tokens`() {
+        assertFalse(refreshFailureProvesTokensDead(IllegalStateException("anything else")))
     }
 
     @Test
