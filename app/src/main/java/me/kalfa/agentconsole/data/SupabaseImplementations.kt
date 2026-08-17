@@ -525,7 +525,7 @@ class SupabaseCampaignRepository(private val client: SupabaseClient) : CampaignR
 
     private val targetsMap = mutableMapOf<String, MutableStateFlow<List<CampaignTarget>>>()
     private val eventGuestsMap = mutableMapOf<String, MutableStateFlow<List<EventGuest>>>()
-    private val httpClient = HttpClient(OkHttp)
+    private val httpClient = KalfaHttpClient.create()
 
     init {
         // First read waits for a signed-in session — see SessionGate.kt. This
@@ -738,7 +738,7 @@ class SupabaseCallEngineImpl(
     private val rsvpRepository: RsvpRepository
 ) : CallEngine, AgentPresence {
 
-    private val httpClient = HttpClient(OkHttp)
+    private val httpClient = KalfaHttpClient.create()
     
     private val _currentSession = MutableStateFlow<CallSession?>(null)
     override val currentSession: StateFlow<CallSession?> = _currentSession.asStateFlow()
@@ -1459,12 +1459,26 @@ class SupabaseCallEngineImpl(
      * never sees a phone number and could not dial one if it did.
      */
     private suspend fun dialViaIntent(body: String): AppResult<Unit> = try {
+        // PHASE-BY-PHASE, because "the dial failed" named an operation with three
+        // network steps in it and the log could not say which one broke. The first
+        // real failure here reported only `SocketTimeoutException` — true, and
+        // useless: the POST, the SDK login and the leg creation are separate
+        // machines and only one of them was stuck.
+        //
+        // No phone number, no token: a step name and a duration.
+        val t0 = System.currentTimeMillis()
         val jwt = getJwt()
         val resp = httpClient.post("https://beta.kalfa.me/api/console-calls/dial-intent") {
             header(HttpHeaders.Authorization, "Bearer $jwt")
             contentType(ContentType.Application.Json)
             setBody(body)
         }
+        Telemetry.emit(
+            TelemetryEvents.DIAL_STEP,
+            "step" to "intent_http",
+            "status" to resp.status.value.toString(),
+            "ms" to (System.currentTimeMillis() - t0).toString(),
+        )
         if (resp.status.value !in 200..299) {
             // 403 carries a machine-readable `reason`, and exactly one of them is
             // something the agent can decide about: outside_hours. Surfaced as its own
@@ -1510,7 +1524,15 @@ class SupabaseCallEngineImpl(
                         me.kalfa.agentconsole.domain.error.AppFailure.DialRefused("no_device_identity"),
                     )
                 } else {
-                    manager.placeCall(token).fold(
+                    val t1 = System.currentTimeMillis()
+                    val placed = manager.placeCall(token)
+                    Telemetry.emit(
+                        TelemetryEvents.DIAL_STEP,
+                        "step" to "place_call",
+                        "ok" to placed.isSuccess.toString(),
+                        "ms" to (System.currentTimeMillis() - t1).toString(),
+                    )
+                    placed.fold(
                         onSuccess = { call ->
                             val session = me.kalfa.agentconsole.telephony.vox.VoxCallSession(call)
                             // Attached BEFORE start(): the session must already be the

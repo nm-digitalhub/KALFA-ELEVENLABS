@@ -393,7 +393,7 @@ object DependencyContainer {
                 // whole night has been about.
                 val ctx = applicationContext
                 if (client != null && store != null && ctx != null) {
-                    val http = HttpClient(OkHttp)
+                    val http = me.kalfa.agentconsole.data.KalfaHttpClient.create()
                     val authClient = VoxSdkAuthClient(http, getJwt = { client.auth.currentAccessTokenOrNull() })
                     // ctx is the same applicationContext that built `store` above, so
                     // it is non-null on every path that reaches here. VoxClientManager
@@ -448,7 +448,7 @@ object DependencyContainer {
             _deviceTelemetry ?: applicationContext?.let { ctx ->
                 DeviceTelemetry.create(
                     context = ctx,
-                    httpClient = HttpClient(OkHttp),
+                    httpClient = me.kalfa.agentconsole.data.KalfaHttpClient.create(),
                     getJwt = { supabaseClient?.auth?.currentAccessTokenOrNull() },
                 ).also {
                     _deviceTelemetry = it

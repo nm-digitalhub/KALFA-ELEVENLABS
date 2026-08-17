@@ -340,6 +340,16 @@ object TelemetryEvents {
      */
     const val DIAL_FAILED = "dial.failed"
 
+    /**
+     * One step of a dial attempt, with how long it took.
+     *
+     * `dial.failed` alone named the whole operation, which spans three separate
+     * machines: the POST to our API, the Voximplant SDK login, and creating the leg.
+     * A SocketTimeoutException across all three says only that something was slow.
+     * `step=intent_http ms=…` vs `step=place_call ms=…` says which.
+     */
+    const val DIAL_STEP = "dial.step"
+
     const val AUTH_JWT_MISSING = "auth.jwt_missing"
 
     // ── the channel describing itself ─────────────────────────────────────────
