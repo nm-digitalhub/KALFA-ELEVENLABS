@@ -190,6 +190,13 @@ class VoxIncomingCallCoordinator(
                 "alert" to cap.canAlert.toString(),
                 "fsi" to cap.fullScreenIntentAllowed.toString(),
                 "locked_ring" to cap.canRingOnLockedScreen.toString(),
+                // The two facts that turn "I missed a call" from a story into a
+                // measurement: whether this channel actually vibrates, as the SYSTEM
+                // reports it, and what the ringer was set to at the time. A silent
+                // phone missing a call is the agent's own setting; a vibrate phone
+                // missing one is a bug, and nothing distinguished them before.
+                "vib" to cap.channelVibrates.toString(),
+                "ringer" to cap.ringerMode,
             )
         }
 

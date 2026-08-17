@@ -44,6 +44,12 @@ object PresenceActions {
     // a literal string in two files is exactly how these silently stop matching.
     const val ACTION_OPEN_NOTIFICATION_SETTINGS = "ring_open_notification_settings"
     const val ACTION_OPEN_FULL_SCREEN_INTENT_SETTINGS = "ring_open_fsi_settings"
+    /**
+     * Opens the incoming-call CHANNEL's own settings — not the app's. Vibration is a
+     * per-channel setting the platform will not let an app change after creation, so
+     * this specific screen is the only place it can be turned back on.
+     */
+    const val ACTION_OPEN_CALL_CHANNEL_SETTINGS = "ring_open_call_channel_settings"
 
     /**
      * Sets the agent's status and, for READY specifically, declares shift and drives
@@ -696,6 +702,22 @@ object PresenceActions {
                     title = "מסך שיחה נכנסת לא ייפתח במכשיר נעול",
                     body = "שיחות עלולות להתפספס כשהמכשיר נעול.",
                     primaryAction = MessageAction("אפשר עכשיו", ACTION_OPEN_FULL_SCREEN_INTENT_SETTINGS),
+                    dismissible = false,
+                    deduplicationKey = RING_CAPABILITY_MESSAGE_ID,
+                ),
+            )
+            // Ranked BELOW the two above because they are worse: those mean no call
+            // arrives at all, or none arrives on a locked screen. This one means calls
+            // arrive and buzz nothing while the agent has explicitly asked to be
+            // buzzed. Scoped to ringer=vibrate on purpose — a phone on SILENT staying
+            // quiet is the setting working, not a fault to nag about.
+            capability.willMissCallsSilently -> AppMessageCenter.publish(
+                UiMessage(
+                    id = RING_CAPABILITY_MESSAGE_ID,
+                    severity = MessageSeverity.WARNING,
+                    title = "המכשיר במצב רטט אך שיחות לא ירטטו",
+                    body = "רטט כבוי עבור ערוץ השיחות הנכנסות, ולכן שיחות עלולות להתפספס.",
+                    primaryAction = MessageAction("פתח הגדרות ערוץ", ACTION_OPEN_CALL_CHANNEL_SETTINGS),
                     dismissible = false,
                     deduplicationKey = RING_CAPABILITY_MESSAGE_ID,
                 ),

@@ -6,6 +6,7 @@ import kotlinx.coroutines.CancellationException
 import me.kalfa.agentconsole.telemetry.Telemetry
 import me.kalfa.agentconsole.telemetry.TelemetryEvents
 import me.kalfa.agentconsole.di.DependencyContainer
+import me.kalfa.agentconsole.telephony.vox.IncomingCallNotificationBuilder
 import me.kalfa.agentconsole.telephony.vox.RingCapabilityChecker
 import me.kalfa.agentconsole.telephony.presence.PresenceActions
 import me.kalfa.agentconsole.domain.model.*
@@ -492,6 +493,15 @@ class ConsoleViewModel : ViewModel() {
                 DependencyContainer.appContext?.let { ctx ->
                     RingCapabilityChecker.fullScreenIntentSettingsIntent(ctx)?.let { intent ->
                         runCatching { ctx.startActivity(intent) }
+                    }
+                }
+            // The channel's own screen, not the app's. Channel behaviour is immutable
+            // after creation, so when vibration is off for incoming calls this is the
+            // only place on the device that can turn it back on.
+            PresenceActions.ACTION_OPEN_CALL_CHANNEL_SETTINGS ->
+                DependencyContainer.appContext?.let { ctx ->
+                    runCatching {
+                        ctx.startActivity(IncomingCallNotificationBuilder.channelSettingsIntent(ctx))
                     }
                 }
         }

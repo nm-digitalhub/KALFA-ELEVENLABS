@@ -3,6 +3,7 @@ package me.kalfa.agentconsole.telephony.vox
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -42,9 +43,39 @@ data class RingCapability(
      * See AGENTS.md §"Play upload" A-1.
      */
     val fullScreenIntentAllowed: Boolean,
+    /**
+     * Whether the incoming-call channel will actually VIBRATE, as the system reports
+     * it — not as the app requested it.
+     *
+     * The distinction is the whole point. Channel behaviour is immutable after
+     * creation and the user can turn vibration off at any time, so what the builder
+     * asks for and what the device does are different facts, and only this one
+     * matters. Reported after a phone in vibrate mode stayed silent through an
+     * incoming call (owner, 17.8) — a failure that was completely invisible until
+     * something measured it.
+     */
+    val channelVibrates: Boolean = true,
+    /**
+     * The device's ringer mode at the time of the check: "normal", "vibrate",
+     * "silent", or "unknown".
+     *
+     * Context rather than a verdict. A silent phone missing a call is the agent's own
+     * setting working correctly; a VIBRATE phone missing one is a bug. Without this
+     * the two are indistinguishable in a log.
+     */
+    val ringerMode: String = "unknown",
 ) {
     /** The agent can be alerted at all — any missed call beyond this is not a config problem. */
     val canAlert: Boolean get() = notificationsEnabled && channelAlerting
+
+    /**
+     * The device is set to vibrate but the call channel will not vibrate — i.e. the
+     * agent has asked to be buzzed and will not be. Deliberately narrow: a phone on
+     * SILENT is not covered, because staying quiet there is correct behaviour, not a
+     * fault.
+     */
+    val willMissCallsSilently: Boolean
+        get() = canAlert && ringerMode == "vibrate" && !channelVibrates
 
     /**
      * The ringing UI will actually take over a locked screen. When false the call still
@@ -61,7 +92,35 @@ object RingCapabilityChecker {
             notificationsEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled(),
             channelAlerting = channelAlerting(mgr),
             fullScreenIntentAllowed = fullScreenIntentAllowed(mgr),
+            channelVibrates = channelVibrates(mgr),
+            ringerMode = ringerMode(context),
         )
+    }
+
+    /**
+     * The channel's REAL vibration setting, via NotificationChannel.shouldVibrate().
+     *
+     * A channel that does not exist yet reports true, matching channelAlerting's
+     * treatment of the same case: ensureChannel creates it with vibration on, so
+     * "not created" is not a fault to warn about. Below API 26 there are no channels
+     * and vibration follows the notification itself, so there is nothing to report.
+     */
+    private fun channelVibrates(mgr: NotificationManager?): Boolean {
+        if (mgr == null) return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return true
+        val channel = mgr.getNotificationChannel(IncomingCallNotificationBuilder.CHANNEL_ID)
+            ?: return true
+        return channel.shouldVibrate()
+    }
+
+    private fun ringerMode(context: Context): String {
+        val audio = context.getSystemService(AudioManager::class.java) ?: return "unknown"
+        return when (audio.ringerMode) {
+            AudioManager.RINGER_MODE_NORMAL -> "normal"
+            AudioManager.RINGER_MODE_VIBRATE -> "vibrate"
+            AudioManager.RINGER_MODE_SILENT -> "silent"
+            else -> "unknown"
+        }
     }
 
     // Channels only exist from API 26. Below that there is no per-channel block, so the

@@ -1,6 +1,10 @@
 package me.kalfa.agentconsole.telephony.vox
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioManager
 import androidx.core.app.NotificationCompat
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
@@ -25,6 +29,49 @@ import org.robolectric.annotation.Config
 class IncomingCallNotificationBuilderTest {
 
     private val context: Context get() = ApplicationProvider.getApplicationContext()
+
+    // The channel behaviours behind a phone that would not vibrate. Worth pinning
+    // because they are set ONCE per device and then frozen by the platform: "After
+    // you create a notification channel, you can't change the notification
+    // behaviors." A regression here is therefore not a bug that ships and gets
+    // fixed — it is a bug that becomes permanent on every device that installs it,
+    // until the channel id is versioned again.
+    @Test
+    fun `the incoming-call channel rings and vibrates as an actual phone call`() {
+        IncomingCallNotificationBuilder.ensureChannel(context)
+
+        val mgr = context.getSystemService(NotificationManager::class.java)!!
+        val channel = mgr.getNotificationChannel(IncomingCallNotificationBuilder.CHANNEL_ID)
+        assertNotNull(channel)
+
+        assertEquals(NotificationManager.IMPORTANCE_HIGH, channel!!.importance)
+        assertTrue("channel must vibrate", channel.shouldVibrate())
+        assertNotNull("an explicit pattern, not the OEM default", channel.vibrationPattern)
+
+        // STREAM_RING is the one the device's silent/vibrate switch governs — a call
+        // channel that does not declare itself as ring audio is not what that switch
+        // is deciding about, which is how a phone on vibrate stays completely still.
+        val attrs = channel.audioAttributes
+        assertNotNull(attrs)
+        assertEquals(AudioAttributes.USAGE_NOTIFICATION_RINGTONE, attrs!!.usage)
+        assertEquals(AudioManager.STREAM_RING, attrs.volumeControlStream)
+    }
+
+    // The v1 channel must not survive alongside v2: two entries with the same Hebrew
+    // name, one of them dead, in the exact settings screen an agent opens to fix
+    // vibration.
+    @Test
+    fun `the superseded channel is removed`() {
+        val mgr = context.getSystemService(NotificationManager::class.java)!!
+        mgr.createNotificationChannel(
+            NotificationChannel("kalfa_incoming_call", "old", NotificationManager.IMPORTANCE_HIGH),
+        )
+
+        IncomingCallNotificationBuilder.ensureChannel(context)
+
+        assertNull(mgr.getNotificationChannel("kalfa_incoming_call"))
+        assertNotNull(mgr.getNotificationChannel(IncomingCallNotificationBuilder.CHANNEL_ID))
+    }
 
     @Test
     fun `both answer and decline actions survive into the built notification`() {
