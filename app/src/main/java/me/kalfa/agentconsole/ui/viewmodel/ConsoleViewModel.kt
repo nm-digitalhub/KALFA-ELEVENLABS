@@ -203,7 +203,19 @@ class ConsoleViewModel : ViewModel() {
                         campaigns = camps,
                         rsvpResults = rsvps,
                         currentSession = session,
-                        shiftActive = shift
+                        shiftActive = shift,
+                        // Per-CALL state, reset the moment the call it described is
+                        // no longer the current one. Without this, consultRequested
+                        // set on one call survived into the NEXT inbound call —
+                        // ActiveCallScreen would open showing "בטל התייעצות" /
+                        // "השלם העברה" for a consult that does not exist, and
+                        // tapping one POSTs to the new call's id, gets ignored by
+                        // the scenario, and still reports "נשלחה". The transfer
+                        // list is cleared for the same reason, though that one is
+                        // cosmetic since the picker reloads on every open.
+                        consultRequested = if (session === state.currentSession) state.consultRequested else false,
+                        transferTargets = if (session === state.currentSession) state.transferTargets else emptyList(),
+                        transferTargetsFailed = if (session === state.currentSession) state.transferTargetsFailed else false,
                     )
                 }
             }.collect()

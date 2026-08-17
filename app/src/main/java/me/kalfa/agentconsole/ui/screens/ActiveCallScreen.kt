@@ -38,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.CompositionLocalProvider
@@ -158,7 +159,13 @@ fun ActiveCallScreen(
     // Which handoff the open sheet is for; null = closed. One sheet for all three
     // because they differ only in the verb — the list, the empty state and the
     // failure state are identical, and three near-copies would drift.
-    var pickerFor by rememberSaveable { mutableStateOf<HandoffKind?>(null) }
+    //
+    // Plain `remember`, NOT rememberSaveable, and the difference is not stylistic.
+    // rememberSaveable would put this enum through Compose's autoSaver and the
+    // Bundle, which compiles whether or not that succeeds — and if it does not, it
+    // throws while composing the ACTIVE CALL screen, mid-call, on a path no test
+    // here can exercise. An open sheet is not worth surviving process death.
+    var pickerFor by remember { mutableStateOf<HandoffKind?>(null) }
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Surface(
