@@ -41,21 +41,43 @@ import me.kalfa.agentconsole.ui.theme.MyApplicationTheme
 // device, since Android does not draw its own call UI for a locked-device FSI; the
 // activity it launches has to.
 //
-// [number] is the caller's own phone number, and this screen renders it (17.8).
-// It used to take [displayName] alone, which made the ring surface the ONE place
-// in the app that showed nothing about who was calling — ActiveCallScreen has
-// always shown the number, but only AFTER answering, which is one decision too
-// late for the person deciding whether to answer. The owner's report was blunt
-// about it: "הכי הגיוני שהמספר של הלקוח המחייג יוצג, כמו בכל עסק".
+// WHO IS CALLING — and why [displayName] is the only identity this screen takes.
 //
-// Both values come off the live SDK Call (`remoteDisplayName` / `number`) and are
-// guest PII: they may be rendered, never logged. The paired server-side change
-// (beta commit 3e455e3) is what makes them worth rendering — until it ships, the
-// scenario passes our OWN DID as the ring's callerid and there is no name at all.
+// The owner's report, 17.8: "בעת שיחה נכנסת המספר המוצג הוא המספר שלנו ולא המספר
+// טלפון שמחייג… הכי הגיוני שהמספר של הלקוח המחייג יוצג, כמו בכל עסק". That is
+// fixed, but SERVER-side (beta commit 3e455e3), not by adding a second field
+// here. The VoxEngine scenario now decides one label and sends it as callUser's
+// `displayName`: the guest's name when it recognises the caller, their E.164 when
+// it does not, and "מספר חסוי" when the CLI was withheld. All three arrive here
+// as `remoteDisplayName` and are correct exactly as received.
+//
+// A first version of this change ALSO rendered `IncomingOffer.number` underneath,
+// suppressed when it equalled the label. Reverted before deploy, because that
+// comparison is not sound and its failure modes both surface as visible nonsense
+// on the ring screen:
+//
+//   * The two values reach the device through different pipelines — the label is
+//     libphonenumber-normalized ("+972501234567"), while the number is the CLI
+//     echoed verbatim from the platform (bare digits, by the scenario's own
+//     deliberate choice). Byte-equality between a normalized and an
+//     un-normalized form does not hold, so an unrecognised caller would print
+//     "+972501234567" over "972501234567" — the double-print the suppression
+//     existed to prevent.
+//   * On a withheld CLI the scenario must still pass SOME callerid and falls back
+//     to our own DID, so the screen would render our number underneath
+//     "מספר חסוי" — presenting our DID as the withheld caller's, which is a
+//     sharper version of the original complaint.
+//
+// Both are fixable only with knowledge this screen does not have (our own DID,
+// the caller's canonical form). The server has both and already produces one
+// correct string from them, so the number stays where it is already right:
+// ActiveCallScreen, after answering. Revisit once a live call establishes what
+// `Call.number` actually contains on a callUser leg — that it mirrors `callerid`
+// is INFERRED, never measured, and is the same unverified step this screen would
+// have been built on.
 @Composable
 fun IncomingCallScreen(
     displayName: String,
-    number: String,
     onAnswer: () -> Unit,
     onDecline: () -> Unit,
     modifier: Modifier = Modifier,
@@ -83,28 +105,6 @@ fun IncomingCallScreen(
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onBackground,
                 )
-                // Only when it adds something. The server sends the guest's NAME as
-                // the display name when it recognises the number and the NUMBER
-                // itself when it does not, so for an unrecognised caller the two are
-                // the same string — printing it twice would look like a rendering
-                // bug, not like extra information.
-                //
-                // LTR forced on this one Text: a phone number is a left-to-right
-                // sequence, and inside this screen's Rtl provider a leading "+" is
-                // laid out at the wrong end ("972501234567+"). The digits themselves
-                // are neutral-direction, so nothing but an explicit override fixes
-                // it. Scoped to this Text so the surrounding Hebrew layout is
-                // untouched.
-                if (number.isNotBlank() && number != displayName) {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                        Text(
-                            text = number,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
-                        )
-                    }
-                }
                 Spacer(modifier = Modifier.height(64.dp))
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(48.dp),
@@ -152,11 +152,6 @@ private fun RingActionButton(
 @Composable
 fun IncomingCallScreenPreview() {
     MyApplicationTheme {
-        IncomingCallScreen(
-            displayName = "ששון מנחם",
-            number = "+972501234567",
-            onAnswer = {},
-            onDecline = {},
-        )
+        IncomingCallScreen(displayName = "ששון מנחם", onAnswer = {}, onDecline = {})
     }
 }

@@ -278,22 +278,31 @@ content, a locked phone that starts ringing shows the wrong thing — normal app
 an answer/decline prompt — which is worse than not wiring FSI at all.
 
 So: **`ui/screens/IncomingCallScreen.kt`** is new, and deliberately minimal — caller
-identity + Answer/Decline, nothing else. No mute/hold/DTMF/keypad, no RSVP-capture form.
+label + Answer/Decline, nothing else. No mute/hold/DTMF/keypad, no RSVP-capture form.
 
-**Amended 17.8 — "caller identity" is now the name AND the number.** As first shipped
-this screen rendered `displayName` alone, and the number it never showed was our own
-DID anyway: the VoxEngine scenario passed `state.called` as the ring's `callerid`,
-justified at the time by an unverified worry about Voximplant's CallerID rules for an
-intra-app `callUser` and by an assumption that `route-inbound`'s `display_hint` was the
-channel for caller identity — which the app never read. The net effect was an agent
-asked to answer a call knowing nothing about who was on it. Beta commit `3e455e3` now
-passes the caller's own CLI as `callerid` and a `caller_display` label (the guest's
-name when the number is recognised, their E.164 when it is not) as `displayName`; this
-screen renders both, suppressing the number when it is byte-identical to the label so
-an unrecognised caller is not printed twice. `IncomingCallNotificationBuilder` is
-deliberately NOT changed — whether the raw number belongs on a lock-screen
-notification, visible to every app with notification-listener access, is the separate
-privacy decision that builder's own comment already raises for the owner.
+**Amended 17.8 — the caller label is now actually about the caller.** The screen's
+markup is unchanged; what changed is what reaches it. Until now the label was our own
+DID on every call: the VoxEngine scenario passed `state.called` as the ring's
+`callerid`, justified at the time by an unverified worry about Voximplant's CallerID
+rules for an intra-app `callUser`, and by an assumption that `route-inbound`'s
+`display_hint` was the channel for caller identity — which this app never read. The net
+effect was an agent asked to answer a call knowing nothing about who was on it (owner
+report: "המספר המוצג הוא המספר שלנו ולא המספר טלפון שמחייג").
+
+Beta commit `3e455e3` fixes it server-side. The scenario now passes the caller's own
+CLI as `callerid` and a single server-decided `caller_display` label as `displayName` —
+the guest's name when `route-inbound` recognises the number, their E.164 when it does
+not, `"מספר חסוי"` when the CLI was withheld. All three arrive here as
+`remoteDisplayName` and are correct as received, which is why this screen still takes
+one identity field and not two. A draft that also rendered `IncomingOffer.number`
+underneath was reverted before deploy; the file's own header records the two ways that
+comparison produces visible nonsense.
+
+`IncomingCallNotificationBuilder` is deliberately NOT changed. Whether the raw number
+belongs on a lock-screen notification, readable by every app holding
+notification-listener access, is the separate privacy decision that builder's own
+comment already raises for the owner — and it now benefits from the same fix anyway,
+since the Person name it renders is this label.
 It is rendered by `MainActivity` as a top-level overlay when
 `VoxIncomingCallCoordinator.pendingOffer` is non-null — a new, separate condition from
 the existing `state.currentSession != null && BuildConfig.DEBUG` branch, which this
