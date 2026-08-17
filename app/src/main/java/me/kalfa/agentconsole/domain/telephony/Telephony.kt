@@ -238,6 +238,23 @@ interface CallEngine {
     suspend fun startConsult(consoleCallId: String, toAgentId: String): AppResult<Unit> =
         AppResult.Success(Unit)
 
+    /**
+     * Consult an outside PHONE NUMBER rather than a console agent — a manager, a
+     * supplier, the event owner.
+     *
+     * The number is sent as typed and validated SERVER-side (E.164, an
+     * Israel-only country allowlist, a per-agent rate limit and the DNC list). The
+     * device deliberately does no validation of its own beyond "not blank": a
+     * client-side rule would either duplicate that policy and drift from it, or
+     * teach an agent a shape the server then rejects for a different reason.
+     *
+     * There is no transferTo equivalent, and that is deliberate — see the server
+     * route: a blind transfer to an unverified number would leave a customer alone
+     * with someone the platform has no record of.
+     */
+    suspend fun startConsultWithPhone(consoleCallId: String, phone: String): AppResult<Unit> =
+        AppResult.Success(Unit)
+
     /** Abandons a consult and restores the customer bridge — POST …/consult/cancel. */
     suspend fun cancelConsult(consoleCallId: String): AppResult<Unit> = AppResult.Success(Unit)
 
@@ -249,6 +266,10 @@ interface CallEngine {
      * customer is NOT put on hold; the target joins all three into one mixer.
      */
     suspend fun addToConference(consoleCallId: String, toAgentId: String): AppResult<Unit> =
+        AppResult.Success(Unit)
+
+    /** Conference in an outside PHONE NUMBER — same contract as [startConsultWithPhone]. */
+    suspend fun addToConferenceWithPhone(consoleCallId: String, phone: String): AppResult<Unit> =
         AppResult.Success(Unit)
 }
 

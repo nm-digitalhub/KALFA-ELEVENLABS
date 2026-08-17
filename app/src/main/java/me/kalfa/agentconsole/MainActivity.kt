@@ -420,6 +420,8 @@ class MainActivity : ComponentActivity() {
                         onTransfer = { viewModel.transferTo(it) },
                         onConsult = { viewModel.consultWith(it) },
                         onConference = { viewModel.conferenceWith(it) },
+                        onConsultPhone = { viewModel.consultWithPhone(it) },
+                        onConferencePhone = { viewModel.conferenceWithPhone(it) },
                         onCancelConsult = { viewModel.cancelConsult() },
                         onCompleteConsult = { viewModel.completeConsult() },
                     )

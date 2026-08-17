@@ -1269,6 +1269,19 @@ class SupabaseCallEngineImpl(
     override suspend fun addToConference(consoleCallId: String, toAgentId: String): AppResult<Unit> =
         postCallAction("$consoleCallId/conference", """{"to_agent_id":"$toAgentId"}""")
 
+    // The two phone variants. `phone` is operator-typed, so unlike to_agent_id it is
+    // NOT server-issued and must not be pasted into JSON raw — a quote or a backslash
+    // would produce a malformed body at best. jsonPrimitive escaping handles that; the
+    // server then validates the value itself (E.164 + country + rate limit + DNC).
+    override suspend fun startConsultWithPhone(consoleCallId: String, phone: String): AppResult<Unit> =
+        postCallAction("$consoleCallId/consult", phoneBody(phone))
+
+    override suspend fun addToConferenceWithPhone(consoleCallId: String, phone: String): AppResult<Unit> =
+        postCallAction("$consoleCallId/conference", phoneBody(phone))
+
+    private fun phoneBody(phone: String): String =
+        buildJsonObject { put("to_phone", phone) }.toString()
+
     // Enqueue a real outbound AI call to an existing guest. ENQUEUE-ONLY: this
     // POSTs {guest_id} to /api/events/{eventId}/outreach-call and the worker owns
     // the gate chain + StartScenarios. Never dials from here. Same JWT + client as

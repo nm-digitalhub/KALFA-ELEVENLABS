@@ -721,6 +721,20 @@ class ConsoleViewModel : ViewModel() {
         callEngine.addToConference(id, agentId)
     }
 
+    // The phone variants. The number is passed through UNVALIDATED on purpose —
+    // the server owns that policy (E.164, an Israel-only country allowlist, a
+    // per-agent rate limit, DNC), and a second copy of it here would either drift
+    // from the real one or teach an agent a shape the server rejects for a
+    // different reason. Blank is the one thing worth catching locally, because it
+    // is a mis-tap rather than a policy question.
+    fun consultWithPhone(phone: String) = runCallAction("בקשת ההתייעצות", onSuccess = {
+        _uiState.update { it.copy(consultRequested = true) }
+    }) { id -> callEngine.startConsultWithPhone(id, phone.trim()) }
+
+    fun conferenceWithPhone(phone: String) = runCallAction("צירוף המספר לשיחה") { id ->
+        callEngine.addToConferenceWithPhone(id, phone.trim())
+    }
+
     fun cancelConsult() = runCallAction("ביטול ההתייעצות", onSuccess = {
         _uiState.update { it.copy(consultRequested = false) }
     }) { id -> callEngine.cancelConsult(id) }

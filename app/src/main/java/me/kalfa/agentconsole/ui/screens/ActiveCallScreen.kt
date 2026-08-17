@@ -2,6 +2,7 @@ package me.kalfa.agentconsole.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,7 +32,10 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledIconToggleButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -53,9 +57,11 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import me.kalfa.agentconsole.domain.telephony.TransferTarget
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -158,6 +164,8 @@ fun ActiveCallScreen(
     onTransfer: (String) -> Unit = {},
     onConsult: (String) -> Unit = {},
     onConference: (String) -> Unit = {},
+    onConsultPhone: (String) -> Unit = {},
+    onConferencePhone: (String) -> Unit = {},
     onCancelConsult: () -> Unit = {},
     onCompleteConsult: () -> Unit = {},
 ) {
@@ -327,6 +335,12 @@ fun ActiveCallScreen(
                             HandoffKind.CONSULT -> onConsult(agentId)
                             HandoffKind.CONFERENCE -> onConference(agentId)
                         }
+                    },
+                    // TRANSFER gets none — agents only, see the parameter's kdoc.
+                    onDialPhone = when (kind) {
+                        HandoffKind.TRANSFER -> null
+                        HandoffKind.CONSULT -> ({ p: String -> pickerFor = null; onConsultPhone(p) })
+                        HandoffKind.CONFERENCE -> ({ p: String -> pickerFor = null; onConferencePhone(p) })
                     },
                     onDismiss = { pickerFor = null },
                 )
@@ -728,8 +742,16 @@ private fun TransferTargetSheet(
     loading: Boolean,
     failed: Boolean,
     onPick: (String) -> Unit,
+    /**
+     * Null for TRANSFER, which accepts agents only — a blind transfer to an outside
+     * number would leave the customer alone with someone the platform has no record
+     * of, and nobody left to take the call back. Null hides the number field rather
+     * than showing one that the server would refuse.
+     */
+    onDialPhone: ((String) -> Unit)?,
     onDismiss: () -> Unit,
 ) {
+    var phone by remember { mutableStateOf("") }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
             Column(
@@ -773,6 +795,56 @@ private fun TransferTargetSheet(
                             Text(text = target.displayName)
                         }
                     }
+                }
+
+                // Offered even when the agent list is empty or failed to load, and
+                // that is the point: "nobody on the console is free" is exactly when
+                // an agent needs to reach a manager's mobile.
+                if (onDialPhone != null) {
+                    Spacer(modifier = Modifier.height(20.dp))
+                    HorizontalDivider()
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "או חייגו למספר",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = phone,
+                        onValueChange = { phone = it },
+                        singleLine = true,
+                        placeholder = { Text(text = "050-1234567") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        // The field itself is LTR: a phone number is a
+                        // left-to-right run, and typing one inside this sheet's RTL
+                        // context puts the caret and any leading "+" at the wrong end.
+                        textStyle = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics { contentDescription = "מספר טלפון לחיוג" },
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        // Blank is the only thing checked here. Everything else —
+                        // the shape, the country, the DNC list, how many outward
+                        // legs this agent has already placed — is the server's
+                        // decision, and a second copy of that policy on the device
+                        // would drift from it and start refusing things the server
+                        // allows.
+                        onClick = { onDialPhone(phone) },
+                        enabled = phone.isNotBlank(),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(text = "${kind.verb} למספר")
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "מספרים ישראליים בלבד.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    )
                 }
             }
         }
