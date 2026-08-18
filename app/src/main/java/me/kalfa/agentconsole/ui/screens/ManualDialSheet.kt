@@ -41,6 +41,8 @@ import me.kalfa.agentconsole.domain.telephony.looksLikePhoneNumber
 fun ManualDialSheet(
     onDial: (String) -> Unit,
     onDismiss: () -> Unit,
+    /** A dial this sheet started is still in flight. See the dial button. */
+    dialing: Boolean = false,
 ) {
     var number by remember { mutableStateOf("") }
     val canDial = looksLikePhoneNumber(number)
@@ -115,12 +117,30 @@ fun ManualDialSheet(
                         // refuse an unparseable number anyway, and a button that
                         // sometimes errors teaches an agent to distrust the one that
                         // works.
-                        enabled = canDial,
+                        //
+                        // `!dialing` for a different reason — not validity but time.
+                        // A dial takes 6-10 s (dial-intent, then the SDK's lazy
+                        // connect+login), and this sheet used to close on the tap, so
+                        // the agent watched a silent screen and dialled again. Two
+                        // tokens, two Voximplant sessions, and hanging up left the
+                        // orphan playing hold music to its 120 s cap. The sheet now
+                        // stays and says so.
+                        enabled = canDial && !dialing,
                         modifier = Modifier.weight(1f),
                     ) {
-                        Icon(Icons.Default.Phone, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("חייג")
+                        if (dialing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("מחייג…")
+                        } else {
+                            Icon(Icons.Default.Phone, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("חייג")
+                        }
                     }
                 }
             }

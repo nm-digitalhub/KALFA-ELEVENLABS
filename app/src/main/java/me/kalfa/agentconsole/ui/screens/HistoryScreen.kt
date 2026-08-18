@@ -75,6 +75,11 @@ fun HistoryScreen(
     onRefreshHistory: () -> Unit = {},
     /** Dials a number the agent typed. See ManualDialSheet. */
     onDialManual: (String) -> Unit = {},
+    /**
+     * A dial is in flight. The dial affordances here stay visible and busy rather
+     * than dismissing — see [dialStarted] below.
+     */
+    dialing: Boolean = false,
     callHistory: List<ConsoleCallRecord>,
     loading: Boolean = false,
     failed: Boolean = false,
@@ -83,6 +88,22 @@ fun HistoryScreen(
     var showFilterSheet by remember { mutableStateOf(false) }
     var openCall by remember { mutableStateOf<ConsoleCallRecord?>(null) }
     var showDialpad by remember { mutableStateOf(false) }
+
+    // A dial was started FROM THIS SCREEN and has not resolved yet.
+    //
+    // The sheets used to dismiss on the tap. A dial takes 6-10 s, so the agent was
+    // returned to a silent list with no sign anything had happened, and dialled
+    // again — which is how one tap became two Voximplant sessions on 18.8. They now
+    // stay open, busy, and close themselves when the dial resolves either way; a
+    // refusal is already carried to a snackbar, so closing on failure loses nothing.
+    var dialStarted by remember { mutableStateOf(false) }
+    LaunchedEffect(dialing, dialStarted) {
+        if (dialStarted && !dialing) {
+            dialStarted = false
+            showDialpad = false
+            openCall = null
+        }
+    }
 
     // Re-runs when the filter changes, because the filter is applied SERVER-SIDE.
     // Narrowing the page already in hand would report "no calls" for a range full of
@@ -104,9 +125,10 @@ fun HistoryScreen(
         ManualDialSheet(
             onDial = {
                 onDialManual(it)
-                showDialpad = false
+                dialStarted = true
             },
             onDismiss = { showDialpad = false },
+            dialing = dialing,
         )
     }
 
@@ -115,9 +137,10 @@ fun HistoryScreen(
             call = selected,
             onDial = {
                 onDialFromHistory(selected)
-                openCall = null
+                dialStarted = true
             },
             onDismiss = { openCall = null },
+            dialing = dialing,
         )
     }
 

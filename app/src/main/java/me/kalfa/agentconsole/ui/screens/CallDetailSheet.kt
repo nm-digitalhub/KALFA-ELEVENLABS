@@ -37,6 +37,8 @@ fun CallDetailSheet(
     call: ConsoleCallRecord,
     onDial: () -> Unit,
     onDismiss: () -> Unit,
+    /** A dial is in flight — see the button below, and ManualDialSheet's. */
+    dialing: Boolean = false,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
@@ -112,10 +114,27 @@ fun CallDetailSheet(
                 DetailRow("מזהה שיחה", call.id)
 
                 if (call.dialable) {
-                    Button(onClick = onDial, modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Default.Phone, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("חייג חזרה")
+                    // Busy rather than dismissed while the dial runs — the same
+                    // reason as ManualDialSheet's button: 6-10 s of nothing on screen
+                    // is what produced a second tap, and a second call.
+                    Button(
+                        onClick = onDial,
+                        enabled = !dialing,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        if (dialing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("מחייג…")
+                        } else {
+                            Icon(Icons.Default.Phone, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("חייג חזרה")
+                        }
                     }
                 }
             }

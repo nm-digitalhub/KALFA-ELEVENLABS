@@ -911,6 +911,7 @@ private fun ConsoleNavHost(
                     },
                     onRefreshHistory = { viewModel.loadConsoleHistory() },
                     onDialManual = { viewModel.dialManual(it) },
+                    dialing = state.dialing,
                     callHistory = state.consoleHistory,
                     loading = state.consoleHistoryLoading,
                     failed = state.consoleHistoryFailed,

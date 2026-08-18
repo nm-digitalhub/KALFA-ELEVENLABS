@@ -350,6 +350,17 @@ object TelemetryEvents {
      */
     const val DIAL_STEP = "dial.step"
 
+    /**
+     * A dial was refused by the device's own single-flight gate because one was
+     * already in flight.
+     *
+     * Emitted rather than dropped silently, because the two readings of a quiet log
+     * are opposite: "the guard is working" and "the agent never tapped". Only this
+     * line tells them apart — and it is the measurement that says whether the gate
+     * is still earning its place once the dial is fast.
+     */
+    const val DIAL_SUPPRESSED = "dial.suppressed"
+
     const val AUTH_JWT_MISSING = "auth.jwt_missing"
 
     // ── the channel describing itself ─────────────────────────────────────────

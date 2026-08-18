@@ -86,6 +86,19 @@ data class ConsoleUiState(
     val campaigns: List<Campaign> = emptyList(),
     val rsvpResults: List<RsvpResult> = emptyList(),
     val currentSession: CallSession? = null,
+    /**
+     * A dial is in flight — the token has been asked for, or the SDK is still
+     * connecting. Drives the dial controls, which stay visible and busy instead of
+     * vanishing.
+     *
+     * MEASURED 18.8: a manual dial takes 6.2-10.1 s wall-clock (dial-intent
+     * 3.2-5.2 s, then the SDK's lazy connect+login 2.1-6.5 s), and the dialpad used
+     * to close on the tap. The agent got a dismissed sheet and a silent screen, so
+     * they dialled again — two tokens, two Voximplant sessions, and hanging up left
+     * the orphan playing hold music to its 120 s cap. See
+     * docs/plan-prevent-double-dial.md.
+     */
+    val dialing: Boolean = false,
     // Readback of AgentPresence.shiftActive — drives MainActivity's
     // PresenceForegroundService start/stop LaunchedEffect (see
     // docs/android-presence-and-call-ux.md §1). NOT the same thing as agentStatus:
@@ -163,6 +176,14 @@ class ConsoleViewModel : ViewModel() {
     val uiState: StateFlow<ConsoleUiState> = _uiState.asStateFlow()
     private val _effects = MutableSharedFlow<UiEffect>(extraBufferCapacity = 8)
     val effects: SharedFlow<UiEffect> = _effects.asSharedFlow()
+
+    /**
+     * The authority behind [dialOnce]. Separate from [ConsoleUiState.dialing] on
+     * purpose: a check-then-set across two statements of a StateFlow is not atomic,
+     * and this guard exists precisely to survive two taps arriving close together.
+     * The flag in the state is for rendering; this decides.
+     */
+    private val dialGate = SingleFlightGate()
     private val dispatchGuests = mutableMapOf<String, String>()
 
     private fun observeRepositoryHealth(
@@ -833,23 +854,56 @@ class ConsoleViewModel : ViewModel() {
      * resolves the number and runs the consent chain. Offered only for rows that
      * carry both ids.
      */
+    /**
+     * Single-flight gate in front of EVERY outbound dial.
+     *
+     * ONE gate rather than a flag per function, because the keypad, a history row
+     * and a callback return all contend for the same single outbound call — a flag
+     * each would let two of them race. The AtomicBoolean is the authority (correct
+     * whichever thread a click arrives on); [ConsoleUiState.dialing] exists only so
+     * the UI can render it.
+     *
+     * The gate opens again when the dial CALL returns, not when the call ends:
+     * hanging up and dialling again is legitimate, and the window this closes is
+     * the 6-10 s one measured in ConsoleUiState.dialing's note.
+     *
+     * A suppressed tap is REPORTED, not silently dropped — without the event we
+     * could not tell "the guard worked" from "the agent never tapped".
+     */
+    private fun dialOnce(block: suspend () -> Unit) {
+        if (!dialGate.tryAcquire()) {
+            Telemetry.emit(TelemetryEvents.DIAL_SUPPRESSED)
+            return
+        }
+        _uiState.update { it.copy(dialing = true) }
+        viewModelScope.launch {
+            try {
+                block()
+            } finally {
+                // finally, not the success path: a refusal or a thrown failure must
+                // release the gate too, or one bad dial locks the agent out of the
+                // console until the process restarts.
+                dialGate.release()
+                _uiState.update { it.copy(dialing = false) }
+            }
+        }
+    }
+
     fun dialContact(
         eventId: String,
         contactId: String,
         who: String = "",
         confirmOutsideHours: Boolean = false,
-    ) {
-        viewModelScope.launch {
-            when (val r = callEngine.dialContact(eventId, contactId, confirmOutsideHours)) {
-                is AppResult.Success -> {
-                    _uiState.update { it.copy(outsideHoursPrompt = null) }
-                    _effects.emit(UiEffect.ShowSnackbar("מחייג…"))
-                }
-                is AppResult.Failure -> handleDialFailure(
-                    r.reason,
-                    OutsideHoursPrompt.Contact(eventId, contactId, who),
-                )
+    ) = dialOnce {
+        when (val r = callEngine.dialContact(eventId, contactId, confirmOutsideHours)) {
+            is AppResult.Success -> {
+                _uiState.update { it.copy(outsideHoursPrompt = null) }
+                _effects.emit(UiEffect.ShowSnackbar("מחייג…"))
             }
+            is AppResult.Failure -> handleDialFailure(
+                r.reason,
+                OutsideHoursPrompt.Contact(eventId, contactId, who),
+            )
         }
     }
 
@@ -914,20 +968,18 @@ class ConsoleViewModel : ViewModel() {
      * server-side, and a failure may have been caused by someone else taking it.
      */
     /** Dials a number the agent typed. See CallEngine.dialManual. */
-    fun dialManual(phone: String, confirmOutsideHours: Boolean = false) {
-        viewModelScope.launch {
-            when (val r = callEngine.dialManual(phone, confirmOutsideHours)) {
-                is AppResult.Success -> _uiState.update { it.copy(outsideHoursPrompt = null) }
-                is AppResult.Failure -> handleDialFailure(
-                    r.reason,
-                    OutsideHoursPrompt.Manual(phone),
-                )
-            }
+    fun dialManual(phone: String, confirmOutsideHours: Boolean = false) = dialOnce {
+        when (val r = callEngine.dialManual(phone, confirmOutsideHours)) {
+            is AppResult.Success -> _uiState.update { it.copy(outsideHoursPrompt = null) }
+            is AppResult.Failure -> handleDialFailure(
+                r.reason,
+                OutsideHoursPrompt.Manual(phone),
+            )
         }
     }
 
-    fun returnCallback(callbackId: String, who: String = "", confirmOutsideHours: Boolean = false) {
-        viewModelScope.launch {
+    fun returnCallback(callbackId: String, who: String = "", confirmOutsideHours: Boolean = false) =
+        dialOnce {
             when (val r = callEngine.returnCallback(callbackId, confirmOutsideHours)) {
                 is AppResult.Success -> {
                     _uiState.update { it.copy(outsideHoursPrompt = null) }
@@ -940,7 +992,6 @@ class ConsoleViewModel : ViewModel() {
                 )
             }
         }
-    }
 
     fun loadTransferTargets() {
         viewModelScope.launch {
